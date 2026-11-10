@@ -39,6 +39,7 @@ public sealed class ClaudeService
         - Write math with Unicode symbols (x², √2, π, ≤, ≠, →, ∫, ½). For lists, start lines with "–" or "1.".
         - Be brief, like a note written back on the page: usually one to four short sentences. Go longer only when the user asks for detail or a worked solution.
         - Answer the newest handwriting, using the earlier page for context. If the ink is unreadable, say what you can make out and ask the user to rewrite it.
+        - Sometimes the image also shows earlier parts of the page, with the newest handwriting in black on top: grey is what I wrote before and blue is your earlier replies. The black ink is then usually an annotation of that content (circling, striking out, a correction, a question in the margin). Answer the annotation, and in HEARD describe it and what it points at in [brackets], followed by any words I wrote. Your reply is written at the end of the page, away from the annotation, so say which part you mean when it isn't obvious.
         - You can search the web and fetch pages, and may have connected apps. Use them when they would make the answer better or when the user asks for something current or personal. If you use any tool, call it before writing anything else: write no text until all tool use is finished, then give the reply in the format above.
         """;
 
@@ -55,7 +56,7 @@ public sealed class ClaudeService
             : new AnthropicClient { ApiKey = apiKey, BaseUrl = baseUrl };
     }
 
-    public async Task<ReplyResult> AskAsync(byte[] png, IReadOnlyList<Turn> history, Action<ReplyParser.Parsed> onProgress, CancellationToken ct, Action<string>? onStatus = null)
+    public async Task<ReplyResult> AskAsync(byte[] png, IReadOnlyList<Turn> history, Action<ReplyParser.Parsed> onProgress, CancellationToken ct, Action<string>? onStatus = null, bool hasContext = false)
     {
         var messages = new List<BetaMessageParam>();
         foreach (var turn in history.Skip(Math.Max(0, history.Count - MaxTurns)))
@@ -71,7 +72,12 @@ public sealed class ClaudeService
                 {
                     Source = new BetaBase64ImageSource { Data = Convert.ToBase64String(png), MediaType = MediaType.ImagePng },
                 },
-                new BetaTextBlockParam { Text = "This is my newest handwriting." },
+                new BetaTextBlockParam
+                {
+                    Text = hasContext
+                        ? "This is my newest handwriting: the black ink. The grey ink and blue text are earlier parts of the page that it was written over (my earlier writing and your earlier replies)."
+                        : "This is my newest handwriting.",
+                },
             },
         });
 

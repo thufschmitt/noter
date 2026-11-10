@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
+using Windows.Foundation;
 using Windows.Graphics.Imaging;
 using Windows.Storage.Streams;
 using Windows.UI;
@@ -8,53 +10,70 @@ using Windows.UI.Input.Inking;
 
 namespace Longhand.Services;
 
-/// <summary>Renders a set of strokes as black ink on a white PNG, for Claude to read.</summary>
+/// <summary>A reply drawn by the page (not ink), as the pixels it was rendered to: premultiplied BGRA.</summary>
+public sealed record RenderedText(byte[] Bgra, int Width, int Height);
+
+/// <summary>A reply Claude wrote earlier. <c>Render</c> draws it at the given scale (the page draws it, since it is a XAML text block).</summary>
+public sealed record PageReply(Rect Bounds, Func<double, Task<RenderedText>> Render);
+
+/// <summary>What was already on the page around new ink: the writing from before, and Claude's replies.</summary>
+public sealed record PageContext(IReadOnlyList<InkStroke> EarlierInk, IReadOnlyList<PageReply> Replies);
+
+/// <summary>
+/// Renders new strokes as black ink on a white PNG, for Claude to read. With a context the picture also shows what the ink was
+/// written over: earlier writing in grey and Claude's replies in blue, so black marks on top read as annotations.
+/// </summary>
 public static class InkSnapshot
 {
     const int Pad = 32;
+    const double MaxSide = 7000; // the API refuses larger images
 
-    public static async Task<byte[]> RenderPngAsync(IReadOnlyList<InkStroke> strokes)
+    static readonly Color Black = Color.FromArgb(255, 0, 0, 0);
+    static readonly Color Grey = Color.FromArgb(255, 140, 144, 152);
+    static readonly byte[] ReplyBlue = { 0xC4, 0x4F, 0x2C }; // B, G, R of the blue Claude writes in
+
+    public static async Task<byte[]> RenderPngAsync(IReadOnlyList<InkStroke> strokes, PageContext? context = null)
     {
-        // Copy the strokes into a scratch container, in black whatever the current theme's ink colour is.
+        // Copy the strokes into a scratch container, in fixed colours whatever the current theme's ink colour is.
+        // Earlier writing goes in first so the new ink is drawn over it.
         var container = new InkStrokeContainer();
-        foreach (var stroke in strokes)
-        {
-            var copy = stroke.Clone();
-            var attrs = copy.DrawingAttributes;
-            attrs.Color = Color.FromArgb(255, 0, 0, 0);
-            copy.DrawingAttributes = attrs;
-            container.AddStroke(copy);
-        }
+        var earlier = context?.EarlierInk ?? Array.Empty<InkStroke>();
+        foreach (var stroke in earlier) container.AddStroke(Recolored(stroke, Grey));
+        foreach (var stroke in strokes) container.AddStroke(Recolored(stroke, Black));
+
+        // The stretch of page the picture covers, in page units: all the ink, plus the replies.
+        Rect area = Union(earlier.Concat(strokes).Select(s => s.BoundingRect));
+        Rect inkArea = area;
+        foreach (var reply in context?.Replies ?? Array.Empty<PageReply>()) area = Union(new[] { area, reply.Bounds });
+
+        // Enlarge small writing so it reads clearly; keep the long side within the API's limit.
+        double longSide = Math.Max(1, Math.Max(area.Width, area.Height));
+        double k = Math.Min(Math.Clamp(1400.0 / longSide, 1.0, 2.5), MaxSide / longSide);
 
         // Windows Ink renders the strokes itself when saving as GIF (cropped to the ink, transparent background).
         using var gif = new InMemoryRandomAccessStream();
         await container.SaveAsync(gif, InkPersistenceFormat.GifWithEmbeddedIsf);
         gif.Seek(0);
         var decoder = await BitmapDecoder.CreateAsync(gif);
-
-        // Enlarge small writing so it reads clearly; keep the long side within ~1400 px.
-        uint w = decoder.PixelWidth, h = decoder.PixelHeight;
-        double k = Math.Clamp(1400.0 / Math.Max(1, Math.Max(w, h)), 1.0, 2.5);
-        uint sw = (uint)Math.Max(1, Math.Round(w * k)), sh = (uint)Math.Max(1, Math.Round(h * k));
+        uint sw = (uint)Math.Max(1, Math.Round(decoder.PixelWidth * k)), sh = (uint)Math.Max(1, Math.Round(decoder.PixelHeight * k));
         var pixels = await decoder.GetPixelDataAsync(
             BitmapPixelFormat.Bgra8, BitmapAlphaMode.Straight,
             new BitmapTransform { ScaledWidth = sw, ScaledHeight = sh, InterpolationMode = BitmapInterpolationMode.Fant },
             ExifOrientationMode.IgnoreExifOrientation, ColorManagementMode.DoNotColorManage);
-        byte[] src = pixels.DetachPixelData();
+        byte[] ink = pixels.DetachPixelData();
 
-        // Composite onto white with a margin.
-        uint ow = sw + 2 * Pad, oh = sh + 2 * Pad;
+        // The ink picture starts where the ink does, give or take the pen's width; the rest of the canvas is the replies' area.
+        uint inkX = (uint)Math.Max(0, Math.Round((inkArea.X - area.X) * k)), inkY = (uint)Math.Max(0, Math.Round((inkArea.Y - area.Y) * k));
+        uint ow = Math.Max((uint)Math.Ceiling(area.Width * k), inkX + sw) + 2 * Pad, oh = Math.Max((uint)Math.Ceiling(area.Height * k), inkY + sh) + 2 * Pad;
         var dst = new byte[ow * oh * 4];
         Array.Fill(dst, (byte)255);
-        for (uint y = 0; y < sh; y++)
+
+        foreach (var reply in context?.Replies ?? Array.Empty<PageReply>())
         {
-            for (uint x = 0; x < sw; x++)
-            {
-                long i = (y * sw + x) * 4, j = ((y + Pad) * ow + x + Pad) * 4;
-                double a = src[i + 3] / 255.0;
-                for (int c = 0; c < 3; c++) dst[j + c] = (byte)Math.Round(src[i + c] * a + 255 * (1 - a));
-            }
+            var text = await reply.Render(k);
+            DrawText(dst, ow, oh, text, (long)Math.Round((reply.Bounds.X - area.X) * k) + Pad, (long)Math.Round((reply.Bounds.Y - area.Y) * k) + Pad);
         }
+        DrawInk(dst, ow, ink, sw, sh, inkX + Pad, inkY + Pad);
 
         using var png = new InMemoryRandomAccessStream();
         var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, png);
@@ -66,5 +85,59 @@ public static class InkSnapshot
         await reader.LoadAsync((uint)png.Size);
         reader.ReadBytes(bytes);
         return bytes;
+    }
+
+    static InkStroke Recolored(InkStroke stroke, Color color)
+    {
+        var copy = stroke.Clone();
+        var attrs = copy.DrawingAttributes;
+        attrs.Color = color;
+        copy.DrawingAttributes = attrs;
+        return copy;
+    }
+
+    static Rect Union(IEnumerable<Rect> rects)
+    {
+        double left = double.MaxValue, top = double.MaxValue, right = double.MinValue, bottom = double.MinValue;
+        foreach (var r in rects)
+        {
+            left = Math.Min(left, r.X);
+            top = Math.Min(top, r.Y);
+            right = Math.Max(right, r.X + r.Width);
+            bottom = Math.Max(bottom, r.Y + r.Height);
+        }
+        return new Rect(left, top, Math.Max(1, right - left), Math.Max(1, bottom - top));
+    }
+
+    /// <summary>Paints a reply in blue using only its coverage, so the colour doesn't depend on the theme it was rendered in.</summary>
+    static void DrawText(byte[] dst, uint dstWidth, uint dstHeight, RenderedText text, long x0, long y0)
+    {
+        for (int y = 0; y < text.Height; y++)
+        {
+            long dy = y0 + y;
+            if (dy < 0 || dy >= dstHeight) continue;
+            for (int x = 0; x < text.Width; x++)
+            {
+                long dx = x0 + x;
+                if (dx < 0 || dx >= dstWidth) continue;
+                double a = text.Bgra[(y * text.Width + x) * 4 + 3] / 255.0;
+                if (a == 0) continue;
+                long j = (dy * dstWidth + dx) * 4;
+                for (int c = 0; c < 3; c++) dst[j + c] = (byte)Math.Round(ReplyBlue[c] * a + dst[j + c] * (1 - a));
+            }
+        }
+    }
+
+    static void DrawInk(byte[] dst, uint dstWidth, byte[] src, uint sw, uint sh, uint x0, uint y0)
+    {
+        for (uint y = 0; y < sh; y++)
+        {
+            for (uint x = 0; x < sw; x++)
+            {
+                long i = (y * sw + x) * 4, j = ((y + y0) * dstWidth + x + x0) * 4;
+                double a = src[i + 3] / 255.0;
+                for (int c = 0; c < 3; c++) dst[j + c] = (byte)Math.Round(src[i + c] * a + dst[j + c] * (1 - a));
+            }
+        }
     }
 }

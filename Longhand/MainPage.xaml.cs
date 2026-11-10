@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices.WindowsRuntime;
 using System.Threading;
 using System.Threading.Tasks;
 using Anthropic.Exceptions;
@@ -12,6 +13,7 @@ using Windows.UI.Input.Inking;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
 using Windows.UI.Xaml.Media;
+using Windows.UI.Xaml.Media.Imaging;
 using Windows.UI.Xaml.Shapes;
 
 namespace Longhand;
@@ -471,12 +473,24 @@ public sealed partial class MainPage : Page
             UpdateAsk();
             return;
         }
-        double inkBottom = strokes.Max(s => s.BoundingRect.Y + s.BoundingRect.Height);
+
+        // Writing over earlier replies (annotating them) sends those replies along, so Claude sees what the ink refers to.
+        var context = ContextAround(strokes, ids);
 
         byte[] png;
         try
         {
-            png = await InkSnapshot.RenderPngAsync(strokes);
+            try
+            {
+                png = await InkSnapshot.RenderPngAsync(strokes, context);
+            }
+            catch (Exception) when (context is not null)
+            {
+                // The earlier replies are a bonus: rather than not asking, send the new ink alone.
+                context = null;
+                ShowToast("Claude will only see your new ink this time.");
+                png = await InkSnapshot.RenderPngAsync(strokes);
+            }
         }
         catch (Exception ex)
         {
@@ -485,8 +499,9 @@ public sealed partial class MainPage : Page
         }
         _pending.Clear();
 
-        // The answer goes on the ruled lines just below the ink, pushing anything further down out of the way.
-        var note = AddNote(RuleAtOrBelow(inkBottom - LineHeight * 0.3), "…", isHint: false, done: false);
+        // The answer goes at the end of the page, so it never lands in the middle of what is already there. Anything the user
+        // writes below it while it streams is pushed down out of the way.
+        var note = AddNote(EndOfPage(), "…", isHint: false, done: false);
         note.Text = "";
         double occupied = note.Span;
         ShiftBelow(note.Y, occupied, note, ids);
@@ -526,7 +541,7 @@ public sealed partial class MainPage : Page
                 note.Text = "";
                 note.Block.Text = status;
                 Grow();
-            });
+            }, hasContext: context is not null);
 
             note.Heard = result.Heard;
             note.Text = result.Outcome switch
@@ -570,6 +585,46 @@ public sealed partial class MainPage : Page
             // Only re-arm the pause timer after a good answer, so a failing request is never retried in a loop.
             if (answered && _pending.Count > 0) ScheduleIdle();
         }
+    }
+
+    /// <summary>The first free rule below all the ink and all the replies.</summary>
+    double EndOfPage()
+    {
+        double ink = Strokes.GetStrokes().Select(s => s.BoundingRect.Y + s.BoundingRect.Height).DefaultIfEmpty(Top).Max() - LineHeight * 0.3;
+        double notes = _notes.Where(n => !n.IsHint).Select(n => n.Bottom).DefaultIfEmpty(Top).Max();
+        return RuleAtOrBelow(Math.Max(ink, notes));
+    }
+
+    /// <summary>
+    /// When the new ink overlaps earlier replies, what Claude should be shown of the page around it: those replies, and the
+    /// writing they answered. Null when the ink simply follows the page.
+    /// </summary>
+    PageContext? ContextAround(List<InkStroke> strokes, HashSet<uint> ids)
+    {
+        var replies = _notes.Where(n => !n.IsHint && n.Done && n.Text.Length > 0).OrderBy(n => n.Y).ToList();
+        var band = AnnotationContext.Find(
+            strokes.Min(s => s.BoundingRect.Y),
+            strokes.Max(s => s.BoundingRect.Y + s.BoundingRect.Height),
+            replies.Select(n => (n.Y, n.Y + n.Lines * LineHeight)).ToList(),
+            Top);
+        if (band is not { } found) return null;
+
+        var earlier = Strokes.GetStrokes()
+            .Where(s => !ids.Contains(s.Id) && s.BoundingRect.Y < found.To && s.BoundingRect.Y + s.BoundingRect.Height > found.From)
+            .ToList();
+        var shown = found.Replies
+            .Select(i => replies[i])
+            .Select(n => new PageReply(new Rect(MarginX, n.Y + TextNudge, TextWidth, n.Lines * LineHeight), scale => RenderBlockAsync(n.Block, scale)))
+            .ToList();
+        return new PageContext(earlier, shown);
+    }
+
+    static async Task<RenderedText> RenderBlockAsync(TextBlock block, double scale)
+    {
+        var bitmap = new RenderTargetBitmap();
+        await bitmap.RenderAsync(block, (int)Math.Ceiling(block.ActualWidth * scale), (int)Math.Ceiling(block.ActualHeight * scale));
+        var pixels = await bitmap.GetPixelsAsync();
+        return new RenderedText(pixels.ToArray(), bitmap.PixelWidth, bitmap.PixelHeight);
     }
 
     static void FinishPartial(Note note, Action grow)

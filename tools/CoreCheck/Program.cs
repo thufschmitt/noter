@@ -20,6 +20,17 @@ Check("reply without format falls back to whole text", noFormat.Ready && noForma
 var md = ReplyParser.Clean("**Bold** and `code`\n* item");
 Check("markdown stripped", md == "Bold and code\n– item");
 
+// Which earlier replies are shown when new ink is written over them.
+var replies = new[] { (Top: 160.0, Bottom: 280.0), (Top: 400.0, Bottom: 520.0), (Top: 640.0, Bottom: 760.0) };
+Check("ink after the last reply shows no context", AnnotationContext.Find(800, 860, replies, 120) is null);
+Check("ink between replies shows no context", AnnotationContext.Find(540, 600, replies, 120) is null);
+var over = AnnotationContext.Find(430, 470, replies, 120);
+Check("ink over a reply shows it and what it answered", over is { } o1 && o1.Replies.SequenceEqual(new[] { 1 }) && o1.From == 280 && o1.To == 520);
+var first = AnnotationContext.Find(200, 220, replies, 120);
+Check("the first reply answers what is above it on the page", first is { } o2 && o2.From == 120 && o2.To == 280);
+var both = AnnotationContext.Find(250, 700, replies, 120);
+Check("ink spanning replies shows all of them", both is { } o3 && o3.Replies.SequenceEqual(new[] { 0, 1, 2 }) && o3.From == 120 && o3.To == 760);
+
 // Constructing the service exercises the SDK types used to build the request.
 _ = new ClaudeService("sk-ant-placeholder", new[] { new Connector("x", "https://x.example/mcp", "t") });
 Check("service constructs", true);

@@ -51,6 +51,7 @@ The page saves itself to the app's local folder and is restored when you reopen 
 ## How it talks to Claude
 
 - Only the ink written since the last answer is sent, as a PNG of black ink on white (`Services/InkSnapshot.cs`).
+- Answers are written at the end of the page, not under the ink that prompted them. That lets you annotate an old answer: when new ink overlaps earlier replies, the picture also shows those replies in blue and the writing they answered in grey, with your new ink in black on top, and Claude is told the black ink is an annotation.
 - Earlier turns go along as text: Claude's one-line transcription of what you wrote, plus its reply. Claude keeps the context without old images being re-sent.
 - Model: `claude-opus-5-5` at low effort, which keeps the wait short for notebook-sized replies, streamed onto the page as it's written (`Services/ClaudeService.cs`).
 - Claude can search the web and fetch pages (Anthropic's server-side tools, up to 5 uses of each per answer). While one runs, the answer line shows what it is doing in blue ink.
