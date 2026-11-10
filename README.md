@@ -44,9 +44,9 @@ After that, starting the app from the Start menu or a tile checks for a newer ve
 | Ask / Ctrl+Enter | Answers right away. While an answer is coming, the button reads Stop. |
 | Eraser button or the pen's eraser end | Erases whole strokes |
 | Ctrl+Z | Undoes the last stroke or erase |
-| Bin (click twice) | Clears the page |
+| Conversations button | Opens the list of conversations: start a new one, switch, rename, or delete (tap twice). Ctrl+N starts a new one. |
 
-The page saves itself to the app's local folder and is restored when you reopen the app.
+Each conversation is its own page. They save themselves to the app's local folder, and the app reopens in the one you were last in. Conversations are fully separate: Claude only sees the open one. Titles come from the first thing Claude heard, and you can rename them. A conversation you never write in disappears when you move away from it, and switching while Claude is answering stops that answer. The page from before conversations existed becomes the first one.
 
 ## How it talks to Claude
 

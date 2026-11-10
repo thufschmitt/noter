@@ -10,15 +10,14 @@ namespace Longhand.Services;
 /// <summary>A note Claude wrote on the page, as saved to disk.</summary>
 public sealed record SavedNote(double Y, string Text, string Heard, bool IsHint);
 
-/// <summary>Saves the page (ink as ISF, Claude's notes as JSON) to the app's local folder.</summary>
+/// <summary>Saves one conversation's page (ink as ISF, Claude's notes as JSON) to its folder.</summary>
 public static class PageStore
 {
     const string InkFile = "page.isf";
     const string NotesFile = "notes.json";
 
-    public static async Task SaveAsync(InkStrokeContainer strokes, IReadOnlyList<SavedNote> notes)
+    public static async Task SaveAsync(StorageFolder folder, InkStrokeContainer strokes, IReadOnlyList<SavedNote> notes)
     {
-        var folder = ApplicationData.Current.LocalFolder;
         var ink = await folder.CreateFileAsync(InkFile, CreationCollisionOption.ReplaceExisting);
         using (var stream = await ink.OpenAsync(FileAccessMode.ReadWrite))
         {
@@ -29,9 +28,8 @@ public static class PageStore
     }
 
     /// <returns>The saved notes, or null when there is no saved page yet.</returns>
-    public static async Task<List<SavedNote>?> LoadAsync(InkStrokeContainer strokes)
+    public static async Task<List<SavedNote>?> LoadAsync(StorageFolder folder, InkStrokeContainer strokes)
     {
-        var folder = ApplicationData.Current.LocalFolder;
         try
         {
             if (await folder.TryGetItemAsync(InkFile) is StorageFile ink)

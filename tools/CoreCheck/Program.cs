@@ -48,6 +48,49 @@ Check("unknown saved model falls back to the default", ModelChoice.Resolve("clau
 Check("a listed model is kept", ModelChoice.Resolve("claude-opus-5-5") == "claude-opus-5-5");
 Check("low effort only for the larger models", !ModelChoice.UsesLowEffort("claude-haiku-5-5") && ModelChoice.UsesLowEffort("claude-opus-5-5") && ModelChoice.UsesLowEffort("claude-sonnet-5-5"));
 
+// Conversations: the list, titles, renaming, deleting and cleaning up blanks.
+var t0 = new DateTimeOffset(2026, 11, 10, 9, 0, 0, TimeSpan.Zero);
+var index = new ConversationIndex();
+var oldest = index.Create(t0);
+var blankOne = index.Create(t0.AddMinutes(5));
+Check("a new conversation is open and blank", index.CurrentId == blankOne.Id && blankOne.Blank && blankOne.Title == "New conversation");
+index.Touch(oldest.Id, t0.AddMinutes(10), blank: false);
+Check("the list is newest oldest", index.Newest().First().Id == oldest.Id);
+
+index.SetAutoTitle(oldest.Id, "Make a list 1-5 in separate lines");
+index.SetAutoTitle(oldest.Id, "Something said later");
+Check("the title comes from the oldest exchange only", index.Find(oldest.Id)!.Title == "Make a list 1-5 in separate lines");
+index.Rename(oldest.Id, "  Shopping   list ");
+Check("a given name wins and is tidied", index.Find(oldest.Id)!.Title == "Shopping list");
+index.SetAutoTitle(oldest.Id, "Ignored");
+Check("a given name is never overwritten", index.Find(oldest.Id)!.Title == "Shopping list");
+index.Rename(oldest.Id, "");
+Check("an empty name goes back to the automatic title", index.Find(oldest.Id)!.Title == "Make a list 1-5 in separate lines");
+
+Check("a drawing is not a title", ConversationIndex.TitleFrom("[a sketch of a house] what is this") == "what is this");
+Check("only a drawing is kept as the title", ConversationIndex.TitleFrom("[a sketch of a house]") == "a sketch of a house");
+var longTitle = ConversationIndex.TitleFrom("Please write me a very long and rambling question about the weather in Paris tomorrow");
+Check("long titles are cut at a word", longTitle.Length <= ConversationIndex.MaxTitle + 1 && longTitle.EndsWith("…") && !longTitle.Contains("tomorrow"));
+Check("nothing heard gives no title", ConversationIndex.TitleFrom("   ") == "");
+
+var removed = index.RemoveBlank(keepId: null);
+Check("blank conversations are removed", removed.SequenceEqual(new[] { blankOne.Id }) && index.Items.Count == 1);
+var newest = index.Create(t0.AddHours(1));
+Check("the blank one being used is kept", index.RemoveBlank(keepId: newest.Id).Count == 0);
+
+index.Touch(newest.Id, t0.AddHours(2), blank: false);
+Check("deleting another conversation keeps the open one", index.Delete(oldest.Id) == newest.Id && index.CurrentId == newest.Id);
+Check("deleting the open one opens the newest left", index.Delete(newest.Id) is null && index.Items.Count == 0);
+
+var saved = new ConversationIndex();
+var kept = saved.Create(t0);
+saved.Rename(kept.Id, "Kept");
+var restored = ConversationIndex.Parse(saved.ToJson());
+Check("the list survives saving and loading", restored.Items.Count == 1 && restored.Find(kept.Id)!.Title == "Kept" && restored.CurrentId == kept.Id);
+Check("a damaged file gives an empty list", ConversationIndex.Parse("{ not json").Items.Count == 0 && ConversationIndex.Parse(null).CurrentId is null);
+var dangling = ConversationIndex.Parse($$"""{"Items":[{"Id":"a","AutoTitle":"A","CustomTitle":"","Updated":"2026-11-10T09:00:00+00:00","Blank":false}],"CurrentId":"gone"}""");
+Check("an open conversation that no longer exists falls back to the newest", dangling.CurrentId == "a");
+
 // Constructing the service exercises the SDK types used to build the request.
 _ = new ClaudeService("sk-ant-placeholder", new[] { new Connector("x", "https://x.example/mcp", "t") });
 Check("service constructs", true);

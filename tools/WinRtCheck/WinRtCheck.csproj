@@ -17,6 +17,8 @@
     <Compile Include="..\..\Longhand\Services\Connector.cs" />
     <Compile Include="..\..\Longhand\Services\McpOAuth.cs" />
     <Compile Include="..\..\Longhand\Services\ConnectorStore.cs" />
+    <Compile Include="..\..\Longhand\Services\ConversationIndex.cs" />
+    <Compile Include="..\..\Longhand\Services\ConversationStore.cs" />
     <Compile Include="..\..\Longhand\Services\OAuthBroker.cs" />
     <Compile Include="..\..\Longhand\Services\PageStore.cs" />
   </ItemGroup>

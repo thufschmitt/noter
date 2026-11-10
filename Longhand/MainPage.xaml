@@ -81,9 +81,10 @@
                               ToolTipService.ToolTip="Write with your finger" AutomationProperties.Name="Write with your finger">
                     <FontIcon Glyph="&#xE7C9;" FontSize="18" />
                 </ToggleButton>
-                <Button x:Name="ClearButton" Click="Clear_Click" Style="{StaticResource ToolButton}"
-                        ToolTipService.ToolTip="Clear page" AutomationProperties.Name="Clear page">
-                    <FontIcon Glyph="&#xE74D;" FontSize="18" />
+                <!-- The flyout (conversation list) is built in code. -->
+                <Button x:Name="ConversationsButton" Style="{StaticResource ToolButton}"
+                        ToolTipService.ToolTip="Conversations (Ctrl+N for a new one)" AutomationProperties.Name="Conversations">
+                    <FontIcon Glyph="&#xE8F1;" FontSize="18" />
                 </Button>
                 <Button x:Name="SettingsButton" Click="Settings_Click" Style="{StaticResource ToolButton}"
                         ToolTipService.ToolTip="API key" AutomationProperties.Name="API key settings">

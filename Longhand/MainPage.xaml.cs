@@ -53,9 +53,11 @@ public sealed partial class MainPage : Page
     readonly DispatcherTimer _idleTimer = new() { Interval = TimeSpan.FromMilliseconds(40) };
     readonly DispatcherTimer _toastTimer = new() { Interval = TimeSpan.FromSeconds(4) };
     readonly DispatcherTimer _saveTimer = new() { Interval = TimeSpan.FromSeconds(1) };
-    readonly DispatcherTimer _clearTimer = new() { Interval = TimeSpan.FromSeconds(2.5) };
     DateTime _idleStart;
-    bool _busy, _clearArmed, _loaded;
+    bool _busy, _loaded, _dirty, _switching, _discardOnCancel;
+    ConversationIndex _index = new();
+    string _currentId = "";
+    readonly SemaphoreSlim _saveLock = new(1, 1);
     CancellationTokenSource? _cts;
     double _sheetWidth = 800, _rulesDrawnTo, _rulesWidth;
 
@@ -79,8 +81,20 @@ public sealed partial class MainPage : Page
 
         _idleTimer.Tick += OnIdleTick;
         _toastTimer.Tick += (_, _) => { _toastTimer.Stop(); ToastBox.Visibility = Visibility.Collapsed; };
-        _saveTimer.Tick += async (_, _) => { _saveTimer.Stop(); await SaveAsync(); };
-        _clearTimer.Tick += (_, _) => DisarmClear();
+        _saveTimer.Tick += async (_, _) => { _saveTimer.Stop(); if (!_switching) await SaveAsync(); };
+        BuildConversationsFlyout();
+
+        var newConversation = new Windows.UI.Xaml.Input.KeyboardAccelerator
+        {
+            Key = Windows.System.VirtualKey.N,
+            Modifiers = Windows.System.VirtualKeyModifiers.Control,
+        };
+        newConversation.Invoked += async (_, args) =>
+        {
+            args.Handled = true;
+            await NewConversationAsync();
+        };
+        KeyboardAccelerators.Add(newConversation);
 
         Root.Background = _desk;
         Sheet.Background = _paper;
@@ -98,12 +112,10 @@ public sealed partial class MainPage : Page
     async void OnLoaded(object sender, RoutedEventArgs e)
     {
         ApplyTheme(recolorInk: false);
-        var saved = await PageStore.LoadAsync(Strokes);
-        if (saved is { Count: > 0 })
-            foreach (var n in saved) AddNote(n.Y, n.Text, n.IsHint, done: true).Heard = n.Heard;
-        else if (Strokes.GetStrokes().Count == 0)
-            AddNote(Top, HintText, isHint: true, done: true);
-        ApplyTheme(recolorInk: true); // loaded strokes take the current theme's ink colour
+        _index = await ConversationStore.LoadAsync();
+        var start = _index.Find(_index.CurrentId) ?? _index.Newest().FirstOrDefault() ?? _index.Create(DateTimeOffset.UtcNow);
+        await ShowConversationAsync(start.Id);
+        await ConversationStore.SaveAsync(_index);
         _loaded = true;
         LayoutSheet();
         if (ApiKeyStore.Load() is null)
@@ -375,35 +387,261 @@ public sealed partial class MainPage : Page
         ScheduleSave();
     }
 
-    void Clear_Click(object sender, RoutedEventArgs e)
+    // ---------- conversations ----------
+
+    readonly Flyout _conversationsFlyout = new() { Placement = Windows.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Top };
+    readonly StackPanel _conversationList = new() { Spacing = 2, Width = 340 };
+    string? _armedDelete, _renaming;
+
+    bool IsBlankNow() => Strokes.GetStrokes().Count == 0 && !_notes.Any(n => !n.IsHint);
+
+    /// <summary>Empties the canvas. What was on it must have been saved already.</summary>
+    void ResetCanvas()
     {
-        if (!_clearArmed)
-        {
-            _clearArmed = true;
-            ToolTipService.SetToolTip(ClearButton, "Click again to clear the whole page");
-            ShowToast("Click the bin again to clear the whole page.", 2.5);
-            _clearTimer.Start();
-            return;
-        }
-        DisarmClear();
-        _cts?.Cancel();
         CancelIdle();
         Strokes.Clear();
         foreach (var n in _notes.ToList()) RemoveNote(n);
         _pending.Clear();
         _undo.Clear();
-        AddNote(Top, HintText, isHint: true, done: true);
-        Scroller.ChangeView(null, 0, null);
-        UpdateSheetHeight();
-        UpdateAsk();
-        ScheduleSave();
     }
 
-    void DisarmClear()
+    /// <summary>Loads a conversation's page onto the canvas and makes it the open one.</summary>
+    async Task ShowConversationAsync(string id)
     {
-        _clearTimer.Stop();
-        _clearArmed = false;
-        ToolTipService.SetToolTip(ClearButton, "Clear page");
+        ResetCanvas();
+        _currentId = id;
+        _index.CurrentId = id;
+
+        var saved = await PageStore.LoadAsync(await ConversationStore.FolderAsync(id), Strokes);
+        if (saved is { Count: > 0 })
+            foreach (var n in saved) AddNote(n.Y, n.Text, n.IsHint, done: true).Heard = n.Heard;
+        else if (Strokes.GetStrokes().Count == 0)
+            AddNote(Top, HintText, isHint: true, done: true);
+        ApplyTheme(recolorInk: true); // loaded strokes take the current theme's ink colour
+
+        // Writing below the last reply hasn't been answered yet (this survives a restart or a switch away).
+        double answered = _notes.Where(n => !n.IsHint).Select(n => n.Y + n.Lines * LineHeight).DefaultIfEmpty(0).Max();
+        foreach (var s in Strokes.GetStrokes())
+            if (s.BoundingRect.Y + s.BoundingRect.Height > answered) _pending.Add(s.Id);
+
+        _dirty = false;
+        LayoutSheet();
+        Scroller.ChangeView(null, 0, null);
+        UpdateAsk();
+    }
+
+    /// <summary>Runs a change of conversation: stops any answer being written, saves the open one, then makes the change.</summary>
+    async Task SwitchAsync(Func<Task> change)
+    {
+        if (_switching) return;
+        _switching = true;
+        try
+        {
+            if (_busy)
+            {
+                // The half-written reply is dropped and its ink goes back to "not yet answered".
+                _discardOnCancel = true;
+                _cts?.Cancel();
+                while (_busy) await Task.Delay(20);
+            }
+            CancelIdle();
+            _saveTimer.Stop();
+            await SaveAsync();
+            await change();
+        }
+        catch (Exception ex)
+        {
+            ShowToast("Couldn't switch conversation: " + ex.Message);
+        }
+        finally
+        {
+            _discardOnCancel = false;
+            _switching = false;
+        }
+    }
+
+    async Task NewConversationAsync()
+    {
+        // An empty page already is a fresh conversation.
+        if (IsBlankNow()) return;
+        await SwitchAsync(async () =>
+        {
+            await DropBlankAsync(keepId: null);
+            var created = _index.Create(DateTimeOffset.UtcNow);
+            await ShowConversationAsync(created.Id);
+            await SaveIndexAsync();
+        });
+    }
+
+    async Task OpenConversationAsync(string id)
+    {
+        if (id == _currentId) return;
+        await SwitchAsync(async () =>
+        {
+            await DropBlankAsync(keepId: id);
+            await ShowConversationAsync(id);
+            await SaveIndexAsync();
+        });
+    }
+
+    async Task DeleteConversationAsync(string id)
+    {
+        if (id != _currentId)
+        {
+            _index.Delete(id);
+            await ConversationStore.DeleteAsync(id);
+            await SaveIndexAsync();
+            return;
+        }
+        await SwitchAsync(async () =>
+        {
+            var next = _index.Delete(id);
+            await ConversationStore.DeleteAsync(id);
+            _dirty = false; // what was just deleted must not be saved again
+            _currentId = "";
+            await ShowConversationAsync(next ?? _index.Create(DateTimeOffset.UtcNow).Id);
+            await SaveIndexAsync();
+        });
+    }
+
+    /// <summary>Conversations nothing was written in don't stay in the list once you move away from them.</summary>
+    async Task DropBlankAsync(string? keepId)
+    {
+        foreach (var id in _index.RemoveBlank(keepId)) await ConversationStore.DeleteAsync(id);
+    }
+
+    async Task SaveIndexAsync()
+    {
+        await _saveLock.WaitAsync();
+        try { await ConversationStore.SaveAsync(_index); }
+        catch (Exception ex) { ShowToast("Couldn't save the conversation list: " + ex.Message); }
+        finally { _saveLock.Release(); }
+    }
+
+    void BuildConversationsFlyout()
+    {
+        _conversationsFlyout.Content = new ScrollViewer { Content = _conversationList, MaxHeight = 440 };
+        _conversationsFlyout.Opening += (_, _) =>
+        {
+            _armedDelete = _renaming = null;
+            RenderConversations();
+        };
+        ConversationsButton.Flyout = _conversationsFlyout;
+    }
+
+    void RenderConversations()
+    {
+        _conversationList.Children.Clear();
+
+        var add = new Button { HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Left };
+        var addLabel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        addLabel.Children.Add(new FontIcon { Glyph = "\uE710", FontSize = 14 });
+        addLabel.Children.Add(new TextBlock { Text = "New conversation" });
+        add.Content = addLabel;
+        add.Click += async (_, _) =>
+        {
+            _conversationsFlyout.Hide();
+            await NewConversationAsync();
+        };
+        _conversationList.Children.Add(add);
+
+        foreach (var c in _index.Newest()) _conversationList.Children.Add(ConversationRow(c));
+    }
+
+    UIElement ConversationRow(Conversation c)
+    {
+        var row = new Grid { ColumnSpacing = 4 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        if (_renaming == c.Id)
+        {
+            var box = new TextBox { Text = c.CustomTitle.Length > 0 ? c.CustomTitle : c.AutoTitle, PlaceholderText = "Name", MaxLength = 80 };
+            async Task Commit()
+            {
+                _index.Rename(c.Id, box.Text);
+                _renaming = null;
+                await SaveIndexAsync();
+                RenderConversations();
+            }
+            box.KeyDown += async (_, e) =>
+            {
+                if (e.Key == Windows.System.VirtualKey.Enter) await Commit();
+                else if (e.Key == Windows.System.VirtualKey.Escape)
+                {
+                    _renaming = null;
+                    RenderConversations();
+                }
+            };
+            var ok = new Button { Content = new FontIcon { Glyph = "\uE73E", FontSize = 14 } };
+            ToolTipService.SetToolTip(ok, "Save the name (an empty name goes back to the automatic one)");
+            ok.Click += async (_, _) => await Commit();
+            Grid.SetColumnSpan(box, 2);
+            Grid.SetColumn(ok, 2);
+            row.Children.Add(box);
+            row.Children.Add(ok);
+            box.Loaded += (_, _) => { box.Focus(FocusState.Programmatic); box.SelectAll(); };
+            return row;
+        }
+
+        var label = new StackPanel { HorizontalAlignment = HorizontalAlignment.Left };
+        label.Children.Add(new TextBlock
+        {
+            Text = c.Title,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            FontWeight = c.Id == _currentId ? Windows.UI.Text.FontWeights.Bold : Windows.UI.Text.FontWeights.SemiBold,
+        });
+        label.Children.Add(new TextBlock
+        {
+            Text = (c.Id == _currentId ? "Open now · " : "") + ConversationIndex.When(c.Updated, DateTimeOffset.UtcNow),
+            FontSize = 12,
+            Opacity = 0.75,
+        });
+        var open = new Button
+        {
+            Content = label,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+            Background = new SolidColorBrush(Colors.Transparent),
+        };
+        open.Click += async (_, _) =>
+        {
+            _conversationsFlyout.Hide();
+            await OpenConversationAsync(c.Id);
+        };
+
+        var rename = new Button { Content = new FontIcon { Glyph = "\uE70F", FontSize = 14 } };
+        ToolTipService.SetToolTip(rename, "Rename");
+        rename.Click += (_, _) =>
+        {
+            _renaming = c.Id;
+            _armedDelete = null;
+            RenderConversations();
+        };
+
+        bool armed = _armedDelete == c.Id;
+        var delete = new Button { Content = armed ? new TextBlock { Text = "Delete?" } : new FontIcon { Glyph = "\uE74D", FontSize = 14 } };
+        ToolTipService.SetToolTip(delete, armed ? "Tap again to delete this conversation for good" : "Delete");
+        delete.Click += async (_, _) =>
+        {
+            if (!armed)
+            {
+                _armedDelete = c.Id;
+                RenderConversations();
+                return;
+            }
+            _armedDelete = null;
+            await DeleteConversationAsync(c.Id);
+            RenderConversations();
+        };
+
+        Grid.SetColumn(rename, 1);
+        Grid.SetColumn(delete, 2);
+        row.Children.Add(open);
+        row.Children.Add(rename);
+        row.Children.Add(delete);
+        return row;
     }
 
     async void Settings_Click(object sender, RoutedEventArgs e) => await PromptForKeyAsync();
@@ -458,7 +696,9 @@ public sealed partial class MainPage : Page
         CancelIdle();
         if (_busy || _pending.Count == 0) return;
 
+        var conversation = _currentId;
         var key = ApiKeyStore.Load() ?? await PromptForKeyAsync();
+        if (_switching || conversation != _currentId) return; // moved to another conversation meanwhile
         if (key is null)
         {
             ShowToast("Add your Anthropic API key (gear button) to get answers.");
@@ -497,6 +737,7 @@ public sealed partial class MainPage : Page
             ShowToast("Couldn't capture the handwriting: " + ex.Message);
             return;
         }
+        if (_switching || conversation != _currentId) return;
         _pending.Clear();
 
         // The answer goes at the end of the page, so it never lands in the middle of what is already there. Anything the user
@@ -557,7 +798,7 @@ public sealed partial class MainPage : Page
         }
         catch (OperationCanceledException)
         {
-            if (note.Text.Length > 0) FinishPartial(note, Grow);
+            if (note.Text.Length > 0 && !_discardOnCancel) FinishPartial(note, Grow);
             else Discard(note, occupied, ids);
         }
         catch (AnthropicUnauthorizedException)
@@ -841,20 +1082,38 @@ public sealed partial class MainPage : Page
     void ScheduleSave()
     {
         if (!_loaded) return;
+        _dirty = true;
+        if (_switching) return; // the switch saves when it has stopped the answer
         _saveTimer.Stop();
         _saveTimer.Start();
     }
 
     async Task SaveAsync()
     {
+        await _saveLock.WaitAsync();
         try
         {
+            if (!_dirty || _currentId.Length == 0) return;
+            _dirty = false;
+            var id = _currentId;
             var notes = _notes.Where(n => n.Done).Select(n => new SavedNote(n.Y, n.Text, n.Heard, n.IsHint)).ToList();
-            await PageStore.SaveAsync(Strokes, notes);
+            await PageStore.SaveAsync(await ConversationStore.FolderAsync(id), Strokes, notes);
+
+            _index.Touch(id, DateTimeOffset.UtcNow, blank: IsBlankNow());
+            // The title comes from the first thing Claude heard on the page.
+            var first = _notes.Where(n => !n.IsHint && n.Heard.Length > 0).OrderBy(n => n.Y).FirstOrDefault();
+            if (first is not null) _index.SetAutoTitle(id, first.Heard);
+            await ConversationStore.SaveAsync(_index);
         }
         catch (Exception ex)
         {
+            _dirty = true;
             ShowToast("Couldn't save the page: " + ex.Message);
         }
+        finally
+        {
+            _saveLock.Release();
+        }
     }
+
 }
