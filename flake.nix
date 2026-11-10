@@ -59,7 +59,7 @@
           dev = app "longhand-dev" "Run the web version for development: restarts on C# changes, reloads the browser on page changes" ''
             root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
             cd "$root"
-            exec dotnet watch --project Longhand.Web --no-hot-reload run -- --www Longhand.Web/wwwroot "$@"
+            exec dotnet watch --project Longhand.Web --no-hot-reload run -- --www "$root/Longhand.Web/wwwroot" "$@"
           '';
           check = app "longhand-check" "Run every check that works off Windows" ''
             root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)

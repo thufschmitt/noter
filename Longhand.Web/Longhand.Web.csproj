@@ -12,5 +12,8 @@
     <ProjectReference Include="..\Longhand.Core\Longhand.Core.csproj" />
     <!-- The page itself travels inside the program, so it runs from anywhere. -->
     <EmbeddedResource Include="wwwroot\**" LogicalName="wwwroot/%(RecursiveDir)%(Filename)%(Extension)" />
+    <!-- Under `dotnet watch` page edits are served from disk and reload the browser (see DevReload), so they must not restart the server. -->
+    <Content Update="wwwroot\**" Watch="false" />
+    <EmbeddedResource Update="wwwroot\**" Watch="false" />
   </ItemGroup>
 </Project>
