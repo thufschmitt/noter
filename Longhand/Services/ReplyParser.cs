@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Text.RegularExpressions;
 
 namespace Longhand.Services;
@@ -14,7 +15,10 @@ public static class ReplyParser
     static readonly Regex Full = new(@"^\s*HEARD:\s*([^\n]*)\n([\s\S]*?)(?:^|\n)\s*-{3,}\s*\n?([\s\S]*)$", RegexOptions.Multiline);
     static readonly Regex HeardOnly = new(@"^\s*HEARD:\s*([^\n]*)\n?([\s\S]*)$");
 
-    public readonly record struct Parsed(bool Ready, string Heard, string Body);
+    /// <param name="Body">The words of the reply.</param>
+    /// <param name="Drawings">Complete SVG drawings in the reply, in order.</param>
+    /// <param name="Drawing">True while a drawing is being written but isn't complete yet.</param>
+    public readonly record struct Parsed(bool Ready, string Heard, string Body, IReadOnlyList<string>? Drawings = null, bool Drawing = false);
 
     /// <param name="finished">True once the stream has ended: then a reply that skipped the format is shown as-is.</param>
     public static Parsed Parse(string full, bool finished)
@@ -23,13 +27,20 @@ public static class ReplyParser
         if (m.Success)
         {
             var heard = (m.Groups[1].Value + (m.Groups[2].Value.Length > 0 ? " " + m.Groups[2].Value : "")).Trim();
-            return new Parsed(true, heard, Clean(m.Groups[3].Value.TrimStart()));
+            return Reply(heard, m.Groups[3].Value.TrimStart(), finished);
         }
         if (!finished) return new Parsed(false, "", "");
         var h = HeardOnly.Match(full);
         if (h.Success)
-            return new Parsed(true, h.Groups[1].Value.Trim(), Clean(Regex.Replace(h.Groups[2].Value, @"^\s*-{3,}\s*", "").Trim()));
-        return new Parsed(true, "", Clean(full.Trim()));
+            return Reply(h.Groups[1].Value.Trim(), Regex.Replace(h.Groups[2].Value, @"^\s*-{3,}\s*", "").Trim(), finished);
+        return Reply("", full.Trim(), finished);
+    }
+
+    /// <summary>Splits the reply into its words and its drawings. Only the words are cleaned: markdown rules would mangle an SVG.</summary>
+    static Parsed Reply(string heard, string body, bool finished)
+    {
+        var split = Svg.Extract(body, finished);
+        return new Parsed(true, heard, Clean(split.Text), split.Drawings, split.Open);
     }
 
     /// <summary>Strips markdown the handwriting font can't show.</summary>

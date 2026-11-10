@@ -138,5 +138,7 @@ if (Environment.GetEnvironmentVariable("LONGHAND_FAKE_API") is { Length: > 0 } f
     Check("progress reported while streaming", updates >= 1);
 }
 
+await AgentChecks.RunAsync(Check);
+
 Console.WriteLine(failures == 0 ? "All checks passed." : $"{failures} check(s) failed.");
 return failures == 0 ? 0 : 1;

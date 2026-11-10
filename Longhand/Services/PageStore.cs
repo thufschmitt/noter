@@ -8,7 +8,7 @@ using Windows.UI.Input.Inking;
 namespace Longhand.Services;
 
 /// <summary>A note Claude wrote on the page, as saved to disk.</summary>
-public sealed record SavedNote(double Y, string Text, string Heard, bool IsHint);
+public sealed record SavedNote(double Y, string Text, string Heard, bool IsHint, List<string>? Drawings = null);
 
 /// <summary>Saves one conversation's page (ink as ISF, Claude's notes as JSON) to its folder.</summary>
 public static class PageStore

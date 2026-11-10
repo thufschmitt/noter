@@ -14,6 +14,12 @@
     <Compile Include="..\..\Longhand\Services\Connector.cs" />
     <Compile Include="..\..\Longhand\Services\AnnotationContext.cs" />
     <Compile Include="..\..\Longhand\Services\AlphaMask.cs" />
+    <Compile Include="..\..\Longhand\Services\ICalendar.cs" />
+    <Compile Include="..\..\Longhand\Services\Nextcloud.cs" />
+    <Compile Include="..\..\Longhand\Services\CalendarText.cs" />
+    <Compile Include="..\..\Longhand\Services\AgentTool.cs" />
+    <Compile Include="..\..\Longhand\Services\CalendarTool.cs" />
+    <Compile Include="..\..\Longhand\Services\Svg.cs" />
     <Compile Include="..\..\Longhand\Services\ConversationIndex.cs" />
     <Compile Include="..\..\Longhand\Services\McpOAuth.cs" />
     <PackageReference Include="Anthropic" Version="13.7.0" />

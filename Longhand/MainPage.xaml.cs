@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Anthropic.Exceptions;
 using Longhand.Services;
 using Windows.Foundation;
+using Windows.Storage.Streams;
 using Windows.UI;
 using Windows.UI.Core;
 using Windows.UI.Input.Inking;
@@ -28,6 +29,17 @@ public sealed partial class MainPage : Page
 
     const string HintText = "Write anything with your pen: a question, a sum, a sketch. Pause for a moment or tap Ask, and I'll reply right here on the page.";
 
+    /// <summary>One of Claude's SVG drawings, shown under the words of its note.</summary>
+    sealed class Drawing
+    {
+        public required string Markup;
+        public required Image Image;
+        public required double Aspect;
+        public string Alt = "";
+        /// <summary>The rule lines it takes up.</summary>
+        public int Lines;
+    }
+
     sealed class Note
     {
         public required TextBlock Block;
@@ -38,8 +50,11 @@ public sealed partial class MainPage : Page
         public string Heard = "";
         public string Text = "";
         public int Lines = 1;
-        /// <summary>Its lines plus one blank rule below as breathing room.</summary>
-        public double Span => (Lines + 1) * LineHeight;
+        public readonly List<Drawing> Drawings = new();
+        public int DrawingsSeen; // how many of the reply's drawings have been taken in (shown or refused)
+        public int DrawLines => Drawings.Sum(d => d.Lines);
+        /// <summary>Its text lines and drawings plus one blank rule below as breathing room.</summary>
+        public double Span => (Lines + DrawLines + 1) * LineHeight;
         public double Bottom => Y + Span;
     }
 
@@ -105,7 +120,11 @@ public sealed partial class MainPage : Page
         ToastText.Foreground = _uiText;
         TraySeparator.Fill = _trayLine;
 
-        ActualThemeChanged += (_, _) => ApplyTheme(recolorInk: true);
+        ActualThemeChanged += (_, _) =>
+        {
+            ApplyTheme(recolorInk: true);
+            RefreshDrawings();
+        };
         Loaded += OnLoaded;
     }
 
@@ -261,20 +280,37 @@ public sealed partial class MainPage : Page
     void Remeasure(Note n)
     {
         n.Block.Measure(new Size(TextWidth, double.PositiveInfinity));
-        n.Lines = Math.Max(1, (int)Math.Round(n.Block.DesiredSize.Height / LineHeight));
+        // A reply that is only a drawing has no line of words above it.
+        int least = n.Drawings.Count > 0 && n.Block.Text.Length == 0 ? 0 : 1;
+        n.Lines = Math.Max(least, (int)Math.Round(n.Block.DesiredSize.Height / LineHeight));
+        foreach (var d in n.Drawings)
+        {
+            var (w, h) = Svg.Fit(d.Aspect, Math.Min(TextWidth, 560), 480);
+            d.Image.Width = w;
+            d.Image.Height = h;
+            d.Lines = (int)Math.Ceiling(h / LineHeight);
+        }
     }
 
     void Position(Note n)
     {
         Canvas.SetTop(n.Block, n.Y + TextNudge);
         Canvas.SetTop(n.Tick, n.Y + LineHeight * 0.35);
-        n.Tick.Height = Math.Max(4, n.Lines * LineHeight - LineHeight * 0.35 + 4);
+        n.Tick.Height = Math.Max(4, (n.Lines + n.DrawLines) * LineHeight - LineHeight * 0.35 + 4);
+        double top = n.Y + n.Lines * LineHeight;
+        foreach (var d in n.Drawings)
+        {
+            Canvas.SetLeft(d.Image, MarginX);
+            Canvas.SetTop(d.Image, top);
+            top += d.Lines * LineHeight;
+        }
     }
 
     void RemoveNote(Note n)
     {
         NoteLayer.Children.Remove(n.Block);
         NoteLayer.Children.Remove(n.Tick);
+        foreach (var d in n.Drawings) NoteLayer.Children.Remove(d.Image);
         _notes.Remove(n);
     }
 
@@ -304,9 +340,9 @@ public sealed partial class MainPage : Page
     }
 
     IReadOnlyList<Turn> History() => _notes
-        .Where(n => !n.IsHint && n.Done && n.Text.Length > 0)
+        .Where(n => !n.IsHint && n.Done && (n.Text.Length > 0 || n.Drawings.Count > 0))
         .OrderBy(n => n.Y)
-        .Select(n => new Turn(n.Heard.Length > 0 ? n.Heard : "(unclear handwriting)", n.Text))
+        .Select(n => new Turn(n.Heard.Length > 0 ? n.Heard : "(unclear handwriting)", (n.Text + string.Concat(n.Drawings.Select(d => " [I drew: " + d.Alt + "]"))).Trim()))
         .ToList();
 
     void EnsureVisible(double bottom)
@@ -387,6 +423,79 @@ public sealed partial class MainPage : Page
         ScheduleSave();
     }
 
+    // ---------- drawings ----------
+
+    /// <summary>Adds one of Claude's SVG drawings under the note's words. False when the drawing isn't safe or sensible to show.</summary>
+    bool AddDrawing(Note note, string raw)
+    {
+        if (note.Drawings.Count >= Svg.MaxDrawings || Svg.Sanitize(raw) is not { } svg) return false;
+        var title = Svg.Title(svg);
+        var image = new Image { Stretch = Stretch.Uniform };
+        Windows.UI.Xaml.Automation.AutomationProperties.SetName(image, title);
+        var drawing = new Drawing { Markup = svg, Image = image, Alt = title, Aspect = Svg.Aspect(svg) };
+        note.Drawings.Add(drawing);
+        NoteLayer.Children.Add(image);
+        _ = LoadDrawingAsync(drawing);
+        return true;
+    }
+
+    /// <summary>Takes in the drawings of a reply that haven't been added yet.</summary>
+    void AddNewDrawings(Note note, IReadOnlyList<string>? drawings)
+    {
+        if (drawings is null) return;
+        for (; note.DrawingsSeen < drawings.Count; note.DrawingsSeen++)
+            if (!AddDrawing(note, drawings[note.DrawingsSeen])) ShowToast("A drawing from Claude couldn't be shown.");
+        Remeasure(note);
+        Position(note);
+    }
+
+    void ClearDrawings(Note note)
+    {
+        foreach (var d in note.Drawings) NoteLayer.Children.Remove(d.Image);
+        note.Drawings.Clear();
+        note.DrawingsSeen = 0;
+    }
+
+    static string Hex6(Color c) => $"#{c.R:X2}{c.G:X2}{c.B:X2}";
+
+    /// <summary>Renders the drawing in the current ink colour: drawings say "currentColor" for it, so they follow the theme.</summary>
+    async Task LoadDrawingAsync(Drawing d)
+    {
+        try
+        {
+            var source = new SvgImageSource { RasterizePixelWidth = 1200, RasterizePixelHeight = 1200 / d.Aspect };
+            using var stream = new InMemoryRandomAccessStream();
+            using (var writer = new DataWriter(stream))
+            {
+                writer.WriteString(d.Markup.Replace("currentColor", Hex6(_claudeInk.Color)));
+                await writer.StoreAsync();
+                writer.DetachStream();
+            }
+            stream.Seek(0);
+            var status = await source.SetSourceAsync(stream);
+            if (status == SvgImageSourceLoadStatus.Success) d.Image.Source = source;
+            else ShowToast("A drawing couldn't be shown.");
+        }
+        catch (Exception)
+        {
+            ShowToast("A drawing couldn't be shown.");
+        }
+    }
+
+    void RefreshDrawings()
+    {
+        foreach (var n in _notes)
+            foreach (var d in n.Drawings) _ = LoadDrawingAsync(d);
+    }
+
+    // ---------- tools the app runs for Claude ----------
+
+    readonly Nextcloud _nextcloud = new();
+
+    /// <summary>The calendar is offered to Claude only while a Nextcloud account is connected.</summary>
+    IReadOnlyList<IAgentTool> BuildAgentTools() =>
+        NextcloudStore.Load() is { } account ? new IAgentTool[] { new CalendarTool(_nextcloud, account) } : Array.Empty<IAgentTool>();
+
     // ---------- conversations ----------
 
     readonly Flyout _conversationsFlyout = new() { Placement = Windows.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Top };
@@ -414,13 +523,21 @@ public sealed partial class MainPage : Page
 
         var saved = await PageStore.LoadAsync(await ConversationStore.FolderAsync(id), Strokes);
         if (saved is { Count: > 0 })
-            foreach (var n in saved) AddNote(n.Y, n.Text, n.IsHint, done: true).Heard = n.Heard;
+            foreach (var n in saved)
+            {
+                var note = AddNote(n.Y, n.Text, n.IsHint, done: true);
+                note.Heard = n.Heard;
+                foreach (var svg in n.Drawings ?? new List<string>()) AddDrawing(note, svg);
+                note.DrawingsSeen = note.Drawings.Count;
+                Remeasure(note);
+                Position(note);
+            }
         else if (Strokes.GetStrokes().Count == 0)
             AddNote(Top, HintText, isHint: true, done: true);
         ApplyTheme(recolorInk: true); // loaded strokes take the current theme's ink colour
 
         // Writing below the last reply hasn't been answered yet (this survives a restart or a switch away).
-        double answered = _notes.Where(n => !n.IsHint).Select(n => n.Y + n.Lines * LineHeight).DefaultIfEmpty(0).Max();
+        double answered = _notes.Where(n => !n.IsHint).Select(n => n.Y + (n.Lines + n.DrawLines) * LineHeight).DefaultIfEmpty(0).Max();
         foreach (var s in Strokes.GetStrokes())
             if (s.BoundingRect.Y + s.BoundingRect.Height > answered) _pending.Add(s.Id);
 
@@ -768,28 +885,33 @@ public sealed partial class MainPage : Page
         {
             // Connected apps whose sign-in can't be renewed are skipped; say so, since Claude won't have them.
             var (connectors, expired) = await ConnectorStore.ActiveAsync(_oauth, _cts.Token);
+            var agentTools = BuildAgentTools();
             if (expired.Count > 0) ShowToast("Sign in again to " + string.Join(", ", expired) + " (apps button).", 6);
 
-            var result = await new ClaudeService(key, connectors, ModelStore.Load()).AskAsync(png, History(), progress =>
+            var result = await new ClaudeService(key, connectors, ModelStore.Load(), agentTools: agentTools).AskAsync(png, History(), progress =>
             {
                 note.Heard = progress.Heard;
                 note.Text = progress.Body;
-                note.Block.Text = progress.Body.Length > 0 ? progress.Body : "…";
+                bool hasDrawing = progress.Drawing || progress.Drawings is { Count: > 0 };
+                note.Block.Text = progress.Body.Length > 0 ? progress.Body : progress.Drawing ? "drawing…" : hasDrawing ? "" : "…";
+                AddNewDrawings(note, progress.Drawings);
                 Grow();
             }, _cts.Token, status =>
             {
                 // A tool is running: show what it is doing in place of the reply, which is written after it finishes.
                 note.Text = "";
+                ClearDrawings(note);
                 note.Block.Text = status;
                 Grow();
             }, hasContext: context is not null);
 
             note.Heard = result.Heard;
+            AddNewDrawings(note, result.Drawings);
             note.Text = result.Outcome switch
             {
-                ReplyOutcome.Refused when result.Body.Length == 0 => "I can't help with that one.",
+                ReplyOutcome.Refused when result.Body.Length == 0 && note.Drawings.Count == 0 => "I can't help with that one.",
                 ReplyOutcome.Truncated => result.Body + " …",
-                _ => result.Body.Length > 0 ? result.Body : "I couldn't come up with a reply. Try writing it again?",
+                _ => result.Body.Length > 0 || note.Drawings.Count > 0 ? result.Body : "I couldn't come up with a reply. Try writing it again?",
             };
             note.Done = true;
             note.Block.Text = note.Text;
@@ -798,7 +920,7 @@ public sealed partial class MainPage : Page
         }
         catch (OperationCanceledException)
         {
-            if (note.Text.Length > 0 && !_discardOnCancel) FinishPartial(note, Grow);
+            if ((note.Text.Length > 0 || note.Drawings.Count > 0) && !_discardOnCancel) FinishPartial(note, Grow);
             else Discard(note, occupied, ids);
         }
         catch (AnthropicUnauthorizedException)
@@ -842,35 +964,40 @@ public sealed partial class MainPage : Page
     /// </summary>
     PageContext? ContextAround(List<InkStroke> strokes, HashSet<uint> ids)
     {
-        var replies = _notes.Where(n => !n.IsHint && n.Done && n.Text.Length > 0).OrderBy(n => n.Y).ToList();
+        var replies = _notes.Where(n => !n.IsHint && n.Done && (n.Text.Length > 0 || n.Drawings.Count > 0)).OrderBy(n => n.Y).ToList();
         var band = AnnotationContext.Find(
             strokes.Min(s => s.BoundingRect.Y),
             strokes.Max(s => s.BoundingRect.Y + s.BoundingRect.Height),
-            replies.Select(n => (n.Y, n.Y + n.Lines * LineHeight)).ToList(),
+            replies.Select(n => (n.Y, n.Y + (n.Lines + n.DrawLines) * LineHeight)).ToList(),
             Top);
         if (band is not { } found) return null;
 
         var earlier = Strokes.GetStrokes()
             .Where(s => !ids.Contains(s.Id) && s.BoundingRect.Y < found.To && s.BoundingRect.Y + s.BoundingRect.Height > found.From)
             .ToList();
-        var shown = found.Replies
-            .Select(i => replies[i])
-            .Select(n => new PageReply(new Rect(MarginX, n.Y + TextNudge, n.Block.ActualWidth, n.Block.ActualHeight), scale => RenderBlockAsync(n.Block, scale)))
-            .ToList();
+        // Each reply's words and each of its drawings are drawn into the picture on their own.
+        var shown = new List<PageReply>();
+        foreach (var n in found.Replies.Select(i => replies[i]))
+        {
+            if (n.Text.Length > 0)
+                shown.Add(new PageReply(new Rect(MarginX, n.Y + TextNudge, n.Block.ActualWidth, n.Block.ActualHeight), scale => RenderElementAsync(n.Block, scale)));
+            foreach (var d in n.Drawings)
+                shown.Add(new PageReply(new Rect(MarginX, Canvas.GetTop(d.Image), d.Image.ActualWidth, d.Image.ActualHeight), scale => RenderElementAsync(d.Image, scale)));
+        }
         return new PageContext(earlier, shown);
     }
 
-    static async Task<RenderedText> RenderBlockAsync(TextBlock block, double scale)
+    static async Task<RenderedText> RenderElementAsync(FrameworkElement element, double scale)
     {
         var bitmap = new RenderTargetBitmap();
-        await bitmap.RenderAsync(block, (int)Math.Ceiling(block.ActualWidth * scale), (int)Math.Ceiling(block.ActualHeight * scale));
+        await bitmap.RenderAsync(element, (int)Math.Ceiling(element.ActualWidth * scale), (int)Math.Ceiling(element.ActualHeight * scale));
         var pixels = await bitmap.GetPixelsAsync();
         return new RenderedText(pixels.ToArray(), bitmap.PixelWidth, bitmap.PixelHeight);
     }
 
     static void FinishPartial(Note note, Action grow)
     {
-        note.Text += " …";
+        if (note.Text.Length > 0) note.Text += " …";
         note.Block.Text = note.Text;
         note.Done = true;
         grow();
@@ -991,6 +1118,94 @@ public sealed partial class MainPage : Page
             Render();
         };
 
+        // ----- Nextcloud calendar: signs in through the browser, so there is nothing to paste -----
+        var nextcloud = new StackPanel { Spacing = 8, Width = 380 };
+        var serverBox = new TextBox { PlaceholderText = "cloud.example.com", Width = 380 };
+
+        void RenderNextcloud()
+        {
+            nextcloud.Children.Clear();
+            nextcloud.Children.Add(new TextBlock { Text = "Nextcloud calendar", FontWeight = Windows.UI.Text.FontWeights.SemiBold });
+            var account = NextcloudStore.Load();
+            if (account is null)
+            {
+                nextcloud.Children.Add(new TextBlock
+                {
+                    Text = "Lets Claude read your calendar (it can't change anything). You approve the connection in your browser; no password is typed here.",
+                    TextWrapping = TextWrapping.Wrap,
+                    FontSize = 12,
+                    Opacity = 0.75,
+                });
+                nextcloud.Children.Add(serverBox);
+                var connect = new Button { Content = "Connect" };
+                connect.Click += async (_, _) =>
+                {
+                    connect.IsEnabled = false;
+                    try
+                    {
+                        var server = Nextcloud.NormalizeServer(serverBox.Text) ?? throw new InvalidOperationException("Type the address of your Nextcloud, like cloud.example.com. It has to be https.");
+                        message.Text = "Contacting Nextcloud…";
+                        var start = await _nextcloud.BeginLoginAsync(server.ToString(), cts.Token);
+                        if (!await Windows.System.Launcher.LaunchUriAsync(start.LoginUrl)) throw new InvalidOperationException("Couldn't open the browser.");
+                        message.Text = "Approve the connection in your browser. This page continues when you have.";
+                        var connected = await _nextcloud.WaitForLoginAsync(start, TimeSpan.FromSeconds(2), TimeSpan.FromMinutes(10), cts.Token);
+                        NextcloudStore.Save(connected);
+                        var calendars = await _nextcloud.ListCalendarsAsync(connected, cts.Token);
+                        message.Text = calendars.Count == 0
+                            ? "Connected, but no calendars were found."
+                            : "Connected. Claude can read: " + string.Join(", ", calendars.Select(c => c.Name)) + ".";
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        message.Text = "";
+                    }
+                    catch (Exception ex)
+                    {
+                        message.Text = "Couldn't connect to Nextcloud: " + ex.Message;
+                    }
+                    RenderNextcloud();
+                };
+                nextcloud.Children.Add(connect);
+            }
+            else
+            {
+                nextcloud.Children.Add(new TextBlock { Text = $"Connected as {account.User} on {new Uri(account.Server).Host}", FontSize = 12, Opacity = 0.75 });
+                var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+                var check = new Button { Content = "Check" };
+                check.Click += async (_, _) =>
+                {
+                    check.IsEnabled = false;
+                    try
+                    {
+                        var calendars = await _nextcloud.ListCalendarsAsync(account, cts.Token);
+                        message.Text = calendars.Count == 0 ? "No calendars found." : "Claude can read: " + string.Join(", ", calendars.Select(c => c.Name)) + ".";
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        message.Text = "";
+                    }
+                    catch (Exception ex)
+                    {
+                        message.Text = ex.Message;
+                    }
+                    check.IsEnabled = true;
+                };
+                var disconnect = new Button { Content = "Disconnect" };
+                disconnect.Click += async (_, _) =>
+                {
+                    disconnect.IsEnabled = false;
+                    await _nextcloud.RevokeAsync(account, cts.Token);
+                    NextcloudStore.Clear();
+                    message.Text = "Disconnected from Nextcloud.";
+                    RenderNextcloud();
+                };
+                buttons.Children.Add(check);
+                buttons.Children.Add(disconnect);
+                nextcloud.Children.Add(buttons);
+            }
+        }
+        RenderNextcloud();
+
         var panel = new StackPanel { Spacing = 12 };
         panel.Children.Add(new TextBlock
         {
@@ -998,6 +1213,8 @@ public sealed partial class MainPage : Page
             TextWrapping = TextWrapping.Wrap,
             MaxWidth = 380,
         });
+        panel.Children.Add(nextcloud);
+        panel.Children.Add(new TextBlock { Text = "Other apps (MCP servers)", FontWeight = Windows.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 0) });
         panel.Children.Add(list);
         panel.Children.Add(message);
         panel.Children.Add(presets);
@@ -1096,7 +1313,7 @@ public sealed partial class MainPage : Page
             if (!_dirty || _currentId.Length == 0) return;
             _dirty = false;
             var id = _currentId;
-            var notes = _notes.Where(n => n.Done).Select(n => new SavedNote(n.Y, n.Text, n.Heard, n.IsHint)).ToList();
+            var notes = _notes.Where(n => n.Done).Select(n => new SavedNote(n.Y, n.Text, n.Heard, n.IsHint, n.Drawings.Count > 0 ? n.Drawings.Select(d => d.Markup).ToList() : null)).ToList();
             await PageStore.SaveAsync(await ConversationStore.FolderAsync(id), Strokes, notes);
 
             _index.Touch(id, DateTimeOffset.UtcNow, blank: IsBlankNow());
