@@ -126,8 +126,7 @@ jobs:
 
   pages:
     name: Update feed
-    # Serves the latest packages and .appinstaller files from GitHub Pages, under a path only the owner knows
-    # (the LONGHAND_PAGES_PATH repository variable). Nothing is served at the site root, so nothing is listed.
+    # Serves the latest packages and .appinstaller files from GitHub Pages, so installed copies update themselves.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [checks, version, app]
     runs-on: ubuntu-latest
@@ -150,21 +149,15 @@ jobs:
         uses: actions/configure-pages@v5
       - name: Assemble the site
         env:
-          SITE_PATH: ${{ vars.LONGHAND_PAGES_PATH }}
           BASE_URL: ${{ steps.pages.outputs.base_url }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
-          if [ -z "$SITE_PATH" ]; then
-            echo "::error::Set the LONGHAND_PAGES_PATH repository variable to a random string, e.g. the output of: openssl rand -hex 16"
-            exit 1
-          fi
-          tools/make-update-site.sh dist "site/$SITE_PATH" "$BASE_URL/$SITE_PATH" "$VERSION"
-          printf 'User-agent: *\nDisallow: /\n' > site/robots.txt
+          tools/make-update-site.sh dist site "$BASE_URL" "$VERSION"
           {
             echo "### Longhand $VERSION"
-            echo "- x64: $BASE_URL/$SITE_PATH/Longhand-x64.appinstaller"
-            echo "- ARM64: $BASE_URL/$SITE_PATH/Longhand-arm64.appinstaller"
-            echo "- Certificate: $BASE_URL/$SITE_PATH/Longhand.cer"
+            echo "- x64: $BASE_URL/Longhand-x64.appinstaller"
+            echo "- ARM64: $BASE_URL/Longhand-arm64.appinstaller"
+            echo "- Certificate: $BASE_URL/Longhand.cer"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-pages-artifact@v4
         with:
