@@ -7,7 +7,7 @@ It uses Windows Ink (`InkCanvas`), so pen strokes are drawn by the system on its
 ## Requirements
 
 - Windows 10 version 1809 or later, or Windows 11
-- Visual Studio 2022 17.13 or later, with the **Universal Windows Platform tools** workload. This is UWP on modern .NET 9.
+- Visual Studio 2022 17.14 or later, or Visual Studio 2026, with the **Universal Windows Platform tools** workload. This is UWP on modern .NET 10.
 - An Anthropic API key
 
 ## Build and run
@@ -16,7 +16,7 @@ It uses Windows Ink (`InkCanvas`), so pen strokes are drawn by the system on its
 2. Pick your platform (x64 or ARM64) and press F5. Visual Studio restores the Anthropic NuGet package, deploys the app and starts it.
 3. Click the gear button and paste your Anthropic API key. It's stored in Windows Credential Manager, not in any file.
 
-If Visual Studio won't load the project file, create a new project from the **UWP Blank App** template (the .NET 9 one), name it `Longhand`, then:
+If Visual Studio won't load the project file, create a new project from the **UWP Blank App** template (the .NET one), name it `Longhand`, then:
 - Add the `Anthropic` NuGet package.
 - Copy `MainPage.xaml`, `MainPage.xaml.cs` and the `Services` folder into the new project.
 - Add `<PublishAot>false</PublishAot>` to the new project's csproj.
