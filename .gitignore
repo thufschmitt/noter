@@ -5,3 +5,4 @@ obj/
 AppPackages/
 BundleArtifacts/
 tools/BrowserCheck/out/
+.direnv/
