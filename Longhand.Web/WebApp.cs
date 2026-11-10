@@ -35,6 +35,7 @@ public static class WebApp
         var store = new WebStore(options);
         var loopbackOnly = options.Urls.Split(';', StringSplitOptions.RemoveEmptyEntries).All(IsLoopbackUrl);
         var app = builder.Build();
+        var apps = new WebApps(store, app.Lifetime.ApplicationStopping);
         DevReload? dev = null;
         if (options.WwwRoot is { Length: > 0 })
         {
@@ -73,10 +74,11 @@ public static class WebApp
             // Ctrl+C waits out the whole shutdown grace period.
             var stopping = ctx.RequestServices.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping;
             using var end = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted, stopping);
-            await new WebConnection(socket, store, dev).RunAsync(end.Token);
+            await new WebConnection(socket, store, apps, dev).RunAsync(end.Token);
         });
 
         MapSettings(app, store);
+        apps.Map(app);
         MapPage(app, options.WwwRoot);
         return app;
     }

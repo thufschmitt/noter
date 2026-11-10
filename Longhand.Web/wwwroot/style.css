@@ -84,3 +84,16 @@ dialog textarea { resize: vertical; margin-top: 6px; }
 #typebar { position: fixed; z-index: 11; left: 50%; bottom: 76px; transform: translateX(-50%); width: min(94vw, 560px); display: flex; gap: 8px; align-items: flex-end; padding: 8px; border-radius: 12px; background: var(--tray); border: 1px solid var(--trayline); box-shadow: 0 4px 18px rgba(0, 0, 0, .18); backdrop-filter: blur(8px); }
 #typebar textarea { flex: 1; min-width: 0; padding: 7px 9px; font: 15px/1.35 system-ui, sans-serif; color: var(--text); background: var(--paper); border: 1px solid var(--muted); border-radius: 6px; resize: none; max-height: 40vh; }
 body.typing #toast { bottom: 150px; }
+
+#appList, #nextcloud, #registryResults { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+#apps .app, #apps .hit { display: flex; align-items: flex-start; gap: 8px; }
+#apps .app .text, #apps .hit .text { flex: 1; min-width: 0; }
+#apps .text b { display: block; overflow: hidden; text-overflow: ellipsis; }
+#apps .text small { display: block; font-size: 12px; opacity: .75; }
+#apps .text span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 12px; }
+#apps .hit { flex-direction: column; align-items: stretch; }
+#apps .hit .top { display: flex; gap: 8px; align-items: flex-start; }
+#apps .stack { display: flex; flex-direction: column; gap: 6px; }
+#apps .buttons input { flex: 1; min-width: 0; }
+#apps input, #apps select { margin-top: 6px; }
+#apps a { color: var(--accent); }

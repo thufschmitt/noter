@@ -35,3 +35,23 @@ http.createServer((req, res) => {
     console.log('request', calls, 'bytes', body.length, 'has image', body.includes('"image"'));
   });
 }).listen(18080, '127.0.0.1', () => console.log('fake api on 18080'));
+
+// A second stand-in on 18081: the MCP registry (one server) and an MCP server that asks for no sign-in.
+http.createServer((req, res) => {
+  let body = '';
+  req.on('data', c => body += c);
+  req.on('end', () => {
+    if (req.url.startsWith('/v0/servers')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ servers: [
+        { server: { name: 'io.github.acme/todo-list', title: 'Todo List', description: 'Keeps your tasks', remotes: [{ type: 'streamable-http', url: 'https://mcp.acme.example/mcp' }] }, _meta: { 'io.modelcontextprotocol.registry/official': { status: 'active' } } },
+        { server: { name: 'com.example/local-only', description: 'Runs on your PC', packages: [{ registryType: 'npm', identifier: 'x', transport: { type: 'stdio' } }] } },
+      ], metadata: { count: 2 } }));
+    } else if (req.url === '/open') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    } else {
+      res.writeHead(404).end();
+    }
+  });
+}).listen(18081, '127.0.0.1');

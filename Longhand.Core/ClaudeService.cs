@@ -52,13 +52,16 @@ public sealed class ClaudeService
     readonly IReadOnlyList<Connector> _connectors;
     readonly string _model;
     readonly IReadOnlyList<IAgentTool> _agentTools;
+    readonly TimeZoneInfo _zone;
 
     /// <param name="connectors">Remote MCP servers Claude may call, on top of web search and fetch.</param>
     /// <param name="agentTools">Tools the app runs for Claude, such as reading the calendar.</param>
+    /// <param name="zone">The user's time zone, for "now" in the prompt; this machine's when null. A server passes the browser's.</param>
     /// <param name="model">One of <see cref="ModelChoice.All"/>; null means the default.</param>
     /// <param name="baseUrl">Only for tests against a local fake of the API; the app leaves it null.</param>
-    public ClaudeService(string apiKey, IReadOnlyList<Connector>? connectors = null, string? model = null, string? baseUrl = null, IReadOnlyList<IAgentTool>? agentTools = null)
+    public ClaudeService(string apiKey, IReadOnlyList<Connector>? connectors = null, string? model = null, string? baseUrl = null, IReadOnlyList<IAgentTool>? agentTools = null, TimeZoneInfo? zone = null)
     {
+        _zone = zone ?? TimeZoneInfo.Local;
         _agentTools = agentTools ?? Array.Empty<IAgentTool>();
         _model = ModelChoice.Resolve(model);
         _connectors = connectors ?? Array.Empty<Connector>();
@@ -199,9 +202,9 @@ public sealed class ClaudeService
     }
 
     /// <summary>What Claude can't know otherwise: when it is.</summary>
-    static string Context()
+    string Context()
     {
-        var now = DateTimeOffset.Now;
-        return $"\n\nIt is now {now.ToString("dddd d MMMM yyyy, HH:mm", System.Globalization.CultureInfo.InvariantCulture)} (UTC{now:zzz}, time zone {TimeZoneInfo.Local.Id}).";
+        var now = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, _zone);
+        return $"\n\nIt is now {now.ToString("dddd d MMMM yyyy, HH:mm", System.Globalization.CultureInfo.InvariantCulture)} (UTC{now:zzz}, time zone {_zone.Id}).";
     }
 }

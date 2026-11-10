@@ -39,9 +39,32 @@
   <button id="keyboard" class="tool" title="Type a note" aria-label="Type a note"><svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></svg></button>
   <button id="conversations" class="tool" title="Conversations" aria-label="Conversations"><svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></button>
   <button id="settingsButton" class="tool" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg></button>
+  <button id="appsButton" class="tool" title="Connected apps" aria-label="Connected apps"><svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></button>
   <span class="sep"></span>
   <button id="ask" class="accent" disabled><i id="countdown"></i><svg id="askIcon" viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg><span id="spinner" hidden></span><span id="askLabel">Ask</span></button>
 </div>
+
+<dialog id="apps">
+  <h2>Connected apps</h2>
+  <p class="note-text">Claude can always search the web. Connected apps let it use your own services too. Sign in once in your browser; the sign-in is kept by the server this page came from.</p>
+  <h3>Nextcloud calendar</h3>
+  <div id="nextcloud"></div>
+  <h3>Other apps (MCP servers)</h3>
+  <div id="appList"></div>
+  <p id="appsMessage" class="note-text"></p>
+  <h3>Find more in the MCP registry</h3>
+  <p class="note-text">Anyone can publish a server there. Only add ones you trust: Claude can use what they offer, and what it sends them leaves this server.</p>
+  <div class="buttons"><input id="registryQuery" placeholder="Search the registry (todo, github, calendar…)"><button id="registrySearch" type="button">Search</button></div>
+  <div id="registryResults"></div>
+  <p id="registryNote" class="note-text"></p>
+  <div class="buttons"><button id="registryMore" type="button" hidden>More results</button></div>
+  <h3>Add one by address</h3>
+  <select id="appPreset"><option value="">Pick a service, or fill in the two boxes</option><option value="todoist|https://ai.todoist.net/mcp">todoist</option></select>
+  <input id="appName" placeholder="Name">
+  <input id="appUrl" placeholder="https://server/mcp">
+  <div class="buttons"><button id="appAdd" type="button">Add</button></div>
+  <div class="buttons end"><button id="appsClose" type="button" class="accent">Done</button></div>
+</dialog>
 
 <dialog id="settings">
   <h2>Settings</h2>

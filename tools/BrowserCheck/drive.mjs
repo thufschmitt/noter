@@ -83,7 +83,19 @@ check('the hint is gone and the typed note is on the first rule', await evaluate
 check('and Claude answers below it', await until(`[...document.querySelectorAll('.note:not(.hint):not(.typed)')].some(n => n.textContent.includes('quick sketch'))`, 20000));
 await sleep(800);
 await shot('6b-typed');
+// Connected apps: the dialog opens, the registry can be searched, and an app added by address shows up.
+await evaluate(`document.getElementById('appsButton').click()`);
+check('the connected apps dialog opens, empty, with Nextcloud ready to connect', await until(`document.getElementById('apps').open && document.getElementById('appList').textContent.includes('No apps yet') && document.querySelector('#nextcloud input') !== null`));
+await evaluate(`document.getElementById('registryQuery').value = 'todo'; document.getElementById('registrySearch').click()`);
+check('registry results list a usable server and count the others', await until(`document.querySelectorAll('#registryResults .hit').length === 1 && document.getElementById('registryNote').textContent.includes('1 more can\\'t be used')`));
+await sleep(300);
+await shot('6c-apps');
+await evaluate(`document.getElementById('appName').value = 'Local Notes'; document.getElementById('appUrl').value = 'http://127.0.0.1:18081/open'; document.getElementById('appAdd').click()`);
+check('an app added by address appears as needing no sign-in', await until(`document.getElementById('appList').textContent.includes('local-notes') && document.getElementById('appList').textContent.includes('No sign-in needed')`));
+await evaluate(`document.getElementById('appsClose').click()`);
+check('the dialog closes', await until(`!document.getElementById('apps').open`));
 await evaluate(`document.getElementById('settingsButton').click()`);
+
 
 check('the settings dialog opens with the models', await until(`document.getElementById('settings').open && document.getElementById('modelSelect').options.length === 3`));
 await sleep(300);

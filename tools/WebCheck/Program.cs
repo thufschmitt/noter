@@ -15,7 +15,14 @@ void Check(string name, bool ok) { Console.WriteLine($"{(ok ? "PASS" : "FAIL")} 
 
 var data = Path.Combine(Path.GetTempPath(), "longhand-web-check-" + Guid.NewGuid().ToString("N"));
 await using var api = new FakeAnthropic { AskForTool = false };
-var app = WebApp.Build(new WebOptions { DataDir = data, Urls = "http://127.0.0.1:0", AnthropicBaseUrl = api.BaseUrl, ApiKey = "sk-ant-test" });
+await using var mcp = new FakeOAuthServer();
+await using var registry = new FakeRegistry();
+await using var cloud = new FakeNextcloud();
+var app = WebApp.Build(new WebOptions
+{
+    DataDir = data, Urls = "http://127.0.0.1:0", AnthropicBaseUrl = api.BaseUrl, ApiKey = "sk-ant-test",
+    AllowPrivateApps = true, RegistryBaseUrl = registry.BaseUrl, NextcloudPollInterval = TimeSpan.FromMilliseconds(30),
+}); 
 await app.StartAsync();
 var url = app.Urls.First().Replace("[::1]", "127.0.0.1");
 using var http = new HttpClient { BaseAddress = new Uri(url) };
@@ -154,6 +161,115 @@ try
         Check("closing mid-answer drops the half answer and keeps the writing", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "page")) && !b.Of("note").Any(n => !n.GetProperty("hint").GetBoolean()) && b.Last("page")!.Value.GetProperty("strokes").GetArrayLength() == 1);
         Check("and the writing is waiting to be answered", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "state" && m.GetProperty("canAsk").GetBoolean())));
     }
+
+    // ----- connected apps -----
+    HttpRequestMessage ApiReq(HttpMethod m, string path, object? json = null)
+    {
+        var r = new HttpRequestMessage(m, path);
+        r.Headers.Add("X-Longhand", "1");
+        if (json is not null) r.Content = new StringContent(JsonSerializer.Serialize(json), Encoding.UTF8, "application/json");
+        return r;
+    }
+    async Task<JsonElement> Json(HttpResponseMessage r) => JsonDocument.Parse(await r.Content.ReadAsStringAsync()).RootElement.Clone();
+    JsonElement[] Apps(JsonElement all) => all.GetProperty("apps").EnumerateArray().ToArray();
+
+    var none = await Json(await http.GetAsync("/api/apps"));
+    Check("there are no apps and no Nextcloud account to begin with", Apps(none).Length == 0 && !none.GetProperty("nextcloud").GetProperty("connected").GetBoolean());
+    Check("an app needs a name and an address", (await http.SendAsync(ApiReq(HttpMethod.Post, "/api/apps", new { name = " ", url = mcp.BaseUrl + "/open" }))).StatusCode == HttpStatusCode.BadRequest);
+
+    var added = await Json(await http.SendAsync(ApiReq(HttpMethod.Post, "/api/apps", new { name = "Notes App", url = mcp.BaseUrl + "/open" })));
+    Check("a server that asks for nothing is added as open and ready, with a safe name", added.GetProperty("app").GetProperty("name").GetString() == "notes-app" && added.GetProperty("app").GetProperty("access").GetString() == "open" && added.GetProperty("app").GetProperty("ready").GetBoolean());
+    var again = await Json(await http.SendAsync(ApiReq(HttpMethod.Post, "/api/apps", new { name = "Notes App", url = mcp.BaseUrl + "/open" })));
+    Check("the same name again is made unique", again.GetProperty("app").GetProperty("name").GetString() == "notes-app-2");
+    await http.SendAsync(ApiReq(HttpMethod.Delete, "/api/apps/notes-app-2"));
+
+    var keyed = await Json(await http.SendAsync(ApiReq(HttpMethod.Post, "/api/apps", new { name = "keyed", url = mcp.BaseUrl + "/closed" })));
+    Check("a server that wants a token waits for one", keyed.GetProperty("app").GetProperty("access").GetString() == "token" && !keyed.GetProperty("app").GetProperty("ready").GetBoolean());
+    Check("a token can't be given to an app that doesn't take one", (await http.SendAsync(ApiReq(HttpMethod.Post, "/api/apps/notes-app/token", new { token = "x" }))).StatusCode == HttpStatusCode.BadRequest);
+    Check("a token is accepted (with or without Bearer in front)", (await http.SendAsync(ApiReq(HttpMethod.Post, "/api/apps/keyed/token", new { token = "Bearer secret-token-1" }))).IsSuccessStatusCode && Apps(await Json(await http.GetAsync("/api/apps"))).Single(a => a.GetProperty("name").GetString() == "keyed").GetProperty("ready").GetBoolean());
+
+    var signin = await Json(await http.SendAsync(ApiReq(HttpMethod.Post, "/api/apps", new { name = "mcp", url = mcp.BaseUrl + "/mcp" })));
+    Check("a server behind OAuth is added as a sign-in", signin.GetProperty("app").GetProperty("access").GetString() == "oauth" && !signin.GetProperty("app").GetProperty("ready").GetBoolean());
+    var begin = await Json(await http.SendAsync(ApiReq(HttpMethod.Post, "/api/apps/mcp/signin")));
+    var authorize = new Uri(begin.GetProperty("url").GetString()!);
+    var authQuery = System.Web.HttpUtility.ParseQueryString(authorize.Query);
+    Check("starting a sign-in gives the service's page, returning to this server", authorize.AbsolutePath == "/authorize" && authQuery["redirect_uri"] == url + "/oauth/callback" && mcp.RegisteredRedirect == url + "/oauth/callback");
+    var wrong = await http.GetAsync("/oauth/callback?code=abc&state=nope");
+    Check("a return with an unknown state is refused", wrong.StatusCode == HttpStatusCode.BadRequest && (await wrong.Content.ReadAsStringAsync()).Contains("Couldn&#39;t sign in"));
+    var done = await http.GetAsync("/oauth/callback?code=abc&state=" + Uri.EscapeDataString(authQuery["state"]!));
+    Check("the browser coming back completes the sign-in", done.StatusCode == HttpStatusCode.OK && (await done.Content.ReadAsStringAsync()).Contains("Signed in") && Apps(await Json(await http.GetAsync("/api/apps"))).Single(a => a.GetProperty("name").GetString() == "mcp").GetProperty("ready").GetBoolean());
+    Check("a return can be used only once", (await http.GetAsync("/oauth/callback?code=abc&state=" + Uri.EscapeDataString(authQuery["state"]!))).StatusCode == HttpStatusCode.BadRequest);
+    Check("tokens are kept in the private file, not with the apps or settings", File.ReadAllText(Path.Combine(data, "secrets.json")).Contains("secret-token-1") && File.ReadAllText(Path.Combine(data, "secrets.json")).Contains("access-1") && !File.ReadAllText(Path.Combine(data, "apps.json")).Contains("secret-token-1") && !File.ReadAllText(Path.Combine(data, "apps.json")).Contains("access-1"));
+    if (!OperatingSystem.IsWindows())
+        Check("and only the user can read that file", File.GetUnixFileMode(Path.Combine(data, "secrets.json")) == (UnixFileMode.UserRead | UnixFileMode.UserWrite));
+
+    // ----- the registry -----
+    var found = await Json(await http.GetAsync("/api/registry?q=todo"));
+    var servers = found.GetProperty("servers").EnumerateArray().ToArray();
+    Check("registry search lists the servers that can be used, and counts the others", servers.Any(s => s.GetProperty("name").GetString() == "io.github.acme/todo-list" && s.GetProperty("url").GetString() == "https://mcp.acme.example/mcp") && found.GetProperty("hidden").GetInt32() > 0 && found.GetProperty("nextCursor").GetString() == "next-1");
+    var tenant = servers.Single(s => s.GetProperty("name").GetString() == "com.example/tenant");
+    Check("blanks in an address come with their choices", tenant.GetProperty("variables")[0].GetProperty("name").GetString() == "tenant" && tenant.GetProperty("variables")[0].GetProperty("choices").GetArrayLength() == 2);
+    Check("a server needing a token says so", servers.Single(s => s.GetProperty("name").GetString() == "com.example/keyed").GetProperty("tokenRequired").GetBoolean());
+    Check("more results follow the cursor", (await Json(await http.GetAsync("/api/registry?cursor=next-1"))).GetProperty("servers")[0].GetProperty("name").GetString() == "com.example/second");
+
+    // ----- the apps reach Claude, in the browser's time zone -----
+    await using (var tab = await FakeBrowser.ConnectAsync(url, zone: "Asia/Tokyo"))
+    {
+        await tab.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "page"));
+        await tab.SendAsync(new { t = "type", text = "what is on" });
+        Check("the connected apps are sent to Claude with their tokens", await tab.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "text"), 8000));
+        var body = api.Requests.Last(r => r.Path.EndsWith("/messages")).Body;
+        Check("open, token and signed-in apps all travel (each with what it needs)", body.Contains("mcp_servers") && body.Contains("/open") && body.Contains("secret-token-1") && body.Contains("access-1"));
+        Check("and the date is in the browser's time zone", body.Contains("time zone Asia/Tokyo"));
+        Check("no calendar is offered until Nextcloud is connected", !body.Contains("calendar_events"));
+    }
+
+    // ----- Nextcloud -----
+    Check("a plain http server on another machine is refused", (await http.SendAsync(ApiReq(HttpMethod.Post, "/api/nextcloud/connect", new { server = "http://cloud.example.com" }))).StatusCode == HttpStatusCode.BadRequest);
+    var login = await Json(await http.SendAsync(ApiReq(HttpMethod.Post, "/api/nextcloud/connect", new { server = cloud.BaseUrl })));
+    Check("connecting gives Nextcloud's own sign-in page to open", login.GetProperty("url").GetString() == cloud.BaseUrl + "/login/v2/flow/tok123");
+    JsonElement status = default;
+    for (int i = 0; i < 100; i++)
+    {
+        status = (await Json(await http.GetAsync("/api/apps"))).GetProperty("nextcloud");
+        if (status.GetProperty("connected").GetBoolean()) break;
+        await Task.Delay(50);
+    }
+    Check("once approved there the account shows as connected, without a password in sight", status.GetProperty("connected").GetBoolean() && status.GetProperty("user").GetString() == FakeNextcloud.User && !status.ToString().Contains(FakeNextcloud.Password));
+    Check("the app password is kept with the other secrets only", File.ReadAllText(Path.Combine(data, "secrets.json")).Contains(FakeNextcloud.Password) && !File.ReadAllText(Path.Combine(data, "settings.json")).Contains(FakeNextcloud.Password));
+    var calendars = await Json(await http.SendAsync(ApiReq(HttpMethod.Post, "/api/nextcloud/check")));
+    Check("checking lists the calendars Claude can read", calendars.GetProperty("calendars").EnumerateArray().Select(c => c.GetString()).SequenceEqual(new[] { "Personal" }));
+    await using (var tab = await FakeBrowser.ConnectAsync(url))
+    {
+        await tab.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "page"));
+        int before = api.Requests.Count(r => r.Path.EndsWith("/messages"));
+        await tab.SendAsync(new { t = "type", text = "and now" });
+        await tab.UntilAsync(_ => api.Requests.Count(r => r.Path.EndsWith("/messages")) > before, 8000);
+        Check("with Nextcloud connected Claude is offered the calendar", api.Requests.Last(r => r.Path.EndsWith("/messages")).Body.Contains("calendar_events"));
+        await tab.UntilAsync(l => l.Where(m => m.GetProperty("t").GetString() == "state").LastOrDefault() is { ValueKind: JsonValueKind.Object } st && !st.GetProperty("busy").GetBoolean());
+    }
+    await http.SendAsync(ApiReq(HttpMethod.Post, "/api/nextcloud/disconnect"));
+    Check("disconnecting revokes the app password and forgets the account", cloud.Requests.Any(q => q.Method == "DELETE") && !(await Json(await http.GetAsync("/api/apps"))).GetProperty("nextcloud").GetProperty("connected").GetBoolean() && !File.ReadAllText(Path.Combine(data, "secrets.json")).Contains(FakeNextcloud.Password));
+
+    await http.SendAsync(ApiReq(HttpMethod.Post, "/api/apps/mcp/signout"));
+    Check("signing out of an app keeps it but takes its sign-in away", !Apps(await Json(await http.GetAsync("/api/apps"))).Single(a => a.GetProperty("name").GetString() == "mcp").GetProperty("ready").GetBoolean());
+    await http.SendAsync(ApiReq(HttpMethod.Delete, "/api/apps/mcp"));
+    Check("removing an app forgets it", Apps(await Json(await http.GetAsync("/api/apps"))).All(a => a.GetProperty("name").GetString() != "mcp"));
+
+    // A server run with the normal rules refuses addresses that Anthropic's servers couldn't reach.
+    var strictData = Path.Combine(data, "strict");
+    var strict = WebApp.Build(new WebOptions { DataDir = strictData, Urls = "http://127.0.0.1:0", ApiKey = "sk-ant-test" });
+    await strict.StartAsync();
+    using (var strictHttp = new HttpClient { BaseAddress = new Uri(strict.Urls.First().Replace("[::1]", "127.0.0.1")) })
+    {
+        foreach (var bad in new[] { mcp.BaseUrl + "/open", "https://192.168.1.5/mcp", "http://example.com/mcp", "https://localhost/mcp" })
+        {
+            var r = new HttpRequestMessage(HttpMethod.Post, "/api/apps") { Content = new StringContent(JsonSerializer.Serialize(new { name = "x", url = bad }), Encoding.UTF8, "application/json") };
+            r.Headers.Add("X-Longhand", "1");
+            Check("an address Anthropic can't reach is refused: " + bad, (await strictHttp.SendAsync(r)).StatusCode == HttpStatusCode.BadRequest);
+        }
+    }
+    await strict.StopAsync();
 
     // ----- development mode: the page comes from a folder, and tabs are told when it changes -----
     var www = Path.Combine(data, "www");

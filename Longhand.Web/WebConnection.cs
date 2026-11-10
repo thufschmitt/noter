@@ -37,11 +37,14 @@ public sealed class WebConnection : IPageView, IPageData
     bool _started, _closed;
 
     readonly DevReload? _dev;
+    readonly WebApps _apps;
+    TimeZoneInfo _zone = TimeZoneInfo.Local;
 
-    public WebConnection(WebSocket ws, WebStore store, DevReload? dev = null)
+    public WebConnection(WebSocket ws, WebStore store, WebApps apps, DevReload? dev = null)
     {
         _ws = ws;
         _store = store;
+        _apps = apps;
         _dev = dev;
         _session = new PageSession(this, this);
     }
@@ -199,6 +202,12 @@ public sealed class WebConnection : IPageView, IPageData
         {
             case "hello":
                 SetWidth(m);
+                // The server may be in another time zone than the person using it; "now" and the calendar follow the browser's.
+                if (Str(m, "zone") is { Length: > 0 } zone)
+                {
+                    try { _zone = TimeZoneInfo.FindSystemTimeZoneById(zone); }
+                    catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException) { }
+                }
                 if (_started) break;
                 _started = true;
                 await _session.StartAsync();
@@ -384,6 +393,11 @@ public sealed class WebConnection : IPageView, IPageData
     public Task SavePageAsync(string id, IReadOnlyList<SavedNote> notes) => _store.SavePageAsync(id, _ink.ToList(), notes);
     public Task DeletePageAsync(string id) => _store.DeletePageAsync(id);
 
-    public Task<PreparedAsk> PrepareAskAsync(string apiKey, CancellationToken ct) =>
-        Task.FromResult(new PreparedAsk(new ClaudeService(apiKey, model: _store.Model, baseUrl: _store.AnthropicBaseUrl), _store.Legend(), Array.Empty<string>()));
+    /// <summary>Connected apps whose sign-in can't be renewed are left out and named, since Claude won't have them. The calendar is offered only while a Nextcloud account is connected.</summary>
+    public async Task<PreparedAsk> PrepareAskAsync(string apiKey, CancellationToken ct)
+    {
+        var (connectors, expired) = await _apps.ActiveAsync(ct);
+        IReadOnlyList<IAgentTool> tools = _store.Nextcloud.Load() is { } account ? new IAgentTool[] { new CalendarTool(_apps.NextcloudClient, account, _zone) } : Array.Empty<IAgentTool>();
+        return new PreparedAsk(new ClaudeService(apiKey, connectors, _store.Model, _store.AnthropicBaseUrl, tools, _zone), _store.Legend(), expired);
+    }
 }

@@ -22,7 +22,18 @@ public sealed class WebStore
     {
         _options = options;
         Directory.CreateDirectory(Dir);
+        Settings = new FileSettings(PathOf(SettingsFile));
+        Secrets = new FileSecrets(PathOf("secrets.json"));
+        Connectors = new ConnectorBook(new FileSettings(PathOf("apps.json")), Secrets);
+        Nextcloud = new NextcloudBook(Settings, Secrets);
     }
+
+    public FileSettings Settings { get; }
+    public ISecrets Secrets { get; }
+    /// <summary>The MCP servers the user added (their tokens are in <see cref="Secrets"/>, never in apps.json).</summary>
+    public ConnectorBook Connectors { get; }
+    public NextcloudBook Nextcloud { get; }
+    public WebOptions Options => _options;
 
     public string Dir => _options.DataDir;
     public string? AnthropicBaseUrl => _options.AnthropicBaseUrl;
@@ -69,9 +80,7 @@ public sealed class WebStore
 
     public void SaveKey(string key)
     {
-        var path = PathOf(KeyFile);
-        File.WriteAllText(path, key.Trim());
-        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        PrivateFile.Write(PathOf(KeyFile), key.Trim(), priv: true);
     }
 
     public void ClearKey()
@@ -83,17 +92,8 @@ public sealed class WebStore
 
     public string Model
     {
-        get
-        {
-            try
-            {
-                var json = File.Exists(PathOf(SettingsFile)) ? File.ReadAllText(PathOf(SettingsFile)) : null;
-                if (json is not null && JsonSerializer.Deserialize<Dictionary<string, string>>(json) is { } d && d.TryGetValue("model", out var m)) return ModelChoice.Resolve(m);
-            }
-            catch (Exception ex) when (ex is IOException or JsonException) { }
-            return ModelChoice.Default;
-        }
-        set => File.WriteAllText(PathOf(SettingsFile), JsonSerializer.Serialize(new Dictionary<string, string> { ["model"] = ModelChoice.Resolve(value) }));
+        get => ModelChoice.Resolve(Settings.Get("model"));
+        set => Settings.Set("model", ModelChoice.Resolve(value));
     }
 
     // ----- conversations -----

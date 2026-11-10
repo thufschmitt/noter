@@ -19,6 +19,7 @@ trap cleanup EXIT
 dotnet build "$root/Longhand.Web/Longhand.Web.csproj" -o "$work/app" -v q -nologo
 node "$here/fake-anthropic.mjs" "$out" >"$work/fake.log" 2>&1 &
 ANTHROPIC_BASE_URL=http://127.0.0.1:18080 ANTHROPIC_API_KEY=sk-test LONGHAND_DATA="$work/data" \
+  LONGHAND_REGISTRY_URL=http://127.0.0.1:18081 LONGHAND_ALLOW_PRIVATE_APPS=1 \
   dotnet "$work/app/Longhand.Web.dll" --urls http://127.0.0.1:5099 >"$work/server.log" 2>&1 &
 "$chrome" --headless=new --no-sandbox --disable-gpu --remote-debugging-port=9333 --user-data-dir="$work/profile" \
   --window-size=1000,700 about:blank >"$work/chrome.log" 2>&1 &

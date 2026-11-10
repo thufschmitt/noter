@@ -32,7 +32,7 @@ function connect() {
   socket.onopen = () => {
     if (devMode && connectedOnce) { location.reload(); return; }
     connectedOnce = true;
-    send({ t: 'hello', width: sheetWidth });
+    send({ t: 'hello', width: sheetWidth, zone: Intl.DateTimeFormat().resolvedOptions().timeZone });
   };
   socket.onmessage = e => {
     const m = JSON.parse(e.data);
@@ -727,6 +727,284 @@ $('saveSymbol').onclick = async () => {
     await loadSymbols();
   } catch (e) { $('symbolMessage').textContent = e.message; }
 };
+
+// ---------- connected apps ----------
+
+let appsData = { apps: [], nextcloud: {} }, tokenFor = null, watching = 0;
+
+const encode = encodeURIComponent;
+const appsSay = (text, link) => {
+  const box = $('appsMessage');
+  box.textContent = text || '';
+  if (link) {
+    const a = document.createElement('a');
+    a.href = link; a.target = '_blank'; a.rel = 'noopener'; a.textContent = ' Open it here.';
+    box.append(a);
+  }
+};
+
+async function loadApps() {
+  appsData = await (await fetch('/api/apps')).json();
+  renderApps();
+  renderNextcloud();
+  return appsData;
+}
+
+// Keeps looking until the browser tab where you approved the sign-in has finished, or the time is up.
+async function waitFor(done, ms = 10 * 60 * 1000) {
+  const mine = ++watching;
+  for (let waited = 0; waited < ms && mine === watching; waited += 1500) {
+    await new Promise(r => setTimeout(r, 1500));
+    if (!$('apps').open) return false;
+    if (done(await loadApps())) return true;
+  }
+  return false;
+}
+addEventListener('message', e => { if (e.origin === location.origin && e.data === 'longhand-oauth' && $('apps').open) loadApps(); });
+
+function renderApps() {
+  const list = $('appList');
+  list.textContent = '';
+  if (appsData.apps.length === 0) list.textContent = 'No apps yet. Find one in the registry below, or add one by address.';
+  for (const a of appsData.apps) {
+    const row = document.createElement('div');
+    row.className = 'app';
+    const status = a.access === 'open' ? 'No sign-in needed'
+      : a.access === 'token' ? (a.ready ? 'Access token saved' : 'Needs an access token')
+      : (a.ready ? 'Signed in' : 'Not signed in');
+    const text = document.createElement('div');
+    text.className = 'text';
+    text.innerHTML = '<b></b><small></small>';
+    text.firstChild.textContent = a.name;
+    text.lastChild.textContent = status;
+    row.append(text);
+    if (a.access !== 'open') {
+      const label = a.access === 'token' ? (a.ready ? 'Remove token' : 'Add token') : (a.ready ? 'Sign out' : 'Sign in');
+      row.append(button(label, label, async () => {
+        if (a.ready) { await api('POST', `/api/apps/${encode(a.name)}/signout`); loadApps(); }
+        else if (a.access === 'token') { tokenFor = a.name; renderApps(); }
+        else signIn(a);
+      }));
+    }
+    row.append(button('🗑', 'Remove', async () => { await api('DELETE', `/api/apps/${encode(a.name)}`); loadApps(); }));
+    list.append(row);
+    if (tokenFor === a.name) {
+      const box = document.createElement('div');
+      box.className = 'stack';
+      const input = document.createElement('input');
+      input.type = 'password'; input.placeholder = 'Access token from the service'; input.autocomplete = 'off';
+      const save = button('Save token', 'Save token', async () => {
+        if (!input.value.trim()) return;
+        try { await api('POST', `/api/apps/${encode(a.name)}/token`, { token: input.value }); tokenFor = null; loadApps(); }
+        catch (e) { appsSay(e.message); }
+      });
+      const cancel = button('Cancel', 'Cancel', () => { tokenFor = null; renderApps(); });
+      const buttons = document.createElement('div');
+      buttons.className = 'buttons';
+      buttons.append(save, cancel);
+      box.append(input, buttons);
+      list.append(box);
+    }
+  }
+}
+
+// The sign-in page opens in another tab and sends the browser back to this server when you approve. The window is opened
+// straight from the click (a window opened later is blocked as a pop-up), and pointed at the sign-in page when it is known.
+async function signIn(app) {
+  const win = window.open('', '_blank');
+  try {
+    appsSay(`Contacting ${app.name}…`);
+    const { url } = await api('POST', `/api/apps/${encode(app.name)}/signin`);
+    if (win) { win.location = url; appsSay(`Finish signing in to ${app.name} in the other tab. This page continues when you come back.`); }
+    else appsSay('Your browser blocked the sign-in window.', url);
+    if (await waitFor(d => d.apps.find(x => x.name === app.name)?.ready)) appsSay(`Signed in to ${app.name}.`);
+  } catch (e) {
+    if (win) win.close();
+    appsSay(`Couldn't sign in to ${app.name}: ${e.message}`);
+  }
+}
+
+async function addApp(name, url, tokenRequired) {
+  try {
+    appsSay('Checking how it lets you in…');
+    const { app } = await api('POST', '/api/apps', { name, url, tokenRequired });
+    appsSay(app.access === 'oauth' ? `Added ${app.name}. Sign in to use it.`
+      : app.access === 'token' ? `Added ${app.name}. It needs an access token: get one from the service, then tap Add token.`
+      : `Added ${app.name}. It needs no sign-in.`);
+    await loadApps();
+    return true;
+  } catch (e) {
+    appsSay(`Couldn't add ${name}: ${e.message}`);
+    return false;
+  }
+}
+
+// ----- Nextcloud -----
+
+function renderNextcloud() {
+  const box = $('nextcloud');
+  const n = appsData.nextcloud;
+  box.textContent = '';
+  if (n.connected) {
+    const line = document.createElement('p');
+    line.className = 'note-text';
+    line.textContent = `Connected as ${n.user} on ${n.host}`;
+    const buttons = document.createElement('div');
+    buttons.className = 'buttons';
+    buttons.append(
+      button('Check', 'Check', async () => {
+        try {
+          const { calendars } = await api('POST', '/api/nextcloud/check');
+          appsSay(calendars.length === 0 ? 'No calendars found.' : 'Claude can read: ' + calendars.join(', ') + '.');
+        } catch (e) { appsSay(e.message); }
+      }),
+      button('Disconnect', 'Disconnect', async () => { await api('POST', '/api/nextcloud/disconnect'); appsSay('Disconnected from Nextcloud.'); loadApps(); }),
+    );
+    box.append(line, buttons);
+    return;
+  }
+  const intro = document.createElement('p');
+  intro.className = 'note-text';
+  intro.textContent = "Lets Claude read your calendar (it can't change anything). You approve the connection in your browser; no password is typed here.";
+  const server = document.createElement('input');
+  server.placeholder = 'Your Nextcloud, like cloud.example.com';
+  const connect = button(n.pending ? 'Waiting for you to approve…' : 'Connect', 'Connect', async () => {
+    const win = window.open('', '_blank');
+    try {
+      appsSay('Contacting Nextcloud…');
+      const { url } = await api('POST', '/api/nextcloud/connect', { server: server.value });
+      if (win) { win.location = url; appsSay('Approve the connection in the other tab. This page continues when you have.'); }
+      else appsSay('Your browser blocked the window.', url);
+      renderNextcloud();
+      await waitFor(d => d.nextcloud.connected || (!d.nextcloud.pending && d.nextcloud.error));
+      const d = appsData.nextcloud;
+      if (d.connected) {
+        const { calendars } = await api('POST', '/api/nextcloud/check');
+        appsSay(calendars.length === 0 ? 'Connected, but no calendars were found.' : 'Connected. Claude can read: ' + calendars.join(', ') + '.');
+      } else if (d.error) appsSay("Couldn't connect to Nextcloud: " + d.error);
+    } catch (e) {
+      if (win) win.close();
+      appsSay(e.message);
+    }
+  });
+  connect.disabled = !!n.pending;
+  box.append(intro, server, connect);
+}
+
+// ----- the registry -----
+
+let registry = { query: '', cursor: null, shown: 0, hidden: 0 };
+
+function resolveUrl(server, values) {
+  let url = server.url;
+  for (const v of server.variables) {
+    const value = ((values[v.name] || '').trim() || (v.default || '')).trim();
+    if (!value && v.required) return null;
+    url = url.split('{' + v.name + '}').join(value);
+  }
+  return url.includes('{') ? null : url;
+}
+
+function resultRow(server) {
+  const box = document.createElement('div');
+  box.className = 'hit';
+  const top = document.createElement('div');
+  top.className = 'top';
+  const text = document.createElement('div');
+  text.className = 'text';
+  text.innerHTML = '<b></b><small></small><span></span>';
+  text.children[0].textContent = server.title;
+  text.children[1].textContent = server.host + (server.tokenRequired ? ' · needs an access token' : '');
+  text.children[2].textContent = server.description;
+  const add = button('Add', 'Add', async () => {
+    if (server.variables.length === 0) { add.disabled = true; await addApp(server.name, server.url, server.tokenRequired); add.disabled = false; return; }
+    // The address has blanks (an account or region name): ask for them first.
+    add.disabled = true;
+    const form = document.createElement('div');
+    form.className = 'stack';
+    const getters = {};
+    for (const v of server.variables) {
+      const label = document.createElement('small');
+      label.textContent = (v.description || v.name) + (v.required ? ' *' : '');
+      form.append(label);
+      if (v.choices.length > 0) {
+        const select = document.createElement('select');
+        for (const c of v.choices) select.append(new Option(c, c, false, c === v.default));
+        form.append(select);
+        getters[v.name] = () => select.value;
+      } else {
+        const input = document.createElement('input');
+        input.value = v.default || ''; input.placeholder = v.name;
+        form.append(input);
+        getters[v.name] = () => input.value;
+      }
+    }
+    const confirm = button('Add ' + server.title, 'Add', async () => {
+      const values = {};
+      for (const k of Object.keys(getters)) values[k] = getters[k]();
+      const url = resolveUrl(server, values);
+      if (!url) { appsSay('Fill in the starred boxes with plain values (no slashes or spaces).'); return; }
+      confirm.disabled = true;
+      await addApp(server.name, url, server.tokenRequired);
+      form.remove();
+      add.disabled = false;
+    });
+    form.append(confirm);
+    box.append(form);
+  });
+  top.append(text, add);
+  box.append(top);
+  return box;
+}
+
+async function searchRegistry(more) {
+  const search = $('registrySearch'), moreButton = $('registryMore');
+  search.disabled = moreButton.disabled = true;
+  try {
+    if (!more) {
+      registry = { query: $('registryQuery').value, cursor: null, shown: 0, hidden: 0 };
+      $('registryResults').textContent = '';
+    }
+    $('registryNote').textContent = 'Searching…';
+    const params = new URLSearchParams({ q: registry.query });
+    if (more && registry.cursor) params.set('cursor', registry.cursor);
+    const r = await fetch('/api/registry?' + params);
+    const page = await r.json();
+    if (!r.ok) throw new Error(page.error || 'The registry did not answer.');
+    for (const s of page.servers) $('registryResults').append(resultRow(s));
+    registry.shown += page.servers.length;
+    registry.hidden += page.hidden;
+    registry.cursor = page.nextCursor;
+    moreButton.hidden = !registry.cursor;
+    $('registryNote').textContent = registry.shown === 0 && !registry.cursor ? 'Nothing found.'
+      : `${registry.shown} found` + (registry.hidden > 0 ? `; ${registry.hidden} more can't be used here (they run on your own PC, or need a kind of sign-in this app can't do).` : '.');
+  } catch (e) {
+    $('registryNote').textContent = e.message;
+  }
+  search.disabled = moreButton.disabled = false;
+}
+
+$('registrySearch').onclick = () => searchRegistry(false);
+$('registryMore').onclick = () => searchRegistry(true);
+$('registryQuery').addEventListener('keydown', e => { if (e.key === 'Enter') searchRegistry(false); });
+$('appPreset').onchange = e => {
+  const [name, url] = e.target.value.split('|');
+  if (name) { $('appName').value = name; $('appUrl').value = url; }
+};
+$('appAdd').onclick = async () => {
+  const add = $('appAdd');
+  add.disabled = true;
+  if (await addApp($('appName').value, $('appUrl').value.trim(), false)) { $('appName').value = $('appUrl').value = ''; $('appPreset').value = ''; }
+  add.disabled = false;
+};
+$('appsButton').onclick = async () => {
+  tokenFor = null;
+  appsSay('');
+  await loadApps();
+  $('apps').showModal();
+};
+$('appsClose').onclick = () => $('apps').close();
+$('apps').addEventListener('close', () => { watching++; });
 
 // ---------- start ----------
 

@@ -1,3 +1,5 @@
+using System;
+
 namespace Longhand.Web;
 
 /// <summary>How the server is set up. The command line and environment fill it in; the checks set it directly.</summary>
@@ -13,6 +15,12 @@ public sealed class WebOptions
     public string? ApiKey { get; set; }
     /// <summary>Development: serve the page from this folder and reload open tabs when it changes (--www or LONGHAND_WWW).</summary>
     public string? WwwRoot { get; set; }
+    /// <summary>Only for checks: lets apps on this machine be added (they must be public https otherwise, as Anthropic's servers call them).</summary>
+    public bool AllowPrivateApps { get; set; }
+    /// <summary>Only for checks against a fake of the MCP registry.</summary>
+    public string? RegistryBaseUrl { get; set; }
+    /// <summary>How often to ask Nextcloud whether the sign-in was approved; checks make it short.</summary>
+    public TimeSpan NextcloudPollInterval { get; set; } = TimeSpan.FromSeconds(2);
 
     public static WebOptions FromArgs(string[] args)
     {
@@ -20,6 +28,9 @@ public sealed class WebOptions
         {
             DataDir = System.Environment.GetEnvironmentVariable("LONGHAND_DATA") is { Length: > 0 } d ? d : DefaultDataDir(),
         };
+        // For testing against fakes: another registry, and apps on this machine (normally refused, as Anthropic cannot reach them).
+        if (System.Environment.GetEnvironmentVariable("LONGHAND_REGISTRY_URL") is { Length: > 0 } registry) o.RegistryBaseUrl = registry;
+        o.AllowPrivateApps = System.Environment.GetEnvironmentVariable("LONGHAND_ALLOW_PRIVATE_APPS") == "1";
         if (System.Environment.GetEnvironmentVariable("LONGHAND_WWW") is { Length: > 0 } www) o.WwwRoot = www;
         if (System.Environment.GetEnvironmentVariable("LONGHAND_URLS") is { Length: > 0 } urls) o.Urls = urls;
         for (int i = 0; i < args.Length; i++)
