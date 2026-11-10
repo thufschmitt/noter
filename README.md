@@ -12,6 +12,8 @@ It uses Windows Ink (`InkCanvas`), so pen strokes are drawn by the system on its
 
 ## Build and run
 
+With Nix, `nix develop` gives you everything for the Linux side (.NET 10, Node, Chromium), `nix run .#web` starts the web version and `nix run .#check` runs every check that works off Windows.
+
 1. Open `Longhand/Longhand.csproj` in Visual Studio.
 2. Pick your platform (x64 or ARM64) and press F5. Visual Studio restores the Anthropic NuGet package, deploys the app and starts it.
 3. Click the gear button and paste your Anthropic API key. It's stored in Windows Credential Manager, not in any file.
