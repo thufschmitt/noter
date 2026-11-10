@@ -151,6 +151,19 @@ try
         Check("closing mid-answer drops the half answer and keeps the writing", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "page")) && !b.Of("note").Any(n => !n.GetProperty("hint").GetBoolean()) && b.Last("page")!.Value.GetProperty("strokes").GetArrayLength() == 1);
         Check("and the writing is waiting to be answered", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "state" && m.GetProperty("canAsk").GetBoolean())));
     }
+
+    // ----- stopping the server with a tab still open (Ctrl+C) -----
+    await using (var open = await FakeBrowser.ConnectAsync(url))
+    {
+        await open.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "page"));
+        await open.SendAsync(new { t = "stroke", stroke = new { id = 77, pts = new[] { new[] { 100.0, 160.0 }, new[] { 150.0, 180.0 } } } });
+        await Task.Delay(200);
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        await app.StopAsync();
+        Check($"the server stops within a few seconds with a tab open ({stopwatch.ElapsedMilliseconds} ms)", stopwatch.Elapsed < TimeSpan.FromSeconds(8));
+        var saved = Directory.GetFiles(data, "ink.json", SearchOption.AllDirectories).Select(File.ReadAllText).Any(t => t.Contains("\"Id\":77"));
+        Check("and what was on the page is saved on the way out", saved);
+    }
 }
 catch (Exception ex)
 {

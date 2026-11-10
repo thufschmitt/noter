@@ -5,6 +5,7 @@ using System.Linq;
 using System.Net.WebSockets;
 using System.Reflection;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using Longhand.Services;
 using Microsoft.AspNetCore.Builder;
@@ -29,6 +30,8 @@ public static class WebApp
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseUrls(options.Urls);
         builder.Logging.SetMinimumLevel(LogLevel.Warning);
+        // Connections end themselves when the server stops (see /ws); this only bounds anything that doesn't.
+        builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromSeconds(10));
         var store = new WebStore(options);
         var loopbackOnly = options.Urls.Split(';', StringSplitOptions.RemoveEmptyEntries).All(IsLoopbackUrl);
         var app = builder.Build();
@@ -58,7 +61,11 @@ public static class WebApp
         {
             if (!ctx.WebSockets.IsWebSocketRequest) { ctx.Response.StatusCode = 400; return; }
             using var socket = await ctx.WebSockets.AcceptWebSocketAsync();
-            await new WebConnection(socket, store).RunAsync(ctx.RequestAborted);
+            // An open tab holds its connection until the tab goes away, so the server's own stop signal has to end it too, or
+            // Ctrl+C waits out the whole shutdown grace period.
+            var stopping = ctx.RequestServices.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping;
+            using var end = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted, stopping);
+            await new WebConnection(socket, store).RunAsync(end.Token);
         });
 
         MapSettings(app, store);
