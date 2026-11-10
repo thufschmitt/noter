@@ -126,9 +126,10 @@ jobs:
 
   pages:
     name: Update feed
-    # Serves the latest packages and .appinstaller files from GitHub Pages, so installed copies update themselves.
+    # Serves the .appinstaller files from GitHub Pages, pointing at the packages on the Release, so installed copies update
+    # themselves. It waits for the Release so a feed never names packages that aren't there yet.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [checks, version, app]
+    needs: [checks, version, app, release]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -151,8 +152,9 @@ jobs:
         env:
           BASE_URL: ${{ steps.pages.outputs.base_url }}
           VERSION: ${{ needs.version.outputs.version }}
+          PACKAGES_URL: ${{ github.server_url }}/${{ github.repository }}/releases/download/v${{ needs.version.outputs.version }}
         run: |
-          tools/make-update-site.sh dist site "$BASE_URL" "$VERSION"
+          tools/make-update-site.sh dist site "$BASE_URL" "$VERSION" "$PACKAGES_URL"
           {
             echo "### Longhand $VERSION"
             echo "- x64: $BASE_URL/Longhand-x64.appinstaller"

@@ -23,7 +23,7 @@ If Visual Studio won't load the project file, create a new project from the **UW
 
 ## Installing and updating
 
-Every push to `main` builds signed packages and publishes them in two places: a GitHub Release, and a GitHub Pages site that lets Windows update the app by itself.
+Every push to `main` builds signed packages and publishes them as a GitHub Release. A small GitHub Pages site next to it holds the `.appinstaller` files that tell Windows which version is newest; they point at the packages on the Release.
 
 One-time setup of the repository: Settings → Pages → Source: **GitHub Actions**.
 
@@ -32,7 +32,7 @@ One-time setup of each PC:
 1. Trust the certificate, in an administrator terminal: `certutil -addstore TrustedPeople Longhand.cer`
 2. Open the `.appinstaller` link for your PC (x64 or ARM64) and choose Install. They are `https://thufschmitt.github.io/noter/Longhand-x64.appinstaller` and `https://thufschmitt.github.io/noter/Longhand-arm64.appinstaller`.
 
-After that the app checks for a newer version each time it starts, and every few hours in the background. An update installs when the app is next closed. Installing the `.msix` from a Release by hand works too, but doesn't update itself.
+After that, starting the app from the Start menu or a tile checks for a newer version first and asks to install it before the app opens. (A taskbar or desktop shortcut skips the prompt and updates silently instead.) Windows also checks every few hours in the background. The update only shows up once the release workflow has finished, which takes a few minutes. Installing the `.msix` from a Release by hand works too, but doesn't update itself.
 
 ## Using it
 
