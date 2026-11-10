@@ -105,12 +105,16 @@ public static class WebApp
 
     // ---------- settings and symbols ----------
 
+    /// <summary>The version this server was built as (set with -p:Version=…; the project says 0.2.0 otherwise).</summary>
+    public static string Version { get; } = typeof(WebApp).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0] ?? "unknown";
+
     static void MapSettings(WebApplication app, WebStore store)
     {
         app.MapGet("/api/settings", () => new
         {
             hasKey = store.ApiKey is not null,
             keySource = store.KeySource,
+            version = Version,
             model = store.Model,
             models = ModelChoice.All.Select(o => new { id = o.Id, label = o.Label }),
         });

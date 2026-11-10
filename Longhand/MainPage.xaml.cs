@@ -1282,6 +1282,8 @@ public sealed partial class MainPage : Page, IPageView
         panel.Children.Add(box);
         panel.Children.Add(new TextBlock { Text = "Model", Margin = new Thickness(0, 4, 0, -6) });
         panel.Children.Add(models);
+        var v = Windows.ApplicationModel.Package.Current.Id.Version;
+        panel.Children.Add(new TextBlock { Text = $"Longhand version {v.Major}.{v.Minor}.{v.Build}.{v.Revision}", FontSize = 12, Opacity = 0.75, Margin = new Thickness(0, 6, 0, 0) });
         panel.Children.Add(new TextBlock { Text = "Symbols", FontWeight = Windows.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 10, 0, -6) });
         panel.Children.Add(BuildSymbolsSection());
 

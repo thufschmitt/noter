@@ -32,6 +32,7 @@ try
 
     using (var other = new HttpRequestMessage(HttpMethod.Get, "/api/settings")) { other.Headers.Host = "evil.example"; Check("a request addressed to another name is refused", (await http.SendAsync(other)).StatusCode == HttpStatusCode.Forbidden); }
     var settings = JsonDocument.Parse(await http.GetStringAsync("/api/settings")).RootElement;
+    Check("settings carry the version", settings.GetProperty("version").GetString() is { Length: > 0 } ver && ver != "unknown" && char.IsDigit(ver[0]));
     Check("settings say there is a key and list the models", settings.GetProperty("hasKey").GetBoolean() && settings.GetProperty("keySource").GetString() == "environment" && settings.GetProperty("models").GetArrayLength() == 3 && settings.GetProperty("model").GetString() == "claude-haiku-5-5");
 
     var noHeader = await http.PutAsync("/api/settings", new StringContent("""{"model":"claude-sonnet-5-5"}""", Encoding.UTF8, "application/json"));
@@ -118,6 +119,8 @@ try
         Check("the next ask tells Claude about the symbol", await b.UntilAsync(_ => api.Requests.Count(r => r.Path.EndsWith("/messages")) == 2, 8000) && api.Requests.Last(r => r.Path.EndsWith("/messages")).Body.Replace("\\u0022", "\"").Contains("Symbol \"envelope\" means: Add what I wrote to my Todoist inbox."));
         Check("it was the second of two snapshots", b.Snapshots == 1);
 
+        // The ask above is still being answered when its request reaches the fake API; typing is refused until it is done.
+        await b.UntilAsync(l => l.Where(m => m.GetProperty("t").GetString() == "state").LastOrDefault() is { ValueKind: JsonValueKind.Object } st && !st.GetProperty("busy").GetBoolean());
         await b.SendAsync(new { t = "type", text = "typed hello" });
         Check("a typed note shows on the page as the user's, and is answered", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "note" && m.GetProperty("typed").GetBoolean() && m.GetProperty("text").GetString() == "typed hello") && api.Requests.Count(r => r.Path.EndsWith("/messages")) == 3, 8000));
         Check("what Claude was sent is the text", api.Requests.Last(r => r.Path.EndsWith("/messages")).Body.Contains("typed on a keyboard:\\ntyped hello"));

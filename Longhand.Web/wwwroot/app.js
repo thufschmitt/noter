@@ -608,6 +608,7 @@ async function openSettings(needKey) {
   $('keyInput').placeholder = s.hasKey ? 'A key is saved. Paste a new one to replace it.' : 'sk-ant-…';
   $('keyNote').textContent = s.keySource === 'environment' ? 'The key comes from the ANTHROPIC_API_KEY environment variable of the server; a key typed here would be overridden by it.' : needKey ? 'Add your Anthropic API key to get answers.' : '';
   $('removeKey').hidden = s.keySource !== 'saved';
+  $('version').textContent = 'Longhand version ' + s.version;
   const select = $('modelSelect');
   select.textContent = '';
   for (const m of s.models) select.append(new Option(m.label, m.id, false, m.id === s.model));
