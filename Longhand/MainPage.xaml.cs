@@ -614,7 +614,7 @@ public sealed partial class MainPage : Page
             .ToList();
         var shown = found.Replies
             .Select(i => replies[i])
-            .Select(n => new PageReply(new Rect(MarginX, n.Y + TextNudge, TextWidth, n.Lines * LineHeight), scale => RenderBlockAsync(n.Block, scale)))
+            .Select(n => new PageReply(new Rect(MarginX, n.Y + TextNudge, n.Block.ActualWidth, n.Block.ActualHeight), scale => RenderBlockAsync(n.Block, scale)))
             .ToList();
         return new PageContext(earlier, shown);
     }

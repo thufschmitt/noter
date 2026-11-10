@@ -10,6 +10,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\..\Longhand\Services\InkSnapshot.cs" />
+    <Compile Include="..\..\Longhand\Services\AlphaMask.cs" />
     <Compile Include="..\..\Longhand\Services\ApiKeyStore.cs" />
     <Compile Include="..\..\Longhand\Services\Connector.cs" />
     <Compile Include="..\..\Longhand\Services\McpOAuth.cs" />

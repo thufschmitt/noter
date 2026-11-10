@@ -71,7 +71,11 @@ public static class InkSnapshot
         foreach (var reply in context?.Replies ?? Array.Empty<PageReply>())
         {
             var text = await reply.Render(k);
-            DrawText(dst, ow, oh, text, (long)Math.Round((reply.Bounds.X - area.X) * k) + Pad, (long)Math.Round((reply.Bounds.Y - area.Y) * k) + Pad);
+            // The renderer may not honour the size asked for (on a scaled display it can return a larger bitmap), so fit the
+            // reply to the size it should have on the page; that is what keeps it lined up with the ink.
+            int tw = (int)Math.Round(reply.Bounds.Width * k), th = (int)Math.Round(reply.Bounds.Height * k);
+            var coverage = AlphaMask.Resize(text.Bgra, text.Width, text.Height, tw, th);
+            DrawText(dst, ow, oh, coverage, tw, th, (long)Math.Round((reply.Bounds.X - area.X) * k) + Pad, (long)Math.Round((reply.Bounds.Y - area.Y) * k) + Pad);
         }
         DrawInk(dst, ow, ink, sw, sh, inkX + Pad, inkY + Pad);
 
@@ -110,17 +114,17 @@ public static class InkSnapshot
     }
 
     /// <summary>Paints a reply in blue using only its coverage, so the colour doesn't depend on the theme it was rendered in.</summary>
-    static void DrawText(byte[] dst, uint dstWidth, uint dstHeight, RenderedText text, long x0, long y0)
+    static void DrawText(byte[] dst, uint dstWidth, uint dstHeight, byte[] coverage, int width, int height, long x0, long y0)
     {
-        for (int y = 0; y < text.Height; y++)
+        for (int y = 0; y < height; y++)
         {
             long dy = y0 + y;
             if (dy < 0 || dy >= dstHeight) continue;
-            for (int x = 0; x < text.Width; x++)
+            for (int x = 0; x < width; x++)
             {
                 long dx = x0 + x;
                 if (dx < 0 || dx >= dstWidth) continue;
-                double a = text.Bgra[(y * text.Width + x) * 4 + 3] / 255.0;
+                double a = coverage[y * width + x] / 255.0;
                 if (a == 0) continue;
                 long j = (dy * dstWidth + dx) * 4;
                 for (int c = 0; c < 3; c++) dst[j + c] = (byte)Math.Round(ReplyBlue[c] * a + dst[j + c] * (1 - a));

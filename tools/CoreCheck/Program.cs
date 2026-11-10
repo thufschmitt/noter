@@ -31,6 +31,18 @@ Check("the first reply answers what is above it on the page", first is { } o2 &&
 var both = AnnotationContext.Find(250, 700, replies, 120);
 Check("ink spanning replies shows all of them", both is { } o3 && o3.Replies.SequenceEqual(new[] { 0, 1, 2 }) && o3.From == 120 && o3.To == 760);
 
+// Resizing a rendered reply to the size it should have, whatever size the renderer produced.
+byte[] Px(int w, int h, Func<int, int, byte> alpha) { var b = new byte[w * h * 4]; for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) b[(y * w + x) * 4 + 3] = alpha(x, y); return b; }
+var solid = Px(4, 4, (x, y) => 200);
+Check("same size keeps the coverage", AlphaMask.Resize(solid, 4, 4, 4, 4).All(a => a == 200));
+Check("a bitmap twice too large comes back to the right size", AlphaMask.Resize(solid, 4, 4, 2, 2).Length == 4 && AlphaMask.Resize(solid, 4, 4, 2, 2).All(a => a == 200));
+var leftHalf = Px(4, 2, (x, y) => (byte)(x < 2 ? 255 : 0));
+var halved = AlphaMask.Resize(leftHalf, 4, 2, 2, 1);
+Check("shrinking keeps what is where", halved[0] == 255 && halved[1] == 0);
+var smaller = AlphaMask.Resize(leftHalf, 4, 2, 8, 4);
+Check("enlarging keeps what is where", smaller[0] == 255 && smaller[7] == 0 && smaller[3] == 255 && smaller[4] == 0);
+Check("a blend is averaged", AlphaMask.Resize(Px(2, 1, (x, y) => (byte)(x == 0 ? 100 : 200)), 2, 1, 1, 1)[0] == 150);
+
 // Constructing the service exercises the SDK types used to build the request.
 _ = new ClaudeService("sk-ant-placeholder", new[] { new Connector("x", "https://x.example/mcp", "t") });
 Check("service constructs", true);
