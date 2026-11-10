@@ -20,6 +20,7 @@
     <Compile Include="..\..\Longhand\Services\AgentTool.cs" />
     <Compile Include="..\..\Longhand\Services\CalendarTool.cs" />
     <Compile Include="..\..\Longhand\Services\Svg.cs" />
+    <Compile Include="..\..\Longhand\Services\McpRegistry.cs" />
     <Compile Include="..\..\Longhand\Services\ConversationIndex.cs" />
     <Compile Include="..\..\Longhand\Services\McpOAuth.cs" />
     <PackageReference Include="Anthropic" Version="13.7.0" />

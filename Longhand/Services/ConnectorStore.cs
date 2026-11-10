@@ -9,8 +9,14 @@ using Windows.Storage;
 
 namespace Longhand.Services;
 
-/// <summary>An MCP server the user added, and whether it is signed in.</summary>
-public sealed record ConnectedApp(string Name, string Url, bool SignedIn);
+/// <summary>How an MCP server lets you in: it asks for nothing, for a browser sign-in, or for an access token the user pastes.</summary>
+public static class AppAccess
+{
+    public const string SignIn = "oauth", Token = "token", Open = "open";
+}
+
+/// <summary>An MCP server the user added. <c>Ready</c> means it has what it needs to be used (an open server always does).</summary>
+public sealed record ConnectedApp(string Name, string Url, string Access, bool Ready);
 
 /// <summary>
 /// The connected apps. What identifies the sign-in (server address, client id, token endpoint, expiry) is kept in local settings;
@@ -21,7 +27,10 @@ public static class ConnectorStore
     const string Resource = "Longhand";
     const string Container = "mcp";
 
-    sealed record Stored(string Url, string? ClientId, string? TokenEndpoint, string? Resource, DateTimeOffset? ExpiresAt);
+    // Mode is null for apps saved before there were other kinds of access: those were all browser sign-ins.
+    sealed record Stored(string Url, string? ClientId, string? TokenEndpoint, string? Resource, DateTimeOffset? ExpiresAt, string? Mode = null);
+
+    static string ModeOf(Stored stored) => stored.Mode ?? AppAccess.SignIn;
 
     static ApplicationDataContainer Settings => ApplicationData.Current.LocalSettings.CreateContainer(Container, ApplicationDataCreateDisposition.Always);
 
@@ -33,11 +42,22 @@ public static class ConnectorStore
             .Select(v => (Name: v.Key, Stored: Read(v.Value as string)))
             .Where(v => v.Stored is not null)
             .OrderBy(v => v.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(v => new ConnectedApp(v.Name, v.Stored!.Url, Secret(AccessUser(v.Name)) is not null))
+            .Select(v => new ConnectedApp(v.Name, v.Stored!.Url, ModeOf(v.Stored!), ModeOf(v.Stored!) == AppAccess.Open || Secret(AccessUser(v.Name)) is not null))
             .ToList();
 
-    public static void Add(string name, string url) =>
-        Settings.Values[name] = JsonSerializer.Serialize(new Stored(url, null, null, null, null));
+    public static void Add(string name, string url, string access = AppAccess.SignIn) =>
+        Settings.Values[name] = JsonSerializer.Serialize(new Stored(url, null, null, null, null, access));
+
+    /// <summary>For a server that wants a token the user got from the service itself. It has no expiry and nothing to refresh.</summary>
+    public static void SaveToken(string name, string token) => Keep(AccessUser(name), token.Trim());
+
+    /// <summary>The name, made unique among the apps already added.</summary>
+    public static string UniqueName(string wanted)
+    {
+        var taken = new HashSet<string>(List().Select(a => a.Name), StringComparer.OrdinalIgnoreCase);
+        if (!taken.Contains(wanted)) return wanted;
+        for (int i = 2; ; i++) if (!taken.Contains(wanted + "-" + i)) return wanted + "-" + i;
+    }
 
     public static void Remove(string name)
     {
@@ -53,7 +73,7 @@ public static class ConnectorStore
 
     public static void SaveSession(string name, OAuthSession session)
     {
-        Settings.Values[name] = JsonSerializer.Serialize(new Stored(session.Url, session.ClientId, session.TokenEndpoint, session.Resource, session.ExpiresAt));
+        Settings.Values[name] = JsonSerializer.Serialize(new Stored(session.Url, session.ClientId, session.TokenEndpoint, session.Resource, session.ExpiresAt, AppAccess.SignIn));
         Keep(AccessUser(name), session.AccessToken);
         if (session.RefreshToken is not null) Keep(RefreshUser(name), session.RefreshToken);
     }
@@ -66,10 +86,12 @@ public static class ConnectorStore
     {
         var active = new List<Connector>();
         var expired = new List<string>();
-        foreach (var app in List().Where(a => a.SignedIn))
+        foreach (var app in List().Where(a => a.Ready))
         {
             var stored = Read(Settings.Values[app.Name] as string);
+            if (app.Access == AppAccess.Open) { active.Add(new Connector(app.Name, app.Url, null)); continue; }
             var access = Secret(AccessUser(app.Name));
+            if (app.Access == AppAccess.Token) { if (access is not null) active.Add(new Connector(app.Name, app.Url, access)); continue; }
             if (stored is null || access is null || stored.ClientId is null || stored.TokenEndpoint is null) continue;
 
             var session = new OAuthSession(stored.Url, stored.ClientId, stored.TokenEndpoint, stored.Resource, access, Secret(RefreshUser(app.Name)), stored.ExpiresAt ?? DateTimeOffset.MinValue);

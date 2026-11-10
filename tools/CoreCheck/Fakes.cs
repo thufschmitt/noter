@@ -168,3 +168,32 @@ sealed class FakeAnthropic : FakeServer
         for (int i = 0; i < text.Length; i += 7) yield return text.Substring(i, Math.Min(7, text.Length - i));
     }
 }
+
+/// <summary>A stand-in for the MCP registry: one page of servers, then a second one after the cursor.</summary>
+sealed class FakeRegistry : FakeServer
+{
+    protected override async Task Handle(Request r, HttpListenerResponse response)
+    {
+        if (r.Path != "/v0/servers") { await Write(response, 404, "text/plain", ""); return; }
+        if (r.Query.Contains("cursor=next-1"))
+        {
+            await Write(response, 200, "application/json", """{"servers":[{"server":{"name":"com.example/second","description":"Second page","remotes":[{"type":"sse","url":"https://second.example/sse"}]}}],"metadata":{"count":1}}""");
+            return;
+        }
+        await Write(response, 200, "application/json", """
+            {"servers":[
+              {"server":{"name":"io.github.acme/todo-list","title":"Todo List","description":"Tasks","websiteUrl":"https://acme.example","remotes":[{"type":"streamable-http","url":"https://mcp.acme.example/mcp"}]},
+               "_meta":{"io.modelcontextprotocol.registry/official":{"status":"active"}}},
+              {"server":{"name":"com.example/tenant","description":"Needs a tenant","remotes":[{"type":"streamable-http","url":"https://{tenant}.example.com/mcp","variables":{"tenant":{"description":"Your tenant","isRequired":true,"choices":["eu","us"],"default":"eu"}}}]}},
+              {"server":{"name":"com.example/keyed","description":"Bearer token","remotes":[{"type":"streamable-http","url":"https://keyed.example/mcp","headers":[{"name":"Authorization","isRequired":true,"isSecret":true,"value":"Bearer {api_key}","variables":{"api_key":{"isSecret":true}}}]}]}},
+              {"server":{"name":"com.example/optional-key","description":"Optional token","remotes":[{"type":"streamable-http","url":"https://opt.example/mcp","headers":[{"name":"Authorization","isSecret":true}]}]}},
+              {"server":{"name":"com.example/custom-header","description":"Wants X-Api-Key","remotes":[{"type":"streamable-http","url":"https://hdr.example/mcp","headers":[{"name":"X-Api-Key","isRequired":true}]}]}},
+              {"server":{"name":"com.example/local-only","description":"Runs on your PC","packages":[{"registryType":"npm","identifier":"x","transport":{"type":"stdio"}}]}},
+              {"server":{"name":"com.example/private","description":"On a LAN","remotes":[{"type":"streamable-http","url":"https://192.168.1.5/mcp"}]}},
+              {"server":{"name":"com.example/plain-http","description":"No TLS","remotes":[{"type":"streamable-http","url":"http://insecure.example/mcp"}]}},
+              {"server":{"name":"com.example/old","description":"Deleted","remotes":[{"type":"streamable-http","url":"https://old.example/mcp"}]},"_meta":{"io.modelcontextprotocol.registry/official":{"status":"deleted"}}},
+              {"server":{"name":"io.github.acme/todo-list","description":"Duplicate version","remotes":[{"type":"streamable-http","url":"https://mcp.acme.example/mcp"}]}}
+            ],"metadata":{"nextCursor":"next-1","count":10}}
+            """);
+    }
+}

@@ -1019,6 +1019,7 @@ public sealed partial class MainPage : Page
     };
 
     readonly McpOAuth _oauth = new();
+    readonly McpRegistry _registry = new();
 
     async void Apps_Click(object sender, RoutedEventArgs e) => await ShowAppsAsync();
 
@@ -1028,6 +1029,262 @@ public sealed partial class MainPage : Page
         var list = new StackPanel { Spacing = 10 };
         var message = new TextBlock { TextWrapping = TextWrapping.Wrap, MaxWidth = 380, Opacity = 0.75 };
 
+        string? tokenEditing = null; // the app whose access token is being typed
+
+        void Render()
+        {
+            list.Children.Clear();
+            var apps = ConnectorStore.List();
+            if (apps.Count == 0)
+                list.Children.Add(new TextBlock { Text = "No apps yet. Find one in the registry below, or add one by address.", Opacity = 0.75, TextWrapping = TextWrapping.Wrap });
+            foreach (var app in apps)
+            {
+                var row = new Grid { ColumnSpacing = 8, Width = 380 };
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+                var status = app.Access switch
+                {
+                    AppAccess.Open => "No sign-in needed",
+                    AppAccess.Token => app.Ready ? "Access token saved" : "Needs an access token",
+                    _ => app.Ready ? "Signed in" : "Not signed in",
+                };
+                var label = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+                label.Children.Add(new TextBlock { Text = app.Name, FontWeight = Windows.UI.Text.FontWeights.SemiBold });
+                label.Children.Add(new TextBlock { Text = status, FontSize = 12, Opacity = 0.75 });
+                row.Children.Add(label);
+
+                if (app.Access != AppAccess.Open)
+                {
+                    var action = new Button { Content = app.Access == AppAccess.Token ? (app.Ready ? "Remove token" : "Add token") : (app.Ready ? "Sign out" : "Sign in") };
+                    action.Click += async (_, _) =>
+                    {
+                        if (app.Ready)
+                        {
+                            ConnectorStore.SignOut(app.Name);
+                            Render();
+                            return;
+                        }
+                        if (app.Access == AppAccess.Token)
+                        {
+                            tokenEditing = app.Name;
+                            Render();
+                            return;
+                        }
+                        action.IsEnabled = false;
+                        message.Text = $"Finish signing in to {app.Name} in your browser. This page continues when you come back.";
+                        try
+                        {
+                            await SignInAsync(app, cts.Token);
+                            message.Text = "";
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            message.Text = "";
+                        }
+                        catch (Exception ex)
+                        {
+                            message.Text = $"Couldn't sign in to {app.Name}: {ex.Message}";
+                        }
+                        Render();
+                    };
+                    Grid.SetColumn(action, 1);
+                    row.Children.Add(action);
+                }
+
+                var remove = new Button { Content = new FontIcon { Glyph = "\uE74D", FontSize = 14 } };
+                ToolTipService.SetToolTip(remove, "Remove");
+                remove.Click += (_, _) =>
+                {
+                    ConnectorStore.Remove(app.Name);
+                    Render();
+                };
+                Grid.SetColumn(remove, 2);
+                row.Children.Add(remove);
+                list.Children.Add(row);
+
+                if (tokenEditing == app.Name)
+                {
+                    var box = new PasswordBox { PlaceholderText = "Access token from the service", Width = 380 };
+                    var save = new Button { Content = "Save token" };
+                    save.Click += (_, _) =>
+                    {
+                        var token = box.Password.Trim();
+                        if (token.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) token = token[7..].Trim();
+                        if (token.Length == 0) return;
+                        ConnectorStore.SaveToken(app.Name, token);
+                        tokenEditing = null;
+                        Render();
+                    };
+                    var cancel = new Button { Content = "Cancel" };
+                    cancel.Click += (_, _) =>
+                    {
+                        tokenEditing = null;
+                        Render();
+                    };
+                    var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+                    buttons.Children.Add(save);
+                    buttons.Children.Add(cancel);
+                    list.Children.Add(box);
+                    list.Children.Add(buttons);
+                }
+            }
+        }
+
+        /// <summary>Adds a server and finds out how it lets you in, so the right button shows up.</summary>
+        async Task AddAppAsync(string wantedName, string url, bool tokenRequired)
+        {
+            var name = ConnectorStore.UniqueName(wantedName);
+            string access;
+            try
+            {
+                message.Text = $"Checking how {name} lets you in…";
+                var found = await _oauth.InspectAsync(url, cts.Token);
+                access = found switch
+                {
+                    McpAccess.SignIn => AppAccess.SignIn,
+                    McpAccess.Token => AppAccess.Token,
+                    _ => tokenRequired ? AppAccess.Token : AppAccess.Open,
+                };
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                message.Text = $"Couldn't add {name}: {ex.Message}";
+                return;
+            }
+            ConnectorStore.Add(name, url, access);
+            message.Text = access switch
+            {
+                AppAccess.SignIn => $"Added {name}. Sign in to use it.",
+                AppAccess.Token => $"Added {name}. It needs an access token: get one from the service, then tap Add token.",
+                _ => $"Added {name}. It needs no sign-in.",
+            };
+            Render();
+        }
+
+        // ----- the MCP registry: any server published there that is hosted online -----
+        var searchBox = new TextBox { PlaceholderText = "Search the registry (todo, github, calendar…)", Width = 380 };
+        var searchButton = new Button { Content = "Search" };
+        var results = new StackPanel { Spacing = 10, Width = 380 };
+        var resultsNote = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.75, MaxWidth = 380 };
+        var moreButton = new Button { Content = "More results", Visibility = Visibility.Collapsed };
+        string? nextCursor = null, lastQuery = null;
+        int shown = 0, hidden = 0;
+
+        UIElement ResultRow(RegistryServer server)
+        {
+            var box = new StackPanel { Spacing = 6 };
+            var row = new Grid { ColumnSpacing = 8 };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var label = new StackPanel();
+            label.Children.Add(new TextBlock { Text = server.Title, FontWeight = Windows.UI.Text.FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis });
+            label.Children.Add(new TextBlock { Text = server.Host + (server.Remote.TokenRequired ? " · needs an access token" : ""), FontSize = 12, Opacity = 0.75, TextTrimming = TextTrimming.CharacterEllipsis });
+            if (server.Description.Length > 0)
+                label.Children.Add(new TextBlock { Text = server.Description, FontSize = 12, MaxLines = 2, TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.CharacterEllipsis });
+            row.Children.Add(label);
+
+            var addButton = new Button { Content = "Add", VerticalAlignment = VerticalAlignment.Top };
+            Grid.SetColumn(addButton, 1);
+            row.Children.Add(addButton);
+            box.Children.Add(row);
+
+            addButton.Click += async (_, _) =>
+            {
+                if (server.Remote.Variables.Count == 0)
+                {
+                    addButton.IsEnabled = false;
+                    await AddAppAsync(McpRegistry.Slug(server.Name), server.Remote.Url, server.Remote.TokenRequired);
+                    addButton.IsEnabled = true;
+                    return;
+                }
+
+                // The address has blanks (an account or region name): ask for them first.
+                addButton.IsEnabled = false;
+                var getters = new Dictionary<string, Func<string>>();
+                var form = new StackPanel { Spacing = 6 };
+                foreach (var v in server.Remote.Variables)
+                {
+                    form.Children.Add(new TextBlock { Text = (v.Description.Length > 0 ? v.Description : v.Name) + (v.Required ? " *" : ""), FontSize = 12, TextWrapping = TextWrapping.Wrap });
+                    if (v.Choices.Count > 0)
+                    {
+                        var choice = new ComboBox { ItemsSource = v.Choices.ToList(), Width = 380 };
+                        choice.SelectedIndex = Math.Max(0, v.Choices.ToList().IndexOf(v.Default));
+                        form.Children.Add(choice);
+                        getters[v.Name] = () => choice.SelectedItem as string ?? "";
+                    }
+                    else
+                    {
+                        var text = new TextBox { Text = v.Default, PlaceholderText = v.Name, Width = 380 };
+                        form.Children.Add(text);
+                        getters[v.Name] = () => text.Text;
+                    }
+                }
+                var confirm = new Button { Content = "Add " + server.Title };
+                confirm.Click += async (_, _) =>
+                {
+                    var url = server.Remote.Resolve(getters.ToDictionary(g => g.Key, g => g.Value()));
+                    if (url is null)
+                    {
+                        message.Text = "Fill in the starred boxes with plain values (no slashes or spaces).";
+                        return;
+                    }
+                    confirm.IsEnabled = false;
+                    await AddAppAsync(McpRegistry.Slug(server.Name), url, server.Remote.TokenRequired);
+                    box.Children.Remove(form);
+                    addButton.IsEnabled = true;
+                };
+                form.Children.Add(confirm);
+                box.Children.Add(form);
+            };
+            return box;
+        }
+
+        async Task SearchRegistryAsync(bool more)
+        {
+            searchButton.IsEnabled = moreButton.IsEnabled = false;
+            try
+            {
+                if (!more)
+                {
+                    lastQuery = searchBox.Text;
+                    results.Children.Clear();
+                    shown = hidden = 0;
+                }
+                resultsNote.Text = "Searching…";
+                var page = await _registry.SearchAsync(lastQuery, more ? nextCursor : null, cts.Token);
+                foreach (var server in page.Servers) results.Children.Add(ResultRow(server));
+                shown += page.Servers.Count;
+                hidden += page.Hidden;
+                nextCursor = page.NextCursor;
+                moreButton.Visibility = nextCursor is null ? Visibility.Collapsed : Visibility.Visible;
+                resultsNote.Text = shown == 0 && nextCursor is null
+                    ? "Nothing found."
+                    : $"{shown} found" + (hidden > 0 ? $"; {hidden} more can't be used here (they run on your own PC, or need a kind of sign-in this app can't do)." : ".");
+            }
+            catch (OperationCanceledException)
+            {
+                resultsNote.Text = "";
+            }
+            catch (Exception ex)
+            {
+                resultsNote.Text = "Couldn't search the registry: " + ex.Message;
+            }
+            searchButton.IsEnabled = moreButton.IsEnabled = true;
+        }
+        searchButton.Click += async (_, _) => await SearchRegistryAsync(more: false);
+        moreButton.Click += async (_, _) => await SearchRegistryAsync(more: true);
+        searchBox.KeyDown += async (_, e) =>
+        {
+            if (e.Key == Windows.System.VirtualKey.Enter) await SearchRegistryAsync(more: false);
+        };
+
+        // ----- adding one by address -----
         var presets = new ComboBox { PlaceholderText = "Pick a service, or fill in the two boxes", Width = 380, ItemsSource = AppPresets.Select(p => p.Name).ToList() };
         var nameBox = new TextBox { PlaceholderText = "Name", Width = 380 };
         var urlBox = new TextBox { PlaceholderText = "https://server/mcp", Width = 380 };
@@ -1039,83 +1296,21 @@ public sealed partial class MainPage : Page
             urlBox.Text = preset.Url;
         };
         var add = new Button { Content = "Add" };
-
-        void Render()
-        {
-            list.Children.Clear();
-            var apps = ConnectorStore.List();
-            if (apps.Count == 0)
-                list.Children.Add(new TextBlock { Text = "No apps yet. Add one below, then sign in.", Opacity = 0.75 });
-            foreach (var app in apps)
-            {
-                var row = new Grid { ColumnSpacing = 8, Width = 380 };
-                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-                var label = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-                label.Children.Add(new TextBlock { Text = app.Name, FontWeight = Windows.UI.Text.FontWeights.SemiBold });
-                label.Children.Add(new TextBlock { Text = app.SignedIn ? "Signed in" : "Not signed in", FontSize = 12, Opacity = 0.75 });
-
-                var action = new Button { Content = app.SignedIn ? "Sign out" : "Sign in" };
-                action.Click += async (_, _) =>
-                {
-                    if (app.SignedIn)
-                    {
-                        ConnectorStore.SignOut(app.Name);
-                        Render();
-                        return;
-                    }
-                    action.IsEnabled = false;
-                    message.Text = $"Finish signing in to {app.Name} in your browser. This page continues when you come back.";
-                    try
-                    {
-                        await SignInAsync(app, cts.Token);
-                        message.Text = "";
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        message.Text = "";
-                    }
-                    catch (Exception ex)
-                    {
-                        message.Text = $"Couldn't sign in to {app.Name}: {ex.Message}";
-                    }
-                    Render();
-                };
-
-                var remove = new Button { Content = new FontIcon { Glyph = "\uE74D", FontSize = 14 } };
-                ToolTipService.SetToolTip(remove, "Remove");
-                remove.Click += (_, _) =>
-                {
-                    ConnectorStore.Remove(app.Name);
-                    Render();
-                };
-
-                Grid.SetColumn(action, 1);
-                Grid.SetColumn(remove, 2);
-                row.Children.Add(label);
-                row.Children.Add(action);
-                row.Children.Add(remove);
-                list.Children.Add(row);
-            }
-        }
-
-        add.Click += (_, _) =>
+        add.Click += async (_, _) =>
         {
             // Names go to the API as server names, so keep them to letters, digits and dashes.
             var name = System.Text.RegularExpressions.Regex.Replace(nameBox.Text.Trim().ToLowerInvariant(), "[^a-z0-9]+", "-").Trim('-');
             var url = urlBox.Text.Trim();
-            if (name.Length == 0 || !Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
+            if (name.Length == 0 || !McpRegistry.IsPublicHttps(url))
             {
-                message.Text = "An app needs a name and an https address.";
+                message.Text = "An app needs a name and an https address that is reachable from the internet (Anthropic's servers call it).";
                 return;
             }
-            ConnectorStore.Add(name, url);
+            add.IsEnabled = false;
+            await AddAppAsync(name, url, tokenRequired: false);
             nameBox.Text = urlBox.Text = "";
             presets.SelectedIndex = -1;
-            message.Text = "";
-            Render();
+            add.IsEnabled = true;
         };
 
         // ----- Nextcloud calendar: signs in through the browser, so there is nothing to paste -----
@@ -1217,6 +1412,21 @@ public sealed partial class MainPage : Page
         panel.Children.Add(new TextBlock { Text = "Other apps (MCP servers)", FontWeight = Windows.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 0) });
         panel.Children.Add(list);
         panel.Children.Add(message);
+        panel.Children.Add(new TextBlock { Text = "Find more in the MCP registry", FontWeight = Windows.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 0) });
+        panel.Children.Add(new TextBlock
+        {
+            Text = "Anyone can publish a server there. Only add ones you trust: Claude can use what they offer, and what it sends them leaves your PC.",
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 12,
+            Opacity = 0.75,
+            MaxWidth = 380,
+        });
+        panel.Children.Add(searchBox);
+        panel.Children.Add(searchButton);
+        panel.Children.Add(results);
+        panel.Children.Add(moreButton);
+        panel.Children.Add(resultsNote);
+        panel.Children.Add(new TextBlock { Text = "Add one by address", FontWeight = Windows.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 0) });
         panel.Children.Add(presets);
         panel.Children.Add(nameBox);
         panel.Children.Add(urlBox);

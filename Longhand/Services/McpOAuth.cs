@@ -17,6 +17,9 @@ public sealed record OAuthSession(string Url, string ClientId, string TokenEndpo
     public bool NeedsRefresh => DateTimeOffset.UtcNow > ExpiresAt - TimeSpan.FromMinutes(2);
 }
 
+/// <summary>How a server lets you in.</summary>
+public enum McpAccess { Open, SignIn, Token }
+
 /// <summary>A sign-in that has been set up and is waiting for the user to approve it in the browser.</summary>
 public sealed record SignInRequest(Uri AuthorizeUrl, string State, string Verifier, string Url, string ClientId, string TokenEndpoint, string? Resource, string RedirectUri);
 
@@ -39,6 +42,30 @@ public sealed class McpOAuth
     public McpOAuth(HttpClient? http = null)
     {
         _http = http ?? new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+    }
+
+    /// <summary>
+    /// Asks the server what it wants before anything is sent: nothing (Open), a browser sign-in (SignIn), or an access token
+    /// the user has to get from the service themselves (Token).
+    /// </summary>
+    public async Task<McpAccess> InspectAsync(string mcpUrl, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, mcpUrl) { Content = new StringContent(InitializeBody, Encoding.UTF8, "application/json") };
+        request.Headers.Accept.ParseAdd("application/json");
+        request.Headers.Accept.ParseAdd("text/event-stream");
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        var code = (int)response.StatusCode;
+
+        if (response.IsSuccessStatusCode) return McpAccess.Open;
+        if (code is 401 or 403)
+        {
+            if (response.Headers.TryGetValues("WWW-Authenticate", out var values) && Param(string.Join(", ", values), "resource_metadata") is not null) return McpAccess.SignIn;
+            // No hint in the header: a server that supports sign-in still publishes where it is described.
+            return await GetJsonAsync(WellKnown(new Uri(mcpUrl), "oauth-protected-resource"), ct) is not null ? McpAccess.SignIn : McpAccess.Token;
+        }
+        // 400, 405, 406 and 415 mean "I didn't like this request", not "you can't come in": a real call may well work.
+        if (code is 400 or 405 or 406 or 415) return McpAccess.Open;
+        throw new InvalidOperationException($"The server answered {code}, so it can't be used from here.");
     }
 
     public async Task<SignInRequest> BeginAsync(string mcpUrl, string redirectUri, CancellationToken ct)

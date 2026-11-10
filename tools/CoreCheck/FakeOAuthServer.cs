@@ -39,6 +39,15 @@ sealed class FakeOAuthServer : IAsyncDisposable
             string? json = null;
             switch (path)
             {
+                case "/open":
+                    json = "{}";
+                    break;
+                case "/closed":
+                    c.Response.StatusCode = 401; // asks for a token but says nothing about signing in
+                    break;
+                case "/406":
+                    c.Response.StatusCode = 406;
+                    break;
                 case "/mcp":
                     c.Response.StatusCode = 401;
                     c.Response.Headers["WWW-Authenticate"] = $"Bearer realm=\"OAuth\", resource_metadata=\"{BaseUrl}/.well-known/oauth-protected-resource/mcp\", scope=\"read write\"";
