@@ -1,0 +1,53 @@
+name: Windows build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    name: Portable checks
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+      - name: Claude service and reply parser
+        run: dotnet run --project tools/CoreCheck/CoreCheck.csproj
+      - name: Windows Runtime helpers
+        run: dotnet build tools/WinRtCheck/WinRtCheck.csproj
+
+  app:
+    name: UWP app (${{ matrix.platform }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [x64, ARM64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build
+        # Visual Studio's MSBuild carries the UWP XAML compiler and packaging targets.
+        run: >
+          msbuild Longhand/Longhand.csproj -restore -nologo -v:minimal
+          -p:Configuration=Release
+          -p:Platform=${{ matrix.platform }}
+          -p:AppxPackageSigningEnabled=false
+          -p:GenerateAppxPackageOnBuild=true
+          -p:AppxBundle=Never
+          -p:AppxPackageDir=${{ github.workspace }}\AppPackages\
+      - name: Upload app package
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Longhand-${{ matrix.platform }}
+          path: AppPackages/
+          if-no-files-found: warn
