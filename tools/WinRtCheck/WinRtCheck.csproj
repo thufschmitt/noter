@@ -11,6 +11,7 @@
   <ItemGroup>
     <Compile Include="..\..\Longhand\Services\InkSnapshot.cs" />
     <Compile Include="..\..\Longhand\Services\ApiKeyStore.cs" />
+    <Compile Include="..\..\Longhand\Services\ConnectorStore.cs" />
     <Compile Include="..\..\Longhand\Services\PageStore.cs" />
   </ItemGroup>
 </Project>

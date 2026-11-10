@@ -510,13 +510,19 @@ public sealed partial class MainPage : Page
         UpdateAsk();
         try
         {
-            var result = await new ClaudeService(key).AskAsync(png, History(), progress =>
+            var result = await new ClaudeService(key, ConnectorList.Parse(ConnectorStore.Load())).AskAsync(png, History(), progress =>
             {
                 note.Heard = progress.Heard;
                 note.Text = progress.Body;
                 note.Block.Text = progress.Body.Length > 0 ? progress.Body : "…";
                 Grow();
-            }, _cts.Token);
+            }, _cts.Token, status =>
+            {
+                // A tool is running: show what it is doing in place of the reply, which is written after it finishes.
+                note.Text = "";
+                note.Block.Text = status;
+                Grow();
+            });
 
             note.Heard = result.Heard;
             note.Text = result.Outcome switch
@@ -581,6 +587,16 @@ public sealed partial class MainPage : Page
     async Task<string?> PromptForKeyAsync()
     {
         bool hasKey = ApiKeyStore.Load() is not null;
+        var connectorsBox = new TextBox
+        {
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.NoWrap,
+            Height = 90,
+            Width = 380,
+            PlaceholderText = "name https://server/mcp token",
+            Text = ConnectorStore.Load(),
+        };
+        ScrollViewer.SetHorizontalScrollBarVisibility(connectorsBox, ScrollBarVisibility.Auto);
         var box = new PasswordBox { PlaceholderText = hasKey ? "A key is saved. Paste a new one to replace it." : "sk-ant-…", Width = 380 };
         var panel = new StackPanel { Spacing = 12 };
         panel.Children.Add(new TextBlock
@@ -590,10 +606,17 @@ public sealed partial class MainPage : Page
             MaxWidth = 380,
         });
         panel.Children.Add(box);
+        panel.Children.Add(new TextBlock
+        {
+            Text = "Claude can always search the web and read pages. Connected apps (remote MCP servers) are optional: one per line as name, https address and, if the server needs one, an access token. Anthropic's servers call them, so they must be reachable from the internet.",
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 380,
+        });
+        panel.Children.Add(connectorsBox);
 
         var dialog = new ContentDialog
         {
-            Title = "Anthropic API key",
+            Title = "Settings",
             Content = panel,
             PrimaryButtonText = "Save",
             CloseButtonText = "Cancel",
@@ -602,6 +625,12 @@ public sealed partial class MainPage : Page
         if (hasKey) dialog.SecondaryButtonText = "Remove key";
 
         var choice = await dialog.ShowAsync();
+        if (choice == ContentDialogResult.Primary)
+        {
+            ConnectorStore.Save(connectorsBox.Text);
+            var rejected = ConnectorList.Rejected(connectorsBox.Text);
+            if (rejected.Count > 0) ShowToast("Ignored (needs a name and an https address): " + string.Join(", ", rejected), 6);
+        }
         if (choice == ContentDialogResult.Primary && !string.IsNullOrWhiteSpace(box.Password))
         {
             var key = box.Password.Trim();
