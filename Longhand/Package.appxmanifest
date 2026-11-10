@@ -4,7 +4,7 @@
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   IgnorableNamespaces="uap">
 
-  <Identity Name="Longhand.Prototype" Publisher="CN=Longhand Prototype" Version="0.1.0.0" />
+  <Identity Name="Longhand.Prototype" Publisher="CN=Longhand Prototype" Version="0.2.0.0" />
 
   <Properties>
     <DisplayName>Longhand</DisplayName>
