@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Type-checks the app's Windows Runtime helpers against the Windows SDK projections (runs on any OS; never executed). -->
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\Longhand\Services\InkSnapshot.cs" />
+    <Compile Include="..\..\Longhand\Services\ApiKeyStore.cs" />
+    <Compile Include="..\..\Longhand\Services\PageStore.cs" />
+  </ItemGroup>
+</Project>

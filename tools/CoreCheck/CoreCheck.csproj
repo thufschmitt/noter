@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Compiles the app's portable services on any OS and runs the parser checks. Not part of the app. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\Longhand\Services\ReplyParser.cs" />
+    <Compile Include="..\..\Longhand\Services\ClaudeService.cs" />
+    <PackageReference Include="Anthropic" Version="13.7.0" />
+  </ItemGroup>
+</Project>
