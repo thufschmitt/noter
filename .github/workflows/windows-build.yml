@@ -15,14 +15,29 @@ jobs:
         with:
           dotnet-version: |
             8.0.x
-            9.0.x
+            10.0.x
       - name: Claude service and reply parser
         run: dotnet run --project tools/CoreCheck/CoreCheck.csproj
       - name: Windows Runtime helpers
         run: dotnet build tools/WinRtCheck/WinRtCheck.csproj
 
+  version:
+    name: Version number
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        # Major and minor come from Package.appxmanifest; the build number is this workflow's run number,
+        # so every build is newer than the one before and installs over it.
+        run: |
+          base=$(grep -oP '<Identity [^>]*Version="\K[0-9]+\.[0-9]+' Longhand/Package.appxmanifest)
+          echo "version=$base.${{ github.run_number }}.0" >> "$GITHUB_OUTPUT"
+
   app:
     name: UWP app (${{ matrix.platform }})
+    needs: version
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -32,8 +47,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 9.0.x
+          dotnet-version: 10.0.x
       - uses: microsoft/setup-msbuild@v2
+
+      - name: Stamp the version
+        shell: pwsh
+        run: |
+          $manifest = "Longhand/Package.appxmanifest"
+          $xml = Get-Content $manifest -Raw
+          $xml = $xml -replace '(<Identity [^>]*Version=")[^"]+(")', "`${1}${{ needs.version.outputs.version }}`${2}"
+          Set-Content $manifest $xml -NoNewline
+          Select-String -Path $manifest -Pattern '<Identity'
 
       - name: Load the signing certificate
         id: cert
@@ -66,9 +90,36 @@ jobs:
           -p:AppxPackageDir=${{ github.workspace }}\AppPackages\
 
       - name: Upload app package
-        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Longhand-${{ matrix.platform }}
           path: AppPackages/
           if-no-files-found: error
+
+  release:
+    name: GitHub release
+    # Every push to main becomes a release; other branches and pull requests only keep build artifacts.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [checks, version, app]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: Longhand-*
+          path: dist
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir upload
+          find dist -name '*.msix' -exec cp {} upload/ \;
+          cp "$(find dist -name Longhand.cer | head -1)" upload/Longhand.cer
+          ls -l upload
+          gh release create "v$VERSION" upload/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Longhand $VERSION" \
+            --notes "Built from ${GITHUB_SHA::7}. Install: trust Longhand.cer once (certutil -addstore TrustedPeople Longhand.cer, as administrator), then open the .msix for your PC (x64 or arm64)."
