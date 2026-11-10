@@ -53,6 +53,8 @@ The page saves itself to the app's local folder and is restored when you reopen 
 - Only the ink written since the last answer is sent, as a PNG of black ink on white (`Services/InkSnapshot.cs`).
 - Earlier turns go along as text: Claude's one-line transcription of what you wrote, plus its reply. Claude keeps the context without old images being re-sent.
 - Model: `claude-opus-5-5` at low effort, which keeps the wait short for notebook-sized replies, streamed onto the page as it's written (`Services/ClaudeService.cs`).
+- Claude can search the web and fetch pages (Anthropic's server-side tools, up to 5 uses of each per answer). While one runs, the answer line shows what it is doing in blue ink.
+- Optional connected apps: the gear dialog takes remote MCP servers, one per line as `name https://address token`. Anthropic's servers call them, so they must be reachable from the internet, and the token is a bearer token you create yourself (an API key or personal access token; OAuth sign-in isn't supported). The list is stored in Windows Credential Manager next to the API key.
 - Server-side refusal fallback is on (`fallbacks: "default"`). If a safety check declines a request, the API answers it with a suitable fallback model in the same stream instead of returning nothing.
 
 ## What was checked, and what wasn't

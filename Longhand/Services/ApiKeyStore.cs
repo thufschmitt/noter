@@ -33,11 +33,11 @@ public static class ApiKeyStore
         try
         {
             var vault = new PasswordVault();
-            foreach (var credential in vault.FindAllByResource(Resource)) vault.Remove(credential);
+            vault.Remove(vault.Retrieve(Resource, User));
         }
         catch
         {
-            // FindAllByResource throws when nothing is stored.
+            // Retrieve throws when nothing is stored.
         }
     }
 }
