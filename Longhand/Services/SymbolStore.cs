@@ -12,7 +12,7 @@ public static class SymbolStore
     const string ListFile = "symbols.json";
     const string Folder = "symbols";
 
-    public static async Task<List<Symbol>> LoadAsync()
+    public static async Task<List<UserSymbol>> LoadAsync()
     {
         try
         {
@@ -23,10 +23,10 @@ public static class SymbolStore
         {
             // An unreadable list starts empty; it is the user's to rebuild, and nothing else depends on it.
         }
-        return new List<Symbol>();
+        return new List<UserSymbol>();
     }
 
-    public static async Task SaveAsync(IReadOnlyList<Symbol> symbols)
+    public static async Task SaveAsync(IReadOnlyList<UserSymbol> symbols)
     {
         var file = await ApplicationData.Current.LocalFolder.CreateFileAsync(ListFile, CreationCollisionOption.ReplaceExisting);
         await FileIO.WriteTextAsync(file, SymbolList.ToJson(symbols));

@@ -12,9 +12,9 @@ static class SymbolChecks
     {
         check("there are no symbols until the user makes some", SymbolList.Parse(null).Count == 0 && SymbolList.Parse("").Count == 0 && SymbolList.Parse("[]").Count == 0);
 
-        var envelope = new Symbol("a", "envelope", "Add what I wrote to my Todoist inbox.", HasDrawing: true);
-        var star = new Symbol("b", "star", "Remind me about this tomorrow.", HasDrawing: false);
-        var list = SymbolList.Upsert(SymbolList.Upsert(new List<Symbol>(), envelope), star);
+        var envelope = new UserSymbol("a", "envelope", "Add what I wrote to my Todoist inbox.", HasDrawing: true);
+        var star = new UserSymbol("b", "star", "Remind me about this tomorrow.", HasDrawing: false);
+        var list = SymbolList.Upsert(SymbolList.Upsert(new List<UserSymbol>(), envelope), star);
         check("symbols are added in order", list.Select(s => s.Name).SequenceEqual(new[] { "envelope", "star" }));
 
         var changed = SymbolList.Upsert(list, envelope with { Meaning = "  Put it in   Todoist.\n" });
@@ -30,7 +30,7 @@ static class SymbolChecks
         check("a name and a meaning are needed", SymbolList.Problem(list, null, "  ", "m") is not null && SymbolList.Problem(list, null, "heart", "") is not null && SymbolList.Problem(list, null, "heart", "Mark as important.") is null);
         check("names can't repeat, but a symbol can keep its own", SymbolList.Problem(list, null, "ENVELOPE", "x") is not null && SymbolList.Problem(list, "a", "Envelope", "x") is null);
         check("long names and meanings are refused", SymbolList.Problem(list, null, new string('n', SymbolList.MaxName + 1), "m") is not null && SymbolList.Problem(list, null, "ok", new string('m', SymbolList.MaxMeaning + 1)) is not null);
-        var full = Enumerable.Range(0, SymbolList.MaxSymbols).Select(i => new Symbol("id" + i, "s" + i, "m", false)).ToList();
+        var full = Enumerable.Range(0, SymbolList.MaxSymbols).Select(i => new UserSymbol("id" + i, "s" + i, "m", false)).ToList();
         check("there is a limit on how many", SymbolList.Problem(full, null, "extra", "m") is not null && SymbolList.Problem(full, "id3", "s3", "new meaning") is null);
 
         // ----- what Claude is sent -----

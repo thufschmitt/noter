@@ -1460,7 +1460,7 @@ public sealed partial class MainPage : Page
     StackPanel BuildSymbolsSection()
     {
         var section = new StackPanel { Spacing = 8, Width = 380 };
-        var symbols = new List<Symbol>();
+        var symbols = new List<UserSymbol>();
         string? editingId = null, armedDelete = null;
         bool removeDrawing = false;
 
@@ -1632,7 +1632,7 @@ public sealed partial class MainPage : Page
                     await SymbolStore.DeleteDrawingAsync(id);
                     hasDrawing = false;
                 }
-                symbols = SymbolList.Upsert(symbols, new Symbol(id, nameBox.Text, meaningBox.Text, hasDrawing));
+                symbols = SymbolList.Upsert(symbols, new UserSymbol(id, nameBox.Text, meaningBox.Text, hasDrawing));
                 await SymbolStore.SaveAsync(symbols);
                 message.Text = "Saved.";
                 ResetForm();

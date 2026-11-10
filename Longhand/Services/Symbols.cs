@@ -7,7 +7,7 @@ using System.Text.RegularExpressions;
 namespace Longhand.Services;
 
 /// <summary>A shortcut the user defined: a symbol they draw, and what it means. <c>HasDrawing</c> says an example drawing is saved for it.</summary>
-public sealed record Symbol(string Id, string Name, string Meaning, bool HasDrawing);
+public sealed record UserSymbol(string Id, string Name, string Meaning, bool HasDrawing);
 
 /// <summary>What Claude is told about one symbol: its name and meaning, and the example drawing (a PNG) when there is one.</summary>
 public sealed record LegendEntry(string Name, string Meaning, byte[]? Png);
@@ -22,10 +22,10 @@ public static class SymbolList
     public const int MaxName = 40;
     public const int MaxMeaning = 400;
 
-    public static List<Symbol> Parse(string? json)
+    public static List<UserSymbol> Parse(string? json)
     {
-        List<Symbol>? items;
-        try { items = string.IsNullOrWhiteSpace(json) ? null : JsonSerializer.Deserialize<List<Symbol>>(json); }
+        List<UserSymbol>? items;
+        try { items = string.IsNullOrWhiteSpace(json) ? null : JsonSerializer.Deserialize<List<UserSymbol>>(json); }
         catch (JsonException) { items = null; }
 
         // A hand-edited or damaged file shouldn't be able to break the list.
@@ -38,10 +38,10 @@ public static class SymbolList
             .ToList();
     }
 
-    public static string ToJson(IReadOnlyList<Symbol> symbols) => JsonSerializer.Serialize(symbols);
+    public static string ToJson(IReadOnlyList<UserSymbol> symbols) => JsonSerializer.Serialize(symbols);
 
     /// <summary>Why a symbol can't be saved, or null when it can. <c>editingId</c> is the symbol being changed, so it doesn't clash with itself.</summary>
-    public static string? Problem(IReadOnlyList<Symbol> symbols, string? editingId, string name, string meaning)
+    public static string? Problem(IReadOnlyList<UserSymbol> symbols, string? editingId, string name, string meaning)
     {
         name = Tidy(name);
         meaning = Tidy(meaning);
@@ -55,7 +55,7 @@ public static class SymbolList
     }
 
     /// <summary>Adds the symbol, or replaces the one with the same id. The caller has checked <see cref="Problem"/>.</summary>
-    public static List<Symbol> Upsert(IReadOnlyList<Symbol> symbols, Symbol symbol)
+    public static List<UserSymbol> Upsert(IReadOnlyList<UserSymbol> symbols, UserSymbol symbol)
     {
         var tidy = symbol with { Name = Tidy(symbol.Name), Meaning = Tidy(symbol.Meaning) };
         var list = symbols.ToList();
@@ -65,7 +65,7 @@ public static class SymbolList
         return list;
     }
 
-    public static List<Symbol> Remove(IReadOnlyList<Symbol> symbols, string id) => symbols.Where(s => s.Id != id).ToList();
+    public static List<UserSymbol> Remove(IReadOnlyList<UserSymbol> symbols, string id) => symbols.Where(s => s.Id != id).ToList();
 
     public static string NewId() => Guid.NewGuid().ToString("N");
 
