@@ -89,6 +89,10 @@
                         ToolTipService.ToolTip="API key" AutomationProperties.Name="API key settings">
                     <FontIcon Glyph="&#xE713;" FontSize="18" />
                 </Button>
+                <Button x:Name="AppsButton" Click="Apps_Click" Style="{StaticResource ToolButton}"
+                        ToolTipService.ToolTip="Connected apps" AutomationProperties.Name="Connected apps">
+                    <FontIcon Glyph="&#xE71B;" FontSize="18" />
+                </Button>
                 <Rectangle Width="1" Height="22" Margin="4,0" x:Name="TraySeparator" />
                 <Button x:Name="AskButton" Click="Ask_Click" Style="{StaticResource AccentButtonStyle}"
                         Height="40" Padding="14,0" CornerRadius="20" IsEnabled="False"

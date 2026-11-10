@@ -510,7 +510,11 @@ public sealed partial class MainPage : Page
         UpdateAsk();
         try
         {
-            var result = await new ClaudeService(key, ConnectorList.Parse(ConnectorStore.Load())).AskAsync(png, History(), progress =>
+            // Connected apps whose sign-in can't be renewed are skipped; say so, since Claude won't have them.
+            var (connectors, expired) = await ConnectorStore.ActiveAsync(_oauth, _cts.Token);
+            if (expired.Count > 0) ShowToast("Sign in again to " + string.Join(", ", expired) + " (apps button).", 6);
+
+            var result = await new ClaudeService(key, connectors).AskAsync(png, History(), progress =>
             {
                 note.Heard = progress.Heard;
                 note.Text = progress.Body;
@@ -584,19 +588,148 @@ public sealed partial class MainPage : Page
         foreach (var s in Strokes.GetStrokes()) if (ids.Contains(s.Id)) _pending.Add(s.Id);
     }
 
+    // ---------- connected apps ----------
+
+    static readonly (string Name, string Url)[] AppPresets =
+    {
+        ("todoist", "https://ai.todoist.net/mcp"),
+    };
+
+    readonly McpOAuth _oauth = new();
+
+    async void Apps_Click(object sender, RoutedEventArgs e) => await ShowAppsAsync();
+
+    async Task ShowAppsAsync()
+    {
+        using var cts = new CancellationTokenSource();
+        var list = new StackPanel { Spacing = 10 };
+        var message = new TextBlock { TextWrapping = TextWrapping.Wrap, MaxWidth = 380, Opacity = 0.75 };
+
+        var presets = new ComboBox { PlaceholderText = "Pick a service, or fill in the two boxes", Width = 380, ItemsSource = AppPresets.Select(p => p.Name).ToList() };
+        var nameBox = new TextBox { PlaceholderText = "Name", Width = 380 };
+        var urlBox = new TextBox { PlaceholderText = "https://server/mcp", Width = 380 };
+        presets.SelectionChanged += (_, _) =>
+        {
+            if (presets.SelectedIndex < 0) return;
+            var preset = AppPresets[presets.SelectedIndex];
+            nameBox.Text = preset.Name;
+            urlBox.Text = preset.Url;
+        };
+        var add = new Button { Content = "Add" };
+
+        void Render()
+        {
+            list.Children.Clear();
+            var apps = ConnectorStore.List();
+            if (apps.Count == 0)
+                list.Children.Add(new TextBlock { Text = "No apps yet. Add one below, then sign in.", Opacity = 0.75 });
+            foreach (var app in apps)
+            {
+                var row = new Grid { ColumnSpacing = 8, Width = 380 };
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+                var label = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+                label.Children.Add(new TextBlock { Text = app.Name, FontWeight = Windows.UI.Text.FontWeights.SemiBold });
+                label.Children.Add(new TextBlock { Text = app.SignedIn ? "Signed in" : "Not signed in", FontSize = 12, Opacity = 0.75 });
+
+                var action = new Button { Content = app.SignedIn ? "Sign out" : "Sign in" };
+                action.Click += async (_, _) =>
+                {
+                    if (app.SignedIn)
+                    {
+                        ConnectorStore.SignOut(app.Name);
+                        Render();
+                        return;
+                    }
+                    action.IsEnabled = false;
+                    message.Text = $"Finish signing in to {app.Name} in your browser. This page continues when you come back.";
+                    try
+                    {
+                        await SignInAsync(app, cts.Token);
+                        message.Text = "";
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        message.Text = "";
+                    }
+                    catch (Exception ex)
+                    {
+                        message.Text = $"Couldn't sign in to {app.Name}: {ex.Message}";
+                    }
+                    Render();
+                };
+
+                var remove = new Button { Content = new FontIcon { Glyph = "\uE74D", FontSize = 14 } };
+                ToolTipService.SetToolTip(remove, "Remove");
+                remove.Click += (_, _) =>
+                {
+                    ConnectorStore.Remove(app.Name);
+                    Render();
+                };
+
+                Grid.SetColumn(action, 1);
+                Grid.SetColumn(remove, 2);
+                row.Children.Add(label);
+                row.Children.Add(action);
+                row.Children.Add(remove);
+                list.Children.Add(row);
+            }
+        }
+
+        add.Click += (_, _) =>
+        {
+            // Names go to the API as server names, so keep them to letters, digits and dashes.
+            var name = System.Text.RegularExpressions.Regex.Replace(nameBox.Text.Trim().ToLowerInvariant(), "[^a-z0-9]+", "-").Trim('-');
+            var url = urlBox.Text.Trim();
+            if (name.Length == 0 || !Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
+            {
+                message.Text = "An app needs a name and an https address.";
+                return;
+            }
+            ConnectorStore.Add(name, url);
+            nameBox.Text = urlBox.Text = "";
+            presets.SelectedIndex = -1;
+            message.Text = "";
+            Render();
+        };
+
+        var panel = new StackPanel { Spacing = 12 };
+        panel.Children.Add(new TextBlock
+        {
+            Text = "Claude can always search the web. Connected apps let it use your own services too. Sign in once in your browser; Longhand keeps the sign-in on this PC.",
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 380,
+        });
+        panel.Children.Add(list);
+        panel.Children.Add(message);
+        panel.Children.Add(presets);
+        panel.Children.Add(nameBox);
+        panel.Children.Add(urlBox);
+        panel.Children.Add(add);
+        Render();
+
+        var dialog = new ContentDialog
+        {
+            Title = "Connected apps",
+            Content = new ScrollViewer { Content = panel, MaxHeight = 520, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
+            CloseButtonText = "Done",
+        };
+        await dialog.ShowAsync();
+        cts.Cancel();
+    }
+
+    async Task SignInAsync(ConnectedApp app, CancellationToken ct)
+    {
+        var request = await _oauth.BeginAsync(app.Url, McpOAuth.RedirectUri, ct);
+        var query = await OAuthBroker.AuthorizeAsync(request.AuthorizeUrl, request.State, ct);
+        ConnectorStore.SaveSession(app.Name, await _oauth.FinishAsync(request, query, ct));
+    }
+
     async Task<string?> PromptForKeyAsync()
     {
         bool hasKey = ApiKeyStore.Load() is not null;
-        var connectorsBox = new TextBox
-        {
-            AcceptsReturn = true,
-            TextWrapping = TextWrapping.NoWrap,
-            Height = 90,
-            Width = 380,
-            PlaceholderText = "name https://server/mcp token",
-            Text = ConnectorStore.Load(),
-        };
-        ScrollViewer.SetHorizontalScrollBarVisibility(connectorsBox, ScrollBarVisibility.Auto);
         var box = new PasswordBox { PlaceholderText = hasKey ? "A key is saved. Paste a new one to replace it." : "sk-ant-…", Width = 380 };
         var panel = new StackPanel { Spacing = 12 };
         panel.Children.Add(new TextBlock
@@ -606,17 +739,10 @@ public sealed partial class MainPage : Page
             MaxWidth = 380,
         });
         panel.Children.Add(box);
-        panel.Children.Add(new TextBlock
-        {
-            Text = "Claude can always search the web and read pages. Connected apps (remote MCP servers) are optional: one per line as name, https address and, if the server needs one, an access token. Anthropic's servers call them, so they must be reachable from the internet.",
-            TextWrapping = TextWrapping.Wrap,
-            MaxWidth = 380,
-        });
-        panel.Children.Add(connectorsBox);
 
         var dialog = new ContentDialog
         {
-            Title = "Settings",
+            Title = "Anthropic API key",
             Content = panel,
             PrimaryButtonText = "Save",
             CloseButtonText = "Cancel",
@@ -625,12 +751,6 @@ public sealed partial class MainPage : Page
         if (hasKey) dialog.SecondaryButtonText = "Remove key";
 
         var choice = await dialog.ShowAsync();
-        if (choice == ContentDialogResult.Primary)
-        {
-            ConnectorStore.Save(connectorsBox.Text);
-            var rejected = ConnectorList.Rejected(connectorsBox.Text);
-            if (rejected.Count > 0) ShowToast("Ignored (needs a name and an https address): " + string.Join(", ", rejected), 6);
-        }
         if (choice == ContentDialogResult.Primary && !string.IsNullOrWhiteSpace(box.Password))
         {
             var key = box.Password.Trim();

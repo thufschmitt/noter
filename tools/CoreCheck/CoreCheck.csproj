@@ -11,6 +11,7 @@
     <Compile Include="..\..\Longhand\Services\ReplyParser.cs" />
     <Compile Include="..\..\Longhand\Services\ClaudeService.cs" />
     <Compile Include="..\..\Longhand\Services\Connector.cs" />
+    <Compile Include="..\..\Longhand\Services\McpOAuth.cs" />
     <PackageReference Include="Anthropic" Version="13.7.0" />
   </ItemGroup>
 </Project>

@@ -31,6 +31,14 @@
         <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
         <uap:SplashScreen Image="Assets\SplashScreen.png" BackgroundColor="#FBFCFD" />
       </uap:VisualElements>
+      <Extensions>
+        <!-- The browser returns here after a sign-in to a connected app (see callback.html on the update site). -->
+        <uap:Extension Category="windows.protocol">
+          <uap:Protocol Name="longhand">
+            <uap:DisplayName>Longhand</uap:DisplayName>
+          </uap:Protocol>
+        </uap:Extension>
+      </Extensions>
     </Application>
   </Applications>
 

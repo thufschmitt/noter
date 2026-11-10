@@ -18,6 +18,28 @@ publisher=$(grep -oP 'Publisher="\K[^"]+' <<<"$identity")
 mkdir -p "$out"
 cp "$(find "$dist" -name Longhand.cer | head -1)" "$out/Longhand.cer"
 
+# Servers only accept https redirect addresses, so a sign-in to a connected app ends here, and this page passes the answer on to the app.
+cat > "$out/callback.html" <<'HTML'
+<!doctype html>
+<meta charset="utf-8">
+<title>Longhand</title>
+<body style="font-family: sans-serif; margin: 3em">
+<p id="m">Returning to Longhand...</p>
+<script>
+  var target = "longhand://oauth" + location.search;
+  location.replace(target);
+  setTimeout(function () {
+    var link = document.createElement("a");
+    link.href = target;
+    link.textContent = "open it";
+    var m = document.getElementById("m");
+    m.textContent = "If Longhand didn't open, ";
+    m.appendChild(link);
+    m.appendChild(document.createTextNode(". You can close this tab."));
+  }, 1500);
+</script>
+HTML
+
 for arch in x64 arm64; do
   msix=$(find "$dist" -iname "*_${arch}.msix" | head -1)
   [ -n "$msix" ] || { echo "No $arch .msix under $dist" >&2; exit 1; }

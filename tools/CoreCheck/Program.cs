@@ -20,13 +20,42 @@ Check("reply without format falls back to whole text", noFormat.Ready && noForma
 var md = ReplyParser.Clean("**Bold** and `code`\n* item");
 Check("markdown stripped", md == "Bold and code\n– item");
 
-var connectors = ConnectorList.Parse("# comment\nfirst https://first.example/mcp tok_abc\ntodo https://example.com/mcp\nbad http://insecure.example/mcp\nfirst https://dup.example/mcp\nlonely");
-Check("connectors parsed", connectors.Count == 2 && connectors[0].Name == "first" && connectors[0].Token == "tok_abc" && connectors[1].Token is null);
-Check("unusable connector lines reported", ConnectorList.Rejected("ok https://a.example/m\nbad http://a.example/m\nlonely").SequenceEqual(new[] { "bad", "lonely" }));
-
 // Constructing the service exercises the SDK types used to build the request.
-_ = new ClaudeService("sk-ant-placeholder", connectors);
+_ = new ClaudeService("sk-ant-placeholder", new[] { new Connector("x", "https://x.example/mcp", "t") });
 Check("service constructs", true);
+
+// MCP sign-in against a small in-process fake of an OAuth-protected server.
+await using (var fake = new FakeOAuthServer())
+{
+    var oauth = new McpOAuth();
+    var request = await oauth.BeginAsync(fake.BaseUrl + "/mcp", McpOAuth.RedirectUri, default);
+    var q = McpOAuth.ParseQuery(request.AuthorizeUrl.Query);
+    Check("sign-in url built from discovery", request.AuthorizeUrl.AbsolutePath == "/authorize" && q["client_id"] == "cid-1" && q["code_challenge_method"] == "S256" && q["redirect_uri"] == McpOAuth.RedirectUri && q["resource"] == fake.BaseUrl + "/mcp");
+    Check("scopes asked for, with offline access", q["scope"] == "read write offline_access");
+    Check("client registered as a public client with the https redirect", fake.RegisteredRedirect == McpOAuth.RedirectUri && fake.RegisteredAuthMethod == "none");
+
+    var session = await oauth.FinishAsync(request, "?code=abc&state=" + Uri.EscapeDataString(request.State), default);
+    Check("code traded for tokens", session.AccessToken == "access-1" && session.RefreshToken == "refresh-1" && !session.NeedsRefresh);
+    Check("pkce verifier sent and matches the challenge", fake.LastVerifier == request.Verifier && q["code_challenge"] == fake.Challenge(request.Verifier));
+
+    var refreshed = await oauth.RefreshAsync(session, default);
+    Check("refresh gives a new access token and keeps the refresh token", refreshed.AccessToken == "access-2" && refreshed.RefreshToken == "refresh-1");
+
+    var failed = false;
+    try { await oauth.FinishAsync(request, "?code=abc&state=wrong", default); } catch (InvalidOperationException) { failed = true; }
+    Check("mismatched state is rejected", failed);
+    failed = false;
+    try { await oauth.FinishAsync(request, "?error=access_denied&error_description=No", default); } catch (InvalidOperationException ex) { failed = ex.Message == "No"; }
+    Check("denied sign-in reports why", failed);
+}
+
+// Optional: set LONGHAND_MCP_URL to a real MCP server to run discovery and registration against it (this registers a client with it).
+if (Environment.GetEnvironmentVariable("LONGHAND_MCP_URL") is { Length: > 0 } mcpUrl)
+{
+    var real = await new McpOAuth().BeginAsync(mcpUrl, McpOAuth.RedirectUri, default);
+    Console.WriteLine($"sign-in page: {real.AuthorizeUrl.GetLeftPart(UriPartial.Path)} (client {real.ClientId}, token endpoint {real.TokenEndpoint})");
+    Console.WriteLine("  scope: " + (McpOAuth.ParseQuery(real.AuthorizeUrl.Query).TryGetValue("scope", out var scope) ? scope : "(none)"));
+}
 
 // Optional: stream against a local fake of the API (set LONGHAND_FAKE_API to its URL), to exercise the request and event loop.
 if (Environment.GetEnvironmentVariable("LONGHAND_FAKE_API") is { Length: > 0 } fakeApi)
