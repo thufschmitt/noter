@@ -36,10 +36,13 @@ public sealed class WebConnection : IPageView, IPageData
     double _sheetWidth = 800;
     bool _started, _closed;
 
-    public WebConnection(WebSocket ws, WebStore store)
+    readonly DevReload? _dev;
+
+    public WebConnection(WebSocket ws, WebStore store, DevReload? dev = null)
     {
         _ws = ws;
         _store = store;
+        _dev = dev;
         _session = new PageSession(this, this);
     }
 
@@ -50,6 +53,14 @@ public sealed class WebConnection : IPageView, IPageData
     public async Task RunAsync(CancellationToken ct)
     {
         var writer = Task.Run(WriteLoopAsync);
+        // In development the page reloads itself when its files change (and when this server restarts: see app.js).
+        Action? reload = null;
+        if (_dev is not null)
+        {
+            Send("dev");
+            reload = () => Send("reload");
+            _dev.Changed += reload;
+        }
         try
         {
             await ReceiveLoopAsync(ct);
@@ -60,6 +71,7 @@ public sealed class WebConnection : IPageView, IPageData
         }
         finally
         {
+            if (reload is not null) _dev!.Changed -= reload;
             _closed = true;
             foreach (var r in _requests.Values) r.TrySetCanceled();
             // Let an answer being written stop (what was written so far is kept), then save the page.

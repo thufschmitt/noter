@@ -29,7 +29,11 @@ function send(message) {
 
 function connect() {
   socket = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
-  socket.onopen = () => send({ t: 'hello', width: sheetWidth });
+  socket.onopen = () => {
+    if (devMode && connectedOnce) { location.reload(); return; }
+    connectedOnce = true;
+    send({ t: 'hello', width: sheetWidth });
+  };
   socket.onmessage = e => {
     const m = JSON.parse(e.data);
     const handler = handlers[m.t];
@@ -37,9 +41,12 @@ function connect() {
   };
   socket.onclose = () => {
     toast('Disconnected from the server. Reconnecting…', 2);
-    setTimeout(connect, 1500);
+    setTimeout(connect, devMode ? 500 : 1500);
   };
 }
+
+// Development only (the server was started with --www): reload when the page's files change, and when the server comes back after a restart.
+let devMode = false, connectedOnce = false;
 
 const reply = (m, value) => send({ t: 'reply', req: m.req, value });
 const fail = m => send({ t: 'reply', req: m.req, error: true });
@@ -371,6 +378,8 @@ const handlers = {
     conversationState = m;
     if (!$('flyout').hidden) renderConversations();
   },
+  dev() { devMode = true; },
+  reload() { location.reload(); },
   needKey: () => openSettings(true),
   // A typed note couldn't be sent: its words come back into the box.
   typed(m) {

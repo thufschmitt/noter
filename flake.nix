@@ -29,6 +29,7 @@
           shellHook = ''
             echo "Longhand dev shell. Try:"
             echo "  dotnet run --project Longhand.Web            # the web version, on http://127.0.0.1:5080"
+            echo "  nix run .#dev                                # the same, restarting and reloading the browser as you edit"
             echo "  dotnet run --project tools/CoreCheck         # shared logic checks"
             echo "  dotnet run --project tools/WebCheck          # server checks"
             echo "  tools/BrowserCheck/run.sh chromium           # real-browser checks"
@@ -54,6 +55,11 @@
           web = app "longhand-web" "Run the web version" ''
             root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
             exec dotnet run --project "$root/Longhand.Web" -- "$@"
+          '';
+          dev = app "longhand-dev" "Run the web version for development: restarts on C# changes, reloads the browser on page changes" ''
+            root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+            cd "$root"
+            exec dotnet watch --project Longhand.Web --no-hot-reload run -- --www Longhand.Web/wwwroot "$@"
           '';
           check = app "longhand-check" "Run every check that works off Windows" ''
             root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)

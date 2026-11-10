@@ -155,6 +155,30 @@ try
         Check("and the writing is waiting to be answered", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "state" && m.GetProperty("canAsk").GetBoolean())));
     }
 
+    // ----- development mode: the page comes from a folder, and tabs are told when it changes -----
+    var www = Path.Combine(data, "www");
+    Directory.CreateDirectory(www);
+    File.WriteAllText(Path.Combine(www, "index.html"), "<!doctype html><canvas></canvas><p>version one</p>");
+    var devApp = WebApp.Build(new WebOptions { DataDir = Path.Combine(data, "dev-data"), Urls = "http://127.0.0.1:0", ApiKey = "sk-ant-test", WwwRoot = www });
+    await devApp.StartAsync();
+    var devUrl = devApp.Urls.First().Replace("[::1]", "127.0.0.1");
+    using (var devHttp = new HttpClient { BaseAddress = new Uri(devUrl) })
+    {
+        Check("in development the page is served from the folder", (await devHttp.GetStringAsync("/")).Contains("version one"));
+        await using var tab = await FakeBrowser.ConnectAsync(devUrl);
+        Check("a tab is told it is in development mode", await tab.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "dev")));
+        File.WriteAllText(Path.Combine(www, "index.html"), "<!doctype html><canvas></canvas><p>version two</p>");
+        Check("editing a file tells the tab to reload", await tab.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "reload")));
+        Check("and the new content is served without a rebuild", (await devHttp.GetStringAsync("/")).Contains("version two"));
+        Check("paths outside the folder are still refused", (await devHttp.GetAsync("/..%2f..%2fetc/passwd")).StatusCode == HttpStatusCode.NotFound);
+    }
+    await devApp.StopAsync();
+    await using (var plain = await FakeBrowser.ConnectAsync(url))
+    {
+        await plain.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "page"));
+        Check("without --www no tab is told it is in development mode", !plain.Of("dev").Any());
+    }
+
     // ----- stopping the server with a tab still open (Ctrl+C) -----
     await using (var open = await FakeBrowser.ConnectAsync(url))
     {

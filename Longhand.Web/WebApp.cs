@@ -35,6 +35,14 @@ public static class WebApp
         var store = new WebStore(options);
         var loopbackOnly = options.Urls.Split(';', StringSplitOptions.RemoveEmptyEntries).All(IsLoopbackUrl);
         var app = builder.Build();
+        DevReload? dev = null;
+        if (options.WwwRoot is { Length: > 0 })
+        {
+            options.WwwRoot = Path.GetFullPath(options.WwwRoot);
+            if (!Directory.Exists(options.WwwRoot)) throw new DirectoryNotFoundException("--www folder not found: " + options.WwwRoot);
+            dev = new DevReload(options.WwwRoot);
+            app.Lifetime.ApplicationStopped.Register(dev.Dispose);
+        }
         app.UseWebSockets();
 
         // No sign-in: on loopback the only risks are other web pages in the same browser. Refuse requests that aren't addressed to
@@ -65,11 +73,11 @@ public static class WebApp
             // Ctrl+C waits out the whole shutdown grace period.
             var stopping = ctx.RequestServices.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping;
             using var end = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted, stopping);
-            await new WebConnection(socket, store).RunAsync(end.Token);
+            await new WebConnection(socket, store, dev).RunAsync(end.Token);
         });
 
         MapSettings(app, store);
-        MapPage(app);
+        MapPage(app, options.WwwRoot);
         return app;
     }
 
@@ -83,13 +91,21 @@ public static class WebApp
 
     // ---------- the page ----------
 
-    static void MapPage(WebApplication app)
+    static void MapPage(WebApplication app, string? folder)
     {
         var assembly = Assembly.GetExecutingAssembly();
         app.MapGet("/{**path}", async (HttpContext ctx, string? path) =>
         {
             var name = string.IsNullOrEmpty(path) ? "index.html" : path;
-            if (name.Contains("..") || assembly.GetManifestResourceStream("wwwroot/" + name) is not { } stream)
+            Stream? opened = null;
+            if (!name.Contains(".."))
+            {
+                // In development the files come from disk, so an edit shows up without a rebuild.
+                var onDisk = folder is null ? null : Path.Combine(folder, name);
+                try { opened = onDisk is not null ? (File.Exists(onDisk) ? new FileStream(onDisk, FileMode.Open, FileAccess.Read, FileShare.ReadWrite) : null) : assembly.GetManifestResourceStream("wwwroot/" + name); }
+                catch (IOException) { opened = null; }
+            }
+            if (opened is not { } stream)
             {
                 ctx.Response.StatusCode = 404;
                 return;

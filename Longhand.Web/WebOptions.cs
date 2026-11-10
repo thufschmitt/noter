@@ -11,6 +11,8 @@ public sealed class WebOptions
     public string? AnthropicBaseUrl { get; set; }
     /// <summary>Overrides ANTHROPIC_API_KEY and the saved key.</summary>
     public string? ApiKey { get; set; }
+    /// <summary>Development: serve the page from this folder and reload open tabs when it changes (--www or LONGHAND_WWW).</summary>
+    public string? WwwRoot { get; set; }
 
     public static WebOptions FromArgs(string[] args)
     {
@@ -18,10 +20,12 @@ public sealed class WebOptions
         {
             DataDir = System.Environment.GetEnvironmentVariable("LONGHAND_DATA") is { Length: > 0 } d ? d : DefaultDataDir(),
         };
+        if (System.Environment.GetEnvironmentVariable("LONGHAND_WWW") is { Length: > 0 } www) o.WwwRoot = www;
         if (System.Environment.GetEnvironmentVariable("LONGHAND_URLS") is { Length: > 0 } urls) o.Urls = urls;
         for (int i = 0; i < args.Length; i++)
         {
             if (args[i] == "--data" && i + 1 < args.Length) o.DataDir = args[++i];
+            else if (args[i] == "--www" && i + 1 < args.Length) o.WwwRoot = args[++i];
             else if (args[i] == "--urls" && i + 1 < args.Length) o.Urls = args[++i];
         }
         return o;
