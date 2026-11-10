@@ -142,6 +142,7 @@ await AgentChecks.RunAsync(Check);
 await RegistryChecks.RunAsync(Check);
 await SymbolChecks.RunAsync(Check);
 await PageChecks.RunAsync(Check);
+await BookChecks.RunAsync(Check);
 
 Console.WriteLine(failures == 0 ? "All checks passed." : $"{failures} check(s) failed.");
 return failures == 0 ? 0 : 1;

@@ -13,6 +13,7 @@
     <Compile Include="..\..\Longhand\Services\ApiKeyStore.cs" />
     <Compile Include="..\..\Longhand\Services\ModelStore.cs" />
     <Compile Include="..\..\Longhand\Services\ConnectorStore.cs" />
+    <Compile Include="..\..\Longhand\Services\WindowsStorage.cs" />
     <Compile Include="..\..\Longhand\Services\ConversationStore.cs" />
     <Compile Include="..\..\Longhand\Services\SymbolStore.cs" />
     <Compile Include="..\..\Longhand\Services\NextcloudStore.cs" />
