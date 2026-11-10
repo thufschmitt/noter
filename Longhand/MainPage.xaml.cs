@@ -529,7 +529,7 @@ public sealed partial class MainPage : Page
             var (connectors, expired) = await ConnectorStore.ActiveAsync(_oauth, _cts.Token);
             if (expired.Count > 0) ShowToast("Sign in again to " + string.Join(", ", expired) + " (apps button).", 6);
 
-            var result = await new ClaudeService(key, connectors).AskAsync(png, History(), progress =>
+            var result = await new ClaudeService(key, connectors, ModelStore.Load()).AskAsync(png, History(), progress =>
             {
                 note.Heard = progress.Heard;
                 note.Text = progress.Body;
@@ -786,6 +786,8 @@ public sealed partial class MainPage : Page
     {
         bool hasKey = ApiKeyStore.Load() is not null;
         var box = new PasswordBox { PlaceholderText = hasKey ? "A key is saved. Paste a new one to replace it." : "sk-ant-…", Width = 380 };
+        var models = new ComboBox { Width = 380, ItemsSource = ModelChoice.All.Select(o => o.Label).ToList() };
+        models.SelectedIndex = ModelChoice.All.ToList().FindIndex(o => o.Id == ModelStore.Load());
         var panel = new StackPanel { Spacing = 12 };
         panel.Children.Add(new TextBlock
         {
@@ -794,10 +796,12 @@ public sealed partial class MainPage : Page
             MaxWidth = 380,
         });
         panel.Children.Add(box);
+        panel.Children.Add(new TextBlock { Text = "Model", Margin = new Thickness(0, 4, 0, -6) });
+        panel.Children.Add(models);
 
         var dialog = new ContentDialog
         {
-            Title = "Anthropic API key",
+            Title = "Settings",
             Content = panel,
             PrimaryButtonText = "Save",
             CloseButtonText = "Cancel",
@@ -806,6 +810,7 @@ public sealed partial class MainPage : Page
         if (hasKey) dialog.SecondaryButtonText = "Remove key";
 
         var choice = await dialog.ShowAsync();
+        if (choice != ContentDialogResult.None && models.SelectedIndex >= 0) ModelStore.Save(ModelChoice.All[models.SelectedIndex].Id);
         if (choice == ContentDialogResult.Primary && !string.IsNullOrWhiteSpace(box.Password))
         {
             var key = box.Password.Trim();

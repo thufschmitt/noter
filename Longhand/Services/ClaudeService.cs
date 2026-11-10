@@ -23,7 +23,6 @@ public sealed record ReplyResult(ReplyOutcome Outcome, string Heard, string Body
 /// </summary>
 public sealed class ClaudeService
 {
-    public const string ModelId = "claude-opus-5-5";
     const int MaxTurns = 12;
 
     const string SystemPrompt = """
@@ -45,11 +44,14 @@ public sealed class ClaudeService
 
     readonly AnthropicClient _client;
     readonly IReadOnlyList<Connector> _connectors;
+    readonly string _model;
 
     /// <param name="connectors">Remote MCP servers Claude may call, on top of web search and fetch.</param>
+    /// <param name="model">One of <see cref="ModelChoice.All"/>; null means the default.</param>
     /// <param name="baseUrl">Only for tests against a local fake of the API; the app leaves it null.</param>
-    public ClaudeService(string apiKey, IReadOnlyList<Connector>? connectors = null, string? baseUrl = null)
+    public ClaudeService(string apiKey, IReadOnlyList<Connector>? connectors = null, string? model = null, string? baseUrl = null)
     {
+        _model = ModelChoice.Resolve(model);
         _connectors = connectors ?? Array.Empty<Connector>();
         _client = baseUrl is null
             ? new AnthropicClient { ApiKey = apiKey }
@@ -83,14 +85,14 @@ public sealed class ClaudeService
 
         var parameters = new MessageCreateParams
         {
-            Model = ModelId,
+            Model = _model,
             MaxTokens = 8000,
             System = SystemPrompt,
             Messages = messages,
             Tools = Tools(),
             McpServers = _connectors.Count == 0 ? null : _connectors.Select(c => new BetaRequestMcpServerUrlDefinition { Name = c.Name, Url = c.Url, AuthorizationToken = c.Token }).ToList(),
-            // Short notebook replies: low effort keeps the wait short. Thinking stays on (it can't be disabled on this model).
-            OutputConfig = new BetaOutputConfig { Effort = Effort.Low },
+            // Short notebook replies: low effort keeps the wait short on the larger models.
+            OutputConfig = ModelChoice.UsesLowEffort(_model) ? new BetaOutputConfig { Effort = Effort.Low } : null,
             // If a safety classifier declines, the API re-serves the request on a suitable fallback model in the same stream.
             Betas = _connectors.Count == 0
                 ? [AnthropicBeta.ServerSideFallback2026_07_01]

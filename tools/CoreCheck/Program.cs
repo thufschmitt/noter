@@ -43,6 +43,11 @@ var smaller = AlphaMask.Resize(leftHalf, 4, 2, 8, 4);
 Check("enlarging keeps what is where", smaller[0] == 255 && smaller[7] == 0 && smaller[3] == 255 && smaller[4] == 0);
 Check("a blend is averaged", AlphaMask.Resize(Px(2, 1, (x, y) => (byte)(x == 0 ? 100 : 200)), 2, 1, 1, 1)[0] == 150);
 
+Check("default model is Haiku", ModelChoice.Default == "claude-haiku-5-5");
+Check("unknown saved model falls back to the default", ModelChoice.Resolve("claude-gone") == ModelChoice.Default && ModelChoice.Resolve(null) == ModelChoice.Default);
+Check("a listed model is kept", ModelChoice.Resolve("claude-opus-5-5") == "claude-opus-5-5");
+Check("low effort only for the larger models", !ModelChoice.UsesLowEffort("claude-haiku-5-5") && ModelChoice.UsesLowEffort("claude-opus-5-5") && ModelChoice.UsesLowEffort("claude-sonnet-5-5"));
+
 // Constructing the service exercises the SDK types used to build the request.
 _ = new ClaudeService("sk-ant-placeholder", new[] { new Connector("x", "https://x.example/mcp", "t") });
 Check("service constructs", true);

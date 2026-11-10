@@ -12,6 +12,8 @@
     <Compile Include="..\..\Longhand\Services\InkSnapshot.cs" />
     <Compile Include="..\..\Longhand\Services\AlphaMask.cs" />
     <Compile Include="..\..\Longhand\Services\ApiKeyStore.cs" />
+    <Compile Include="..\..\Longhand\Services\ModelStore.cs" />
+    <Compile Include="..\..\Longhand\Services\ModelChoice.cs" />
     <Compile Include="..\..\Longhand\Services\Connector.cs" />
     <Compile Include="..\..\Longhand\Services\McpOAuth.cs" />
     <Compile Include="..\..\Longhand\Services\ConnectorStore.cs" />
