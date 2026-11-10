@@ -603,6 +603,8 @@ public sealed partial class MainPage : Page
 
     byte[]? _lastSent;
 
+    async void Sent_Click(object sender, RoutedEventArgs e) => await SaveLastPictureAsync();
+
     async Task SaveLastPictureAsync()
     {
         if (_lastSent is null)
