@@ -13,6 +13,7 @@ sealed class FakeView : IPageView
     public PageState State;
     public double? Idle;
     public int Snapshots, Shown;
+    public double CharsPerLine = 30;
     public SnapshotContext? LastContext;
     public IReadOnlyList<uint>? LastIds;
     public readonly List<NoteModel> Visible = new();
@@ -44,7 +45,7 @@ sealed class FakeView : IPageView
     public async Task MeasureAsync(NoteModel note)
     {
         await Task.Yield(); // a real view may take its time
-        note.Lines = Math.Max(note.Drawings.Count > 0 && note.Shown.Length == 0 ? 0 : 1, (int)Math.Ceiling(note.Shown.Length / 30.0));
+        note.Lines = Math.Max(note.Drawings.Count > 0 && note.Shown.Length == 0 ? 0 : 1, (int)Math.Ceiling(note.Shown.Length / CharsPerLine));
         foreach (var d in note.Drawings) d.Lines = 6;
     }
     public void Place(NoteModel note) { }
@@ -221,6 +222,14 @@ static class PageChecks
         check("deleting the open conversation opens another", session.CurrentId == firstId && !session.Index.Items.Any(c => c.Id == busyId) && !data.Pages.ContainsKey(busyId));
         await session.RenameConversationAsync(firstId, "  My   notes ");
         check("a name the user gave is kept", session.Index.Find(firstId)!.CustomTitle == "My notes" && session.Index.Find(firstId)!.Title == "My notes");
+
+        // ----- a narrower page measures the notes again -----
+        var wrapped = session.Notes.First(n => !n.IsHint);
+        int linesBefore = wrapped.Lines;
+        view.CharsPerLine = 10;
+        await session.RelayoutAsync();
+        check("resizing measures every note again", wrapped.Lines > linesBefore && wrapped.Lines == (int)Math.Ceiling(wrapped.Shown.Length / 10.0));
+        view.CharsPerLine = 30;
 
         // ----- no key -----
         data.ApiKey = null;

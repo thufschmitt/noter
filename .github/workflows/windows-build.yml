@@ -19,6 +19,29 @@ jobs:
       - name: Windows Runtime helpers
         run: dotnet build tools/WinRtCheck/WinRtCheck.csproj
 
+  web:
+    name: Web version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Server, over a real WebSocket
+        run: dotnet run --project tools/WebCheck/WebCheck.csproj
+      - name: Page, in Chrome
+        run: tools/BrowserCheck/run.sh google-chrome "$RUNNER_TEMP/browser-check"
+      - name: Screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-screenshots
+          path: ${{ runner.temp }}/browser-check
+          if-no-files-found: ignore
+
   version:
     name: Version number
     runs-on: ubuntu-latest

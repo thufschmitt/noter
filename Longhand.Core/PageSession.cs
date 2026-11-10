@@ -79,6 +79,17 @@ public sealed class PageSession
 
     void UpdateState() => _view.StateChanged(new PageState(_busy, _busy || _pending.Count > 0, _idleCts is not null));
 
+    /// <summary>The page was resized, so every note is measured again at the new width.</summary>
+    public async Task RelayoutAsync()
+    {
+        foreach (var n in _notes.ToList())
+        {
+            try { await LayoutAsync(n); }
+            catch (Exception) { /* a view that can't measure keeps the last layout */ }
+        }
+        _view.ContentChanged();
+    }
+
     // ---------- ink events ----------
 
     public void StrokeStarted() => CancelIdle();

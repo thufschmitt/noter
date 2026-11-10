@@ -1,0 +1,72 @@
+:root {
+  --desk: #E9EDF2; --paper: #FBFCFD; --rule: #D9E3EE; --margin: #F0C9C9; --claude: #2C4FC4;
+  --muted: #7A8494; --tray: rgba(255, 255, 255, .92); --trayline: rgba(30, 40, 60, .12); --text: #2A2F37; --accent: #2C4FC4; --onaccent: #fff;
+  --hand: "Ink Free", "Segoe Print", "Bradley Hand", "Caveat", "Comic Neue", "Comic Sans MS", "Chalkboard SE", cursive;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --desk: #0D0F13; --paper: #16191F; --rule: #252B35; --margin: #4A2A2E; --claude: #93A9FF;
+    --muted: #8D96A6; --tray: rgba(30, 34, 42, .92); --trayline: rgba(255, 255, 255, .1); --text: #E6E8EC; --accent: #93A9FF; --onaccent: #0D0F13;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--desk); color: var(--text); font: 14px system-ui, sans-serif; overscroll-behavior: none; }
+#scroller { position: fixed; inset: 0; overflow-y: auto; overflow-x: hidden; }
+#sheet { position: relative; margin: 0 auto; background: var(--paper); box-shadow: 0 1px 12px rgba(0, 0, 0, .12); min-height: 100%; }
+#ink { position: sticky; top: 0; display: block; z-index: 3; touch-action: none; cursor: crosshair; }
+#rules { position: absolute; left: 0; right: 0; top: 120px; bottom: 0; z-index: 0; background: linear-gradient(var(--rule) 1px, transparent 1px) 0 0 / 100% 40px; pointer-events: none; }
+#margin { position: absolute; top: 0; bottom: 0; left: 60px; width: 1.5px; background: var(--margin); z-index: 0; pointer-events: none; }
+#title, #date { position: absolute; top: 48px; font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: .08em; pointer-events: none; z-index: 0; }
+#title { left: 76px; }
+#date { right: 36px; }
+#notes { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.note { position: absolute; margin: 0; font: 26px/40px var(--hand); color: var(--claude); white-space: pre-wrap; overflow-wrap: break-word; }
+.note.hint { opacity: .8; }
+.tick { position: absolute; width: 2.5px; border-radius: 1.25px; background: var(--claude); opacity: .6; }
+.tick.hint { opacity: .35; }
+.drawing { position: absolute; left: 76px; }
+
+#tray { position: fixed; z-index: 10; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; align-items: center; gap: 4px; padding: 6px; border-radius: 14px; background: var(--tray); border: 1px solid var(--trayline); box-shadow: 0 4px 18px rgba(0, 0, 0, .18); backdrop-filter: blur(8px); }
+#tray .sep { width: 1px; height: 22px; margin: 0 4px; background: var(--trayline); }
+button { font: inherit; color: var(--text); background: transparent; border: 1px solid var(--trayline); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+button:disabled { opacity: .45; cursor: default; }
+button:hover:not(:disabled) { background: var(--trayline); }
+button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; display: block; }
+.tool { border-color: transparent; padding: 7px 9px; }
+.tool.on { background: var(--trayline); }
+button.accent { background: var(--accent); color: var(--onaccent); border-color: transparent; font-weight: 600; display: flex; align-items: center; gap: 8px; position: relative; }
+button.accent:hover:not(:disabled) { background: var(--accent); filter: brightness(1.1); }
+#countdown { position: absolute; left: 8px; right: 8px; bottom: 3px; height: 3px; border-radius: 2px; background: var(--onaccent); opacity: .8; transform-origin: left; transform: scaleX(0); display: none; }
+#spinner { width: 16px; height: 16px; border: 2px solid var(--onaccent); border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+#toast { position: fixed; z-index: 11; left: 50%; bottom: 76px; transform: translateX(-50%); max-width: min(92vw, 520px); padding: 10px 14px; border-radius: 10px; background: var(--tray); border: 1px solid var(--trayline); box-shadow: 0 4px 18px rgba(0, 0, 0, .18); font-size: 13px; }
+
+#flyout { position: fixed; z-index: 12; left: 50%; bottom: 76px; transform: translateX(-50%); width: min(92vw, 360px); max-height: 60vh; overflow-y: auto; padding: 8px; border-radius: 12px; background: var(--tray); border: 1px solid var(--trayline); box-shadow: 0 4px 18px rgba(0, 0, 0, .22); backdrop-filter: blur(8px); }
+#flyout .row, #conversationList .item { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; }
+#conversationList { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+#conversationList .line { display: flex; gap: 4px; }
+#conversationList .open { flex: 1; border-color: transparent; text-align: left; min-width: 0; }
+#conversationList .open b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#conversationList .open small { opacity: .7; }
+#conversationList .line.current .open b { font-weight: 800; }
+#conversationList input { flex: 1; min-width: 0; }
+
+dialog { width: min(94vw, 430px); max-height: 92vh; padding: 18px; border-radius: 12px; border: 1px solid var(--trayline); background: var(--paper); color: var(--text); }
+dialog::backdrop { background: rgba(0, 0, 0, .4); }
+dialog h2 { margin: 0 0 8px; font-size: 18px; } dialog h3 { margin: 18px 0 4px; font-size: 15px; } dialog h4 { margin: 14px 0 6px; font-size: 14px; }
+dialog label { display: block; margin: 10px 0 4px; font-weight: 600; }
+dialog input, dialog select, dialog textarea { width: 100%; padding: 7px 9px; font: inherit; color: var(--text); background: var(--paper); border: 1px solid var(--muted); border-radius: 6px; }
+dialog textarea { resize: vertical; margin-top: 6px; }
+#symName { margin-top: 0; }
+.note-text { margin: 4px 0; font-size: 12px; opacity: .75; }
+.buttons { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.buttons.end { justify-content: flex-end; margin-top: 18px; }
+#pad { width: 100%; max-width: 378px; height: auto; aspect-ratio: 378 / 140; border: 1px solid var(--muted); border-radius: 4px; background: var(--paper); touch-action: none; cursor: crosshair; display: block; }
+#savedImage { height: 56px; background: #fff; border-radius: 4px; display: block; }
+#symbolList { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+#symbolList .sym { display: flex; align-items: center; gap: 8px; }
+#symbolList .sym img { width: 48px; height: 40px; object-fit: contain; background: #fff; border-radius: 4px; }
+#symbolList .sym .text { flex: 1; min-width: 0; }
+#symbolList .sym .text b { display: block; }
+#symbolList .sym .text span { font-size: 12px; opacity: .75; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }

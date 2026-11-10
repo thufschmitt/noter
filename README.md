@@ -62,12 +62,32 @@ Each conversation is its own page. They save themselves to the app's local folde
 - Connected apps: the link button opens a list of MCP servers (a preset for Todoist, or any https address). Sign in opens your browser; the sign-in is a standard OAuth flow that the app runs itself (the server is found automatically, the app registers itself with it, and tokens are renewed in the background). The browser comes back to the app through `callback.html` on the update site and the `longhand://` address, so the first sign-in only works once the update site is deployed. Anthropic's servers call the MCP servers, so they must be reachable from the internet. Tokens are stored in Windows Credential Manager next to the API key.
 - Server-side refusal fallback is on (`fallbacks: "default"`). If a safety check declines a request, the API answers it with a suitable fallback model in the same stream instead of returning nothing.
 
+## Web version
+
+The same notebook runs in a browser, from a server on Linux (or anywhere .NET 10 runs). The server runs the shared C# code
+(`Longhand.Core`: asking Claude, replies, drawings, conversations, symbols, saving); the browser shows the page on an HTML canvas,
+with the handwriting font, and does the two things only a browser can: measure text and draw the picture Claude reads.
+
+```
+export ANTHROPIC_API_KEY=sk-ant-…          # or add the key with the gear button in the page
+dotnet run --project Longhand.Web           # then open http://127.0.0.1:5080
+```
+
+- Options: `--urls http://127.0.0.1:5080` (or `LONGHAND_URLS`) and `--data <folder>` (or `LONGHAND_DATA`; the default is `~/.local/share/longhand`). Conversations, symbols, the chosen model and a key typed into the page are kept there; the key file is readable only by you.
+- **There is no sign-in.** It listens on loopback by default and refuses requests addressed to another name (DNS rebinding) and writes from another site. To use it from another device, tunnel to it (`ssh -L 5080:127.0.0.1:5080 host`) rather than exposing it.
+- Write with a pen or mouse; fingers scroll unless you turn on the hand button. The pen's eraser end works, as does the eraser button. Replies, drawings, annotation of earlier replies, undo, conversations and symbols work as in the Windows app, and the pause-to-ask is the same.
+- Not in the web version yet: connected apps (MCP), the registry search and the Nextcloud calendar. The server could run them as they are, so they are mostly UI to add.
+- The code is shared like this: `PageSession` (in `Longhand.Core`) is the page: strokes waiting to be answered, notes, asking, undo, saving, conversations. It talks to its screen through `IPageView` and to storage through `IPageData`. The Windows `MainPage` is one implementation (XAML and Windows Ink), `WebConnection` the other (JSON over a WebSocket to `wwwroot/app.js`). A conversation saved by one isn't read by the other: the web version keeps ink as JSON points rather than ISF.
+- Checks: `dotnet run --project tools/WebCheck/WebCheck.csproj` plays a browser over a real WebSocket against a fake API; `tools/BrowserCheck/run.sh` drives headless Chrome over the DevTools protocol (needs node 22).
+
 ## What was checked, and what wasn't
 
-This was written on Linux, where UWP can't be built, so the XAML page has never been compiled or run. Checked:
+This was written on Linux, where UWP can't be built: the Windows build on CI is what compiles the XAML page, and what it does on a real device is only known when someone runs it. Checked here:
 
 - `tools/CoreCheck` compiles the Claude service and reply parser against the real Anthropic package and runs parser checks. With `LONGHAND_FAKE_API` set, it also streams a reply from a local fake of the API, which confirms the request shape and the streaming loop.
 - `tools/WinRtCheck` compiles the ink snapshot, credential storage and page saving code against the Windows SDK API definitions.
+- `tools/CoreCheck` also plays the notebook page (`PageSession`) against a fake screen and a fake API: asking, annotating, undo, conversations, saving, switching mid-answer.
+- `tools/WebCheck` starts the web server and plays a browser over a real WebSocket; `tools/BrowserCheck` drives headless Chrome through the real page. Both run on CI.
 
 Expect a round of small fixes on the first Windows build. The most likely spots:
 - The `.csproj` properties for UWP on .NET 9
