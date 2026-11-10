@@ -71,19 +71,6 @@ public sealed partial class MainPage : Page
     {
         InitializeComponent();
 
-        // For debugging what Claude is shown: Ctrl+Shift+D saves the last picture that was sent.
-        var saveSent = new Windows.UI.Xaml.Input.KeyboardAccelerator
-        {
-            Key = Windows.System.VirtualKey.D,
-            Modifiers = Windows.System.VirtualKeyModifiers.Control | Windows.System.VirtualKeyModifiers.Shift,
-        };
-        saveSent.Invoked += async (_, args) =>
-        {
-            args.Handled = true;
-            await SaveLastPictureAsync();
-        };
-        KeyboardAccelerators.Add(saveSent);
-
         var presenter = Ink.InkPresenter;
         presenter.InputDeviceTypes = CoreInputDeviceTypes.Pen | CoreInputDeviceTypes.Mouse;
         presenter.StrokesCollected += OnStrokesCollected;
@@ -510,7 +497,6 @@ public sealed partial class MainPage : Page
             ShowToast("Couldn't capture the handwriting: " + ex.Message);
             return;
         }
-        _lastSent = png;
         _pending.Clear();
 
         // The answer goes at the end of the page, so it never lands in the middle of what is already there. Anything the user
@@ -599,29 +585,6 @@ public sealed partial class MainPage : Page
             // Only re-arm the pause timer after a good answer, so a failing request is never retried in a loop.
             if (answered && _pending.Count > 0) ScheduleIdle();
         }
-    }
-
-    byte[]? _lastSent;
-
-    async void Sent_Click(object sender, RoutedEventArgs e) => await SaveLastPictureAsync();
-
-    async Task SaveLastPictureAsync()
-    {
-        if (_lastSent is null)
-        {
-            ShowToast("Nothing has been sent to Claude yet.");
-            return;
-        }
-        var picker = new Windows.Storage.Pickers.FileSavePicker
-        {
-            SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.Desktop,
-            SuggestedFileName = "longhand-sent",
-        };
-        picker.FileTypeChoices.Add("PNG image", new List<string> { ".png" });
-        var file = await picker.PickSaveFileAsync();
-        if (file is null) return;
-        await Windows.Storage.FileIO.WriteBytesAsync(file, _lastSent);
-        ShowToast("Saved the picture Claude was last shown.");
     }
 
     /// <summary>The first free rule below all the ink and all the replies.</summary>
