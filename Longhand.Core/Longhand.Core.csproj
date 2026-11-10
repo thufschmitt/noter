@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Everything Longhand does that doesn't depend on a screen or an operating system: talking to Claude, reading replies, SVG,
+       conversations, symbols, calendar, MCP. Shared by the Windows app and the web server. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Longhand</RootNamespace>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Anthropic" Version="13.7.0" />
+  </ItemGroup>
+</Project>
