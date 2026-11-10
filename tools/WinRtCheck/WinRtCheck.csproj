@@ -19,6 +19,8 @@
     <Compile Include="..\..\Longhand\Services\ConnectorStore.cs" />
     <Compile Include="..\..\Longhand\Services\ConversationIndex.cs" />
     <Compile Include="..\..\Longhand\Services\ConversationStore.cs" />
+    <Compile Include="..\..\Longhand\Services\Symbols.cs" />
+    <Compile Include="..\..\Longhand\Services\SymbolStore.cs" />
     <Compile Include="..\..\Longhand\Services\ICalendar.cs" />
     <Compile Include="..\..\Longhand\Services\Nextcloud.cs" />
     <Compile Include="..\..\Longhand\Services\NextcloudStore.cs" />

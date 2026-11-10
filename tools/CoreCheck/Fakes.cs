@@ -123,6 +123,8 @@ sealed class FakeNextcloud : FakeServer
 /// <summary>Enough of the Anthropic messages API to check the tool loop: it asks for the calendar once, then answers.</summary>
 sealed class FakeAnthropic : FakeServer
 {
+    /// <summary>False answers straight away, without first asking for the calendar tool.</summary>
+    public bool AskForTool { get; set; } = true;
     public string FinalText { get; set; } = "HEARD: what is on tomorrow\n---\nYou have a standup at 9.";
 
     static string Sse(string type, string json) => $"event: {type}\ndata: {json}\n\n";
@@ -138,7 +140,7 @@ sealed class FakeAnthropic : FakeServer
         lock (Requests) calls = Requests.FindAll(q => q.Path.EndsWith("/messages")).Count;
         var sb = new StringBuilder();
         sb.Append(Message("msg_" + calls));
-        if (!r.Body.Contains("\"tool_result\""))
+        if (AskForTool && !r.Body.Contains("\"tool_result\""))
         {
             // First call: a little thinking, a few words, then the tool call.
             sb.Append(Sse("content_block_start", """{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}"""));

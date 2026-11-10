@@ -886,6 +886,7 @@ public sealed partial class MainPage : Page
             // Connected apps whose sign-in can't be renewed are skipped; say so, since Claude won't have them.
             var (connectors, expired) = await ConnectorStore.ActiveAsync(_oauth, _cts.Token);
             var agentTools = BuildAgentTools();
+            var legend = await SymbolStore.LegendAsync();
             if (expired.Count > 0) ShowToast("Sign in again to " + string.Join(", ", expired) + " (apps button).", 6);
 
             var result = await new ClaudeService(key, connectors, ModelStore.Load(), agentTools: agentTools).AskAsync(png, History(), progress =>
@@ -903,7 +904,7 @@ public sealed partial class MainPage : Page
                 ClearDrawings(note);
                 note.Block.Text = status;
                 Grow();
-            }, hasContext: context is not null);
+            }, hasContext: context is not null, legend: legend);
 
             note.Heard = result.Heard;
             AddNewDrawings(note, result.Drawings);
@@ -1450,6 +1451,234 @@ public sealed partial class MainPage : Page
         ConnectorStore.SaveSession(app.Name, await _oauth.FinishAsync(request, query, ct));
     }
 
+    // ---------- symbols ----------
+
+    /// <summary>
+    /// The symbols section of the settings: the user's own shortcuts, each a name, what it means and (optionally) an example
+    /// drawing. Changes are saved as they are made.
+    /// </summary>
+    StackPanel BuildSymbolsSection()
+    {
+        var section = new StackPanel { Spacing = 8, Width = 380 };
+        var symbols = new List<Symbol>();
+        string? editingId = null, armedDelete = null;
+        bool removeDrawing = false;
+
+        var list = new StackPanel { Spacing = 6 };
+        var message = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.75 };
+        var formTitle = new TextBlock { Text = "New symbol", FontWeight = Windows.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 6, 0, 0) };
+        var nameBox = new TextBox { PlaceholderText = "Name, like envelope", MaxLength = SymbolList.MaxName, Width = 380 };
+        var meaningBox = new TextBox
+        {
+            PlaceholderText = "What it means, like: add what I wrote to my Todoist inbox",
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            MaxLength = SymbolList.MaxMeaning,
+            Height = 80,
+            Width = 380,
+        };
+
+        // A small pad to draw the symbol on once, so Claude knows what yours looks like. Optional.
+        var pad = new InkCanvas { Width = 378, Height = 140 };
+        pad.InkPresenter.InputDeviceTypes = CoreInputDeviceTypes.Pen | CoreInputDeviceTypes.Mouse;
+        pad.InkPresenter.UpdateDefaultDrawingAttributes(new InkDrawingAttributes { Color = _uiText.Color, Size = new Size(2.4, 2.4), FitToCurve = true, PenTip = PenTipShape.Circle });
+        var padFrame = new Border { Child = pad, BorderBrush = _muted, BorderThickness = new Thickness(1), Background = _paper, Width = 380 };
+        var padHint = new TextBlock { Text = "Optional: draw the symbol here (pen or mouse) so Claude can recognise it.", TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.75 };
+        var savedImage = new Image { Height = 56, Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Left, Visibility = Visibility.Collapsed };
+        var savedLabel = new TextBlock { Text = "Saved drawing (draw above to replace it):", FontSize = 12, Opacity = 0.75, Visibility = Visibility.Collapsed };
+        var clearPad = new Button { Content = "Clear drawing" };
+        var dropSaved = new Button { Content = "Remove saved drawing", Visibility = Visibility.Collapsed };
+        var save = new Button { Content = "Add symbol" };
+        var cancel = new Button { Content = "Cancel", Visibility = Visibility.Collapsed };
+
+        async Task<BitmapImage?> ThumbnailAsync(string id)
+        {
+            var png = await SymbolStore.ReadDrawingAsync(id);
+            if (png is null) return null;
+            using var stream = new InMemoryRandomAccessStream();
+            using (var writer = new DataWriter(stream))
+            {
+                writer.WriteBytes(png);
+                await writer.StoreAsync();
+                writer.DetachStream();
+            }
+            stream.Seek(0);
+            var bitmap = new BitmapImage();
+            await bitmap.SetSourceAsync(stream);
+            return bitmap;
+        }
+
+        void ResetForm()
+        {
+            editingId = null;
+            removeDrawing = false;
+            nameBox.Text = meaningBox.Text = "";
+            pad.InkPresenter.StrokeContainer.Clear();
+            formTitle.Text = "New symbol";
+            save.Content = "Add symbol";
+            cancel.Visibility = dropSaved.Visibility = savedImage.Visibility = savedLabel.Visibility = Visibility.Collapsed;
+            savedImage.Source = null;
+        }
+
+        void Render()
+        {
+            list.Children.Clear();
+            if (symbols.Count == 0)
+                list.Children.Add(new TextBlock { Text = "No symbols yet.", Opacity = 0.75 });
+            foreach (var symbol in symbols)
+            {
+                var row = new Grid { ColumnSpacing = 8, Width = 380 };
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(48) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+                var thumb = new Image { Width = 48, Height = 40, Stretch = Stretch.Uniform };
+                if (symbol.HasDrawing) _ = ShowThumbnailAsync(thumb, symbol.Id);
+                var label = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+                label.Children.Add(new TextBlock { Text = symbol.Name, FontWeight = Windows.UI.Text.FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis });
+                label.Children.Add(new TextBlock { Text = symbol.Meaning, FontSize = 12, Opacity = 0.75, MaxLines = 2, TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.CharacterEllipsis });
+
+                var edit = new Button { Content = new FontIcon { Glyph = "\uE70F", FontSize = 14 } };
+                ToolTipService.SetToolTip(edit, "Edit");
+                edit.Click += async (_, _) =>
+                {
+                    ResetForm();
+                    editingId = symbol.Id;
+                    nameBox.Text = symbol.Name;
+                    meaningBox.Text = symbol.Meaning;
+                    formTitle.Text = "Edit symbol";
+                    save.Content = "Save changes";
+                    cancel.Visibility = Visibility.Visible;
+                    if (symbol.HasDrawing)
+                    {
+                        savedImage.Source = await ThumbnailAsync(symbol.Id);
+                        savedImage.Visibility = savedLabel.Visibility = dropSaved.Visibility = Visibility.Visible;
+                    }
+                    message.Text = "";
+                };
+
+                bool armed = armedDelete == symbol.Id;
+                var delete = new Button { Content = armed ? new TextBlock { Text = "Delete?" } : new FontIcon { Glyph = "\uE74D", FontSize = 14 } };
+                ToolTipService.SetToolTip(delete, armed ? "Tap again to delete this symbol" : "Delete");
+                delete.Click += async (_, _) =>
+                {
+                    if (!armed)
+                    {
+                        armedDelete = symbol.Id;
+                        Render();
+                        return;
+                    }
+                    armedDelete = null;
+                    try
+                    {
+                        symbols = SymbolList.Remove(symbols, symbol.Id);
+                        await SymbolStore.SaveAsync(symbols);
+                        await SymbolStore.DeleteDrawingAsync(symbol.Id);
+                        if (editingId == symbol.Id) ResetForm();
+                    }
+                    catch (Exception ex)
+                    {
+                        message.Text = "Couldn't delete the symbol: " + ex.Message;
+                    }
+                    Render();
+                };
+
+                Grid.SetColumn(label, 1);
+                Grid.SetColumn(edit, 2);
+                Grid.SetColumn(delete, 3);
+                row.Children.Add(thumb);
+                row.Children.Add(label);
+                row.Children.Add(edit);
+                row.Children.Add(delete);
+                list.Children.Add(row);
+            }
+        }
+
+        async Task ShowThumbnailAsync(Image target, string id) => target.Source = await ThumbnailAsync(id);
+
+        clearPad.Click += (_, _) => pad.InkPresenter.StrokeContainer.Clear();
+        dropSaved.Click += (_, _) =>
+        {
+            removeDrawing = true;
+            savedImage.Visibility = savedLabel.Visibility = dropSaved.Visibility = Visibility.Collapsed;
+        };
+        cancel.Click += (_, _) =>
+        {
+            ResetForm();
+            message.Text = "";
+        };
+        save.Click += async (_, _) =>
+        {
+            var problem = SymbolList.Problem(symbols, editingId, nameBox.Text, meaningBox.Text);
+            if (problem is not null)
+            {
+                message.Text = problem;
+                return;
+            }
+            save.IsEnabled = false;
+            try
+            {
+                var id = editingId ?? SymbolList.NewId();
+                bool hasDrawing = symbols.FirstOrDefault(s => s.Id == id)?.HasDrawing ?? false;
+                var strokes = pad.InkPresenter.StrokeContainer.GetStrokes().ToList();
+                if (strokes.Count > 0)
+                {
+                    await SymbolStore.WriteDrawingAsync(id, await InkSnapshot.RenderPngAsync(strokes));
+                    hasDrawing = true;
+                }
+                else if (removeDrawing && hasDrawing)
+                {
+                    await SymbolStore.DeleteDrawingAsync(id);
+                    hasDrawing = false;
+                }
+                symbols = SymbolList.Upsert(symbols, new Symbol(id, nameBox.Text, meaningBox.Text, hasDrawing));
+                await SymbolStore.SaveAsync(symbols);
+                message.Text = "Saved.";
+                ResetForm();
+                Render();
+            }
+            catch (Exception ex)
+            {
+                message.Text = "Couldn't save the symbol: " + ex.Message;
+            }
+            save.IsEnabled = true;
+        };
+
+        section.Children.Add(new TextBlock
+        {
+            Text = "Symbols are your own shortcuts: a mark you draw in the margin that means something to you. Give it a name and say what it means; Claude then does that when it sees the symbol in your writing. There are none until you add some. They are saved as you go.",
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 12,
+            Opacity = 0.75,
+        });
+        section.Children.Add(list);
+        section.Children.Add(formTitle);
+        section.Children.Add(nameBox);
+        section.Children.Add(meaningBox);
+        section.Children.Add(padHint);
+        section.Children.Add(padFrame);
+        section.Children.Add(savedLabel);
+        section.Children.Add(savedImage);
+        var padButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        padButtons.Children.Add(clearPad);
+        padButtons.Children.Add(dropSaved);
+        section.Children.Add(padButtons);
+        var formButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        formButtons.Children.Add(save);
+        formButtons.Children.Add(cancel);
+        section.Children.Add(formButtons);
+        section.Children.Add(message);
+
+        _ = LoadSymbolsAsync();
+        async Task LoadSymbolsAsync()
+        {
+            symbols = await SymbolStore.LoadAsync();
+            Render();
+        }
+        return section;
+    }
+
     async Task<string?> PromptForKeyAsync()
     {
         bool hasKey = ApiKeyStore.Load() is not null;
@@ -1466,11 +1695,13 @@ public sealed partial class MainPage : Page
         panel.Children.Add(box);
         panel.Children.Add(new TextBlock { Text = "Model", Margin = new Thickness(0, 4, 0, -6) });
         panel.Children.Add(models);
+        panel.Children.Add(new TextBlock { Text = "Symbols", FontWeight = Windows.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 10, 0, -6) });
+        panel.Children.Add(BuildSymbolsSection());
 
         var dialog = new ContentDialog
         {
             Title = "Settings",
-            Content = panel,
+            Content = new ScrollViewer { Content = panel, MaxHeight = 560, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
             PrimaryButtonText = "Save",
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Primary,
