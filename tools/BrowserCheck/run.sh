@@ -9,7 +9,11 @@ chrome=${1:-google-chrome}
 out=${2:-$here/out}
 mkdir -p "$out"
 work=$(mktemp -d)
-cleanup() { kill $(jobs -p) 2>/dev/null || true; rm -rf "$work"; }
+cleanup() {
+  kill $(jobs -p) 2>/dev/null || true
+  wait 2>/dev/null || true # Chrome keeps writing to its profile until it has exited
+  rm -rf "$work" 2>/dev/null || true # a leftover temp folder is not a failure
+}
 trap cleanup EXIT
 
 dotnet build "$root/Longhand.Web/Longhand.Web.csproj" -o "$work/app" -v q -nologo

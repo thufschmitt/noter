@@ -71,9 +71,11 @@ with the handwriting font, and does the two things only a browser can: measure t
 ```
 export ANTHROPIC_API_KEY=sk-ant-…          # or add the key with the gear button in the page
 dotnet run --project Longhand.Web           # then open http://127.0.0.1:5080
+# on Nix: nix shell nixpkgs#dotnet-sdk_10 -c dotnet run --project Longhand.Web
 ```
 
 - Options: `--urls http://127.0.0.1:5080` (or `LONGHAND_URLS`) and `--data <folder>` (or `LONGHAND_DATA`; the default is `~/.local/share/longhand`). Conversations, symbols, the chosen model and a key typed into the page are kept there; the key file is readable only by you.
+- Use one tab at a time: each open tab runs its own copy of the page and saves it, so two tabs on the same conversation overwrite each other.
 - **There is no sign-in.** It listens on loopback by default and refuses requests addressed to another name (DNS rebinding) and writes from another site. To use it from another device, tunnel to it (`ssh -L 5080:127.0.0.1:5080 host`) rather than exposing it.
 - Write with a pen or mouse; fingers scroll unless you turn on the hand button. The pen's eraser end works, as does the eraser button. Replies, drawings, annotation of earlier replies, undo, conversations and symbols work as in the Windows app, and the pause-to-ask is the same.
 - Not in the web version yet: connected apps (MCP), the registry search and the Nextcloud calendar. The server could run them as they are, so they are mostly UI to add.

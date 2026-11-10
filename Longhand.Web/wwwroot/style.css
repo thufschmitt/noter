@@ -70,3 +70,10 @@ dialog textarea { resize: vertical; margin-top: 6px; }
 #symbolList .sym .text { flex: 1; min-width: 0; }
 #symbolList .sym .text b { display: block; }
 #symbolList .sym .text span { font-size: 12px; opacity: .75; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+@media (max-width: 440px) {
+  #tray { gap: 1px; padding: 4px; }
+  .tool { padding: 7px 6px; }
+  #tray .sep { margin: 0 2px; }
+  button.accent { padding: 6px 9px; gap: 6px; }
+}
