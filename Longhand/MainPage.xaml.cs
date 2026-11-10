@@ -19,61 +19,25 @@ using Windows.UI.Xaml.Shapes;
 
 namespace Longhand;
 
-public sealed partial class MainPage : Page
+public sealed partial class MainPage : Page, IPageView
 {
-    // Page geometry, in XAML pixels.
-    const double PageMaxWidth = 880, LineHeight = 40, Top = 120, MarginX = 76, RightPad = 36, FontPx = 26;
-    // Nudges Claude's text so its baseline sits on the ruled line; tune by eye if your font renders differently.
-    const double TextNudge = 3;
-    static readonly TimeSpan PauseBeforeAsking = TimeSpan.FromMilliseconds(2200);
+    // Page geometry lives in PageLayout, shared with the web version.
+    const double PageMaxWidth = PageLayout.PageMaxWidth, LineHeight = PageLayout.LineHeight, Top = PageLayout.Top, MarginX = PageLayout.MarginX, RightPad = PageLayout.RightPad, FontPx = PageLayout.FontPx;
+    const double TextNudge = PageLayout.TextNudge;
 
-    const string HintText = "Write anything with your pen: a question, a sum, a sketch. Pause for a moment or tap Ask, and I'll reply right here on the page.";
-
-    /// <summary>One of Claude's SVG drawings, shown under the words of its note.</summary>
-    sealed class Drawing
-    {
-        public required string Markup;
-        public required Image Image;
-        public required double Aspect;
-        public string Alt = "";
-        /// <summary>The rule lines it takes up.</summary>
-        public int Lines;
-    }
-
-    sealed class Note
+    /// <summary>What a note is drawn with: its words and the tick in the margin. Kept in <see cref="NoteModel.View"/>.</summary>
+    sealed class NoteVisual
     {
         public required TextBlock Block;
         public required Rectangle Tick;
-        public double Y;
-        public bool IsHint;
-        public bool Done;
-        public string Heard = "";
-        public string Text = "";
-        public int Lines = 1;
-        public readonly List<Drawing> Drawings = new();
-        public int DrawingsSeen; // how many of the reply's drawings have been taken in (shown or refused)
-        public int DrawLines => Drawings.Sum(d => d.Lines);
-        /// <summary>Its text lines and drawings plus one blank rule below as breathing room.</summary>
-        public double Span => (Lines + DrawLines + 1) * LineHeight;
-        public double Bottom => Y + Span;
     }
 
-    abstract record UndoAction;
-    sealed record StrokeAdded(uint StrokeId) : UndoAction;
-    sealed record StrokesErased(List<InkStroke> Copies) : UndoAction;
+    static NoteVisual Visual(NoteModel note) => (NoteVisual)note.View!;
+    static Image PictureOf(DrawingModel drawing) => (Image)drawing.View!;
 
-    readonly List<Note> _notes = new();
-    readonly HashSet<uint> _pending = new();       // strokes written since Claude last answered
-    readonly Stack<UndoAction> _undo = new();
-    readonly DispatcherTimer _idleTimer = new() { Interval = TimeSpan.FromMilliseconds(40) };
+    /// <summary>The page itself: what is on it, asking, saving, conversations. This class is its screen.</summary>
+    readonly PageSession _session;
     readonly DispatcherTimer _toastTimer = new() { Interval = TimeSpan.FromSeconds(4) };
-    readonly DispatcherTimer _saveTimer = new() { Interval = TimeSpan.FromSeconds(1) };
-    DateTime _idleStart;
-    bool _busy, _loaded, _dirty, _switching, _discardOnCancel;
-    ConversationIndex _index = new();
-    string _currentId = "";
-    readonly SemaphoreSlim _saveLock = new(1, 1);
-    CancellationTokenSource? _cts;
     double _sheetWidth = 800, _rulesDrawnTo, _rulesWidth;
 
     // Shared brushes: changing their Color on a theme switch recolours everything that uses them.
@@ -87,16 +51,15 @@ public sealed partial class MainPage : Page
     public MainPage()
     {
         InitializeComponent();
+        _session = new PageSession(this, new WindowsPageData(() => Ink.InkPresenter.StrokeContainer, _oauth, _nextcloud));
 
         var presenter = Ink.InkPresenter;
         presenter.InputDeviceTypes = CoreInputDeviceTypes.Pen | CoreInputDeviceTypes.Mouse;
         presenter.StrokesCollected += OnStrokesCollected;
         presenter.StrokesErased += OnStrokesErased;
-        presenter.StrokeInput.StrokeStarted += (_, _) => CancelIdle();
+        presenter.StrokeInput.StrokeStarted += (_, _) => _session.StrokeStarted();
 
-        _idleTimer.Tick += OnIdleTick;
         _toastTimer.Tick += (_, _) => { _toastTimer.Stop(); ToastBox.Visibility = Visibility.Collapsed; };
-        _saveTimer.Tick += async (_, _) => { _saveTimer.Stop(); if (!_switching) await SaveAsync(); };
         BuildConversationsFlyout();
 
         var newConversation = new Windows.UI.Xaml.Input.KeyboardAccelerator
@@ -107,7 +70,7 @@ public sealed partial class MainPage : Page
         newConversation.Invoked += async (_, args) =>
         {
             args.Handled = true;
-            await NewConversationAsync();
+            await _session.NewConversationAsync();
         };
         KeyboardAccelerators.Add(newConversation);
 
@@ -131,14 +94,8 @@ public sealed partial class MainPage : Page
     async void OnLoaded(object sender, RoutedEventArgs e)
     {
         ApplyTheme(recolorInk: false);
-        _index = await ConversationStore.LoadAsync();
-        var start = _index.Find(_index.CurrentId) ?? _index.Newest().FirstOrDefault() ?? _index.Create(DateTimeOffset.UtcNow);
-        await ShowConversationAsync(start.Id);
-        await ConversationStore.SaveAsync(_index);
-        _loaded = true;
+        await _session.StartAsync();
         LayoutSheet();
-        if (ApiKeyStore.Load() is null)
-            ShowToast("Add your Anthropic API key (gear button) so Claude can answer. You can write in the meantime.", 6);
     }
 
     // ---------- theme ----------
@@ -188,23 +145,16 @@ public sealed partial class MainPage : Page
         _sheetWidth = Math.Min(Scroller.ActualWidth, PageMaxWidth);
         if (_sheetWidth <= 0) return;
         Sheet.Width = _sheetWidth;
-        foreach (var n in _notes)
+        foreach (var n in _session.Notes)
         {
-            n.Block.Width = TextWidth;
+            Visual(n).Block.Width = TextWidth;
             Remeasure(n);
             Position(n);
         }
         UpdateSheetHeight();
     }
 
-    double ContentBottom()
-    {
-        double bottom = Top;
-        var ink = Strokes.BoundingRect;
-        if (ink.Width > 0 && ink.Height > 0) bottom = Math.Max(bottom, ink.Y + ink.Height);
-        foreach (var n in _notes) bottom = Math.Max(bottom, n.Bottom);
-        return bottom;
-    }
+    double ContentBottom() => _session.ContentBottom();
 
     /// <summary>The sheet always runs well past the last ink, so there are fresh lines to write on.</summary>
     void UpdateSheetHeight()
@@ -245,105 +195,41 @@ public sealed partial class MainPage : Page
         }
     }
 
-    static double RuleAtOrBelow(double y) => Top + Math.Max(0, Math.Ceiling((y - Top) / LineHeight)) * LineHeight;
-
     // ---------- Claude's notes ----------
 
-    Note AddNote(double y, string text, bool isHint, bool done)
+    /// <summary>Works out how many rule lines a note's words and drawings take at the current page width.</summary>
+    void Remeasure(NoteModel n)
     {
-        var block = new TextBlock
-        {
-            Text = text,
-            FontFamily = _handFont,
-            FontSize = FontPx,
-            LineHeight = LineHeight,
-            LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
-            TextWrapping = TextWrapping.WrapWholeWords,
-            Foreground = _claudeInk,
-            Width = TextWidth,
-            Opacity = isHint ? 0.8 : 1,
-            IsTextScaleFactorEnabled = false,
-        };
-        var tick = new Rectangle { Width = 2.5, RadiusX = 1.25, RadiusY = 1.25, Fill = _claudeInk, Opacity = isHint ? 0.35 : 0.6 };
-        Canvas.SetLeft(block, MarginX);
-        Canvas.SetLeft(tick, MarginX - 31);
-        NoteLayer.Children.Add(tick);
-        NoteLayer.Children.Add(block);
-
-        var note = new Note { Block = block, Tick = tick, Y = y, IsHint = isHint, Done = done, Text = text };
-        Remeasure(note);
-        Position(note);
-        _notes.Add(note);
-        return note;
-    }
-
-    void Remeasure(Note n)
-    {
-        n.Block.Measure(new Size(TextWidth, double.PositiveInfinity));
+        var block = Visual(n).Block;
+        block.Measure(new Size(TextWidth, double.PositiveInfinity));
         // A reply that is only a drawing has no line of words above it.
-        int least = n.Drawings.Count > 0 && n.Block.Text.Length == 0 ? 0 : 1;
-        n.Lines = Math.Max(least, (int)Math.Round(n.Block.DesiredSize.Height / LineHeight));
+        int least = n.Drawings.Count > 0 && block.Text.Length == 0 ? 0 : 1;
+        n.Lines = Math.Max(least, (int)Math.Round(block.DesiredSize.Height / LineHeight));
         foreach (var d in n.Drawings)
         {
             var (w, h) = Svg.Fit(d.Aspect, Math.Min(TextWidth, 560), 480);
-            d.Image.Width = w;
-            d.Image.Height = h;
+            var image = PictureOf(d);
+            image.Width = w;
+            image.Height = h;
             d.Lines = (int)Math.Ceiling(h / LineHeight);
         }
     }
 
-    void Position(Note n)
+    void Position(NoteModel n)
     {
-        Canvas.SetTop(n.Block, n.Y + TextNudge);
-        Canvas.SetTop(n.Tick, n.Y + LineHeight * 0.35);
-        n.Tick.Height = Math.Max(4, (n.Lines + n.DrawLines) * LineHeight - LineHeight * 0.35 + 4);
+        var visual = Visual(n);
+        Canvas.SetTop(visual.Block, n.Y + TextNudge);
+        Canvas.SetTop(visual.Tick, n.Y + LineHeight * 0.35);
+        visual.Tick.Height = Math.Max(4, (n.Lines + n.DrawLines) * LineHeight - LineHeight * 0.35 + 4);
         double top = n.Y + n.Lines * LineHeight;
         foreach (var d in n.Drawings)
         {
-            Canvas.SetLeft(d.Image, MarginX);
-            Canvas.SetTop(d.Image, top);
+            var image = PictureOf(d);
+            Canvas.SetLeft(image, MarginX);
+            Canvas.SetTop(image, top);
             top += d.Lines * LineHeight;
         }
     }
-
-    void RemoveNote(Note n)
-    {
-        NoteLayer.Children.Remove(n.Block);
-        NoteLayer.Children.Remove(n.Tick);
-        foreach (var d in n.Drawings) NoteLayer.Children.Remove(d.Image);
-        _notes.Remove(n);
-    }
-
-    /// <summary>Pushes everything below <paramref name="anchor"/> down (or up) to make room for an answer.</summary>
-    void ShiftBelow(double anchor, double delta, Note? except, HashSet<uint>? keepStrokes)
-    {
-        if (delta == 0) return;
-        bool any = false;
-        foreach (var s in Strokes.GetStrokes())
-        {
-            bool move = !(keepStrokes?.Contains(s.Id) ?? false) && s.BoundingRect.Y >= anchor;
-            s.Selected = move;
-            any |= move;
-        }
-        if (any)
-        {
-            Strokes.MoveSelected(new Point(0, delta));
-            foreach (var s in Strokes.GetStrokes()) s.Selected = false;
-        }
-        foreach (var n in _notes)
-        {
-            if (n == except || n.Y < anchor) continue;
-            n.Y += delta;
-            Position(n);
-        }
-        UpdateSheetHeight();
-    }
-
-    IReadOnlyList<Turn> History() => _notes
-        .Where(n => !n.IsHint && n.Done && (n.Text.Length > 0 || n.Drawings.Count > 0))
-        .OrderBy(n => n.Y)
-        .Select(n => new Turn(n.Heard.Length > 0 ? n.Heard : "(unclear handwriting)", (n.Text + string.Concat(n.Drawings.Select(d => " [I drew: " + d.Alt + "]"))).Trim()))
-        .ToList();
 
     void EnsureVisible(double bottom)
     {
@@ -353,32 +239,11 @@ public sealed partial class MainPage : Page
 
     // ---------- ink events ----------
 
-    void OnStrokesCollected(InkPresenter sender, InkStrokesCollectedEventArgs args)
-    {
-        foreach (var s in args.Strokes)
-        {
-            _pending.Add(s.Id);
-            _undo.Push(new StrokeAdded(s.Id));
-        }
-        UpdateSheetHeight();
-        UpdateAsk();
-        ScheduleIdle();
-        ScheduleSave();
-    }
+    void OnStrokesCollected(InkPresenter sender, InkStrokesCollectedEventArgs args) =>
+        _session.StrokesCollected(args.Strokes.Select(s => s.Id).ToList());
 
-    void OnStrokesErased(InkPresenter sender, InkStrokesErasedEventArgs args)
-    {
-        var copies = new List<InkStroke>();
-        foreach (var s in args.Strokes)
-        {
-            _pending.Remove(s.Id);
-            copies.Add(s.Clone());
-        }
-        if (copies.Count > 0) _undo.Push(new StrokesErased(copies));
-        UpdateAsk();
-        ScheduleIdle();
-        ScheduleSave();
-    }
+    void OnStrokesErased(InkPresenter sender, InkStrokesErasedEventArgs args) =>
+        _session.StrokesErased(args.Strokes.Select(s => s.Id).ToList(), args.Strokes.Select(s => s.Clone()).ToList());
 
     // ---------- toolbar ----------
 
@@ -400,66 +265,14 @@ public sealed partial class MainPage : Page
         ShowToast(on ? "Finger writing is on. Scroll with the scroll bar or mouse wheel." : "Fingers scroll the page again. Write with a pen or mouse.");
     }
 
-    void Undo_Click(object sender, RoutedEventArgs e)
-    {
-        if (_undo.Count == 0) return;
-        switch (_undo.Pop())
-        {
-            case StrokeAdded added:
-                bool found = false;
-                foreach (var s in Strokes.GetStrokes())
-                {
-                    s.Selected = s.Id == added.StrokeId;
-                    found |= s.Selected;
-                }
-                if (found) Strokes.DeleteSelected();
-                _pending.Remove(added.StrokeId);
-                break;
-            case StrokesErased erased:
-                foreach (var copy in erased.Copies) Strokes.AddStroke(copy);
-                break;
-        }
-        UpdateAsk();
-        ScheduleSave();
-    }
+    void Undo_Click(object sender, RoutedEventArgs e) => _session.Undo();
 
     // ---------- drawings ----------
-
-    /// <summary>Adds one of Claude's SVG drawings under the note's words. False when the drawing isn't safe or sensible to show.</summary>
-    bool AddDrawing(Note note, string raw)
-    {
-        if (note.Drawings.Count >= Svg.MaxDrawings || Svg.Sanitize(raw) is not { } svg) return false;
-        var title = Svg.Title(svg);
-        var image = new Image { Stretch = Stretch.Uniform };
-        Windows.UI.Xaml.Automation.AutomationProperties.SetName(image, title);
-        var drawing = new Drawing { Markup = svg, Image = image, Alt = title, Aspect = Svg.Aspect(svg) };
-        note.Drawings.Add(drawing);
-        NoteLayer.Children.Add(image);
-        _ = LoadDrawingAsync(drawing);
-        return true;
-    }
-
-    /// <summary>Takes in the drawings of a reply that haven't been added yet.</summary>
-    void AddNewDrawings(Note note, IReadOnlyList<string>? drawings)
-    {
-        if (drawings is null) return;
-        for (; note.DrawingsSeen < drawings.Count; note.DrawingsSeen++)
-            if (!AddDrawing(note, drawings[note.DrawingsSeen])) ShowToast("A drawing from Claude couldn't be shown.");
-        Remeasure(note);
-        Position(note);
-    }
-
-    void ClearDrawings(Note note)
-    {
-        foreach (var d in note.Drawings) NoteLayer.Children.Remove(d.Image);
-        note.Drawings.Clear();
-        note.DrawingsSeen = 0;
-    }
 
     static string Hex6(Color c) => $"#{c.R:X2}{c.G:X2}{c.B:X2}";
 
     /// <summary>Renders the drawing in the current ink colour: drawings say "currentColor" for it, so they follow the theme.</summary>
-    async Task LoadDrawingAsync(Drawing d)
+    async Task LoadDrawingAsync(DrawingModel d)
     {
         try
         {
@@ -473,7 +286,7 @@ public sealed partial class MainPage : Page
             }
             stream.Seek(0);
             var status = await source.SetSourceAsync(stream);
-            if (status == SvgImageSourceLoadStatus.Success) d.Image.Source = source;
+            if (status == SvgImageSourceLoadStatus.Success) PictureOf(d).Source = source;
             else ShowToast("A drawing couldn't be shown.");
         }
         catch (Exception)
@@ -484,7 +297,7 @@ public sealed partial class MainPage : Page
 
     void RefreshDrawings()
     {
-        foreach (var n in _notes)
+        foreach (var n in _session.Notes)
             foreach (var d in n.Drawings) _ = LoadDrawingAsync(d);
     }
 
@@ -492,148 +305,11 @@ public sealed partial class MainPage : Page
 
     readonly Nextcloud _nextcloud = new();
 
-    /// <summary>The calendar is offered to Claude only while a Nextcloud account is connected.</summary>
-    IReadOnlyList<IAgentTool> BuildAgentTools() =>
-        NextcloudStore.Load() is { } account ? new IAgentTool[] { new CalendarTool(_nextcloud, account) } : Array.Empty<IAgentTool>();
-
     // ---------- conversations ----------
 
     readonly Flyout _conversationsFlyout = new() { Placement = Windows.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Top };
     readonly StackPanel _conversationList = new() { Spacing = 2, Width = 340 };
     string? _armedDelete, _renaming;
-
-    bool IsBlankNow() => Strokes.GetStrokes().Count == 0 && !_notes.Any(n => !n.IsHint);
-
-    /// <summary>Empties the canvas. What was on it must have been saved already.</summary>
-    void ResetCanvas()
-    {
-        CancelIdle();
-        Strokes.Clear();
-        foreach (var n in _notes.ToList()) RemoveNote(n);
-        _pending.Clear();
-        _undo.Clear();
-    }
-
-    /// <summary>Loads a conversation's page onto the canvas and makes it the open one.</summary>
-    async Task ShowConversationAsync(string id)
-    {
-        ResetCanvas();
-        _currentId = id;
-        _index.CurrentId = id;
-
-        var saved = await PageStore.LoadAsync(await ConversationStore.FolderAsync(id), Strokes);
-        if (saved is { Count: > 0 })
-            foreach (var n in saved)
-            {
-                var note = AddNote(n.Y, n.Text, n.IsHint, done: true);
-                note.Heard = n.Heard;
-                foreach (var svg in n.Drawings ?? new List<string>()) AddDrawing(note, svg);
-                note.DrawingsSeen = note.Drawings.Count;
-                Remeasure(note);
-                Position(note);
-            }
-        else if (Strokes.GetStrokes().Count == 0)
-            AddNote(Top, HintText, isHint: true, done: true);
-        ApplyTheme(recolorInk: true); // loaded strokes take the current theme's ink colour
-
-        // Writing below the last reply hasn't been answered yet (this survives a restart or a switch away).
-        double answered = _notes.Where(n => !n.IsHint).Select(n => n.Y + (n.Lines + n.DrawLines) * LineHeight).DefaultIfEmpty(0).Max();
-        foreach (var s in Strokes.GetStrokes())
-            if (s.BoundingRect.Y + s.BoundingRect.Height > answered) _pending.Add(s.Id);
-
-        _dirty = false;
-        LayoutSheet();
-        Scroller.ChangeView(null, 0, null);
-        UpdateAsk();
-    }
-
-    /// <summary>Runs a change of conversation: stops any answer being written, saves the open one, then makes the change.</summary>
-    async Task SwitchAsync(Func<Task> change)
-    {
-        if (_switching) return;
-        _switching = true;
-        try
-        {
-            if (_busy)
-            {
-                // The half-written reply is dropped and its ink goes back to "not yet answered".
-                _discardOnCancel = true;
-                _cts?.Cancel();
-                while (_busy) await Task.Delay(20);
-            }
-            CancelIdle();
-            _saveTimer.Stop();
-            await SaveAsync();
-            await change();
-        }
-        catch (Exception ex)
-        {
-            ShowToast("Couldn't switch conversation: " + ex.Message);
-        }
-        finally
-        {
-            _discardOnCancel = false;
-            _switching = false;
-        }
-    }
-
-    async Task NewConversationAsync()
-    {
-        // An empty page already is a fresh conversation.
-        if (IsBlankNow()) return;
-        await SwitchAsync(async () =>
-        {
-            await DropBlankAsync(keepId: null);
-            var created = _index.Create(DateTimeOffset.UtcNow);
-            await ShowConversationAsync(created.Id);
-            await SaveIndexAsync();
-        });
-    }
-
-    async Task OpenConversationAsync(string id)
-    {
-        if (id == _currentId) return;
-        await SwitchAsync(async () =>
-        {
-            await DropBlankAsync(keepId: id);
-            await ShowConversationAsync(id);
-            await SaveIndexAsync();
-        });
-    }
-
-    async Task DeleteConversationAsync(string id)
-    {
-        if (id != _currentId)
-        {
-            _index.Delete(id);
-            await ConversationStore.DeleteAsync(id);
-            await SaveIndexAsync();
-            return;
-        }
-        await SwitchAsync(async () =>
-        {
-            var next = _index.Delete(id);
-            await ConversationStore.DeleteAsync(id);
-            _dirty = false; // what was just deleted must not be saved again
-            _currentId = "";
-            await ShowConversationAsync(next ?? _index.Create(DateTimeOffset.UtcNow).Id);
-            await SaveIndexAsync();
-        });
-    }
-
-    /// <summary>Conversations nothing was written in don't stay in the list once you move away from them.</summary>
-    async Task DropBlankAsync(string? keepId)
-    {
-        foreach (var id in _index.RemoveBlank(keepId)) await ConversationStore.DeleteAsync(id);
-    }
-
-    async Task SaveIndexAsync()
-    {
-        await _saveLock.WaitAsync();
-        try { await ConversationStore.SaveAsync(_index); }
-        catch (Exception ex) { ShowToast("Couldn't save the conversation list: " + ex.Message); }
-        finally { _saveLock.Release(); }
-    }
 
     void BuildConversationsFlyout()
     {
@@ -658,11 +334,11 @@ public sealed partial class MainPage : Page
         add.Click += async (_, _) =>
         {
             _conversationsFlyout.Hide();
-            await NewConversationAsync();
+            await _session.NewConversationAsync();
         };
         _conversationList.Children.Add(add);
 
-        foreach (var c in _index.Newest()) _conversationList.Children.Add(ConversationRow(c));
+        foreach (var c in _session.Index.Newest()) _conversationList.Children.Add(ConversationRow(c));
     }
 
     UIElement ConversationRow(Conversation c)
@@ -677,9 +353,8 @@ public sealed partial class MainPage : Page
             var box = new TextBox { Text = c.CustomTitle.Length > 0 ? c.CustomTitle : c.AutoTitle, PlaceholderText = "Name", MaxLength = 80 };
             async Task Commit()
             {
-                _index.Rename(c.Id, box.Text);
                 _renaming = null;
-                await SaveIndexAsync();
+                await _session.RenameConversationAsync(c.Id, box.Text);
                 RenderConversations();
             }
             box.KeyDown += async (_, e) =>
@@ -707,11 +382,11 @@ public sealed partial class MainPage : Page
         {
             Text = c.Title,
             TextTrimming = TextTrimming.CharacterEllipsis,
-            FontWeight = c.Id == _currentId ? Windows.UI.Text.FontWeights.Bold : Windows.UI.Text.FontWeights.SemiBold,
+            FontWeight = c.Id == _session.CurrentId ? Windows.UI.Text.FontWeights.Bold : Windows.UI.Text.FontWeights.SemiBold,
         });
         label.Children.Add(new TextBlock
         {
-            Text = (c.Id == _currentId ? "Open now · " : "") + ConversationIndex.When(c.Updated, DateTimeOffset.UtcNow),
+            Text = (c.Id == _session.CurrentId ? "Open now · " : "") + ConversationIndex.When(c.Updated, DateTimeOffset.UtcNow),
             FontSize = 12,
             Opacity = 0.75,
         });
@@ -725,7 +400,7 @@ public sealed partial class MainPage : Page
         open.Click += async (_, _) =>
         {
             _conversationsFlyout.Hide();
-            await OpenConversationAsync(c.Id);
+            await _session.OpenConversationAsync(c.Id);
         };
 
         var rename = new Button { Content = new FontIcon { Glyph = "\uE70F", FontSize = 14 } };
@@ -749,7 +424,7 @@ public sealed partial class MainPage : Page
                 return;
             }
             _armedDelete = null;
-            await DeleteConversationAsync(c.Id);
+            await _session.DeleteConversationAsync(c.Id);
             RenderConversations();
         };
 
@@ -763,229 +438,132 @@ public sealed partial class MainPage : Page
 
     async void Settings_Click(object sender, RoutedEventArgs e) => await PromptForKeyAsync();
 
-    async void Ask_Click(object sender, RoutedEventArgs e)
+    async void Ask_Click(object sender, RoutedEventArgs e) => await _session.AskOrStopAsync();
+
+    // ---------- the page's screen (IPageView) ----------
+
+    IReadOnlyList<StrokeSpan> IPageView.Strokes() =>
+        Strokes.GetStrokes().Select(s => new StrokeSpan(s.Id, s.BoundingRect.Y, s.BoundingRect.Y + s.BoundingRect.Height)).ToList();
+
+    void IPageView.ShiftStrokes(double anchor, double delta, IReadOnlySet<uint> keep)
     {
-        if (_busy) _cts?.Cancel();
-        else await AskAsync();
+        bool any = false;
+        foreach (var s in Strokes.GetStrokes())
+        {
+            bool move = !keep.Contains(s.Id) && s.BoundingRect.Y >= anchor;
+            s.Selected = move;
+            any |= move;
+        }
+        if (!any) return;
+        Strokes.MoveSelected(new Point(0, delta));
+        foreach (var s in Strokes.GetStrokes()) s.Selected = false;
     }
 
-    void UpdateAsk()
+    bool IPageView.DeleteStroke(uint id)
     {
-        AskLabel.Text = _busy ? "Stop" : "Ask";
-        BusyRing.IsActive = _busy;
-        AskIcon.Visibility = _busy || _idleTimer.IsEnabled ? Visibility.Collapsed : Visibility.Visible;
-        AskButton.IsEnabled = _busy || _pending.Count > 0;
+        bool found = false;
+        foreach (var s in Strokes.GetStrokes())
+        {
+            s.Selected = s.Id == id;
+            found |= s.Selected;
+        }
+        if (found) Strokes.DeleteSelected();
+        return found;
     }
 
-    // ---------- pause-to-ask ----------
-
-    void ScheduleIdle()
+    void IPageView.RestoreStrokes(object token)
     {
-        CancelIdle();
-        if (_pending.Count == 0 || _busy || ApiKeyStore.Load() is null) return;
-        _idleStart = DateTime.UtcNow;
-        Countdown.Value = 0;
-        Countdown.Visibility = Visibility.Visible;
-        _idleTimer.Start();
-        UpdateAsk();
+        foreach (var copy in (List<InkStroke>)token) Strokes.AddStroke(copy);
     }
 
-    void CancelIdle()
+    void IPageView.ClearStrokes() => Strokes.Clear();
+
+    void IPageView.NoteAdded(NoteModel note)
     {
-        _idleTimer.Stop();
-        Countdown.Visibility = Visibility.Collapsed;
-        UpdateAsk();
+        var block = new TextBlock
+        {
+            Text = note.Shown,
+            FontFamily = _handFont,
+            FontSize = FontPx,
+            LineHeight = LineHeight,
+            LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
+            TextWrapping = TextWrapping.WrapWholeWords,
+            Foreground = _claudeInk,
+            Width = TextWidth,
+            Opacity = note.IsHint ? 0.8 : 1,
+            IsTextScaleFactorEnabled = false,
+        };
+        var tick = new Rectangle { Width = 2.5, RadiusX = 1.25, RadiusY = 1.25, Fill = _claudeInk, Opacity = note.IsHint ? 0.35 : 0.6 };
+        Canvas.SetLeft(block, MarginX);
+        Canvas.SetLeft(tick, MarginX - 31);
+        NoteLayer.Children.Add(tick);
+        NoteLayer.Children.Add(block);
+        note.View = new NoteVisual { Block = block, Tick = tick };
     }
 
-    async void OnIdleTick(object? sender, object e)
+    void IPageView.NoteChanged(NoteModel note) => Visual(note).Block.Text = note.Shown;
+
+    void IPageView.NoteRemoved(NoteModel note)
     {
-        double progress = (DateTime.UtcNow - _idleStart).TotalMilliseconds / PauseBeforeAsking.TotalMilliseconds;
-        Countdown.Value = Math.Min(1, progress);
-        if (progress < 1) return;
-        CancelIdle();
-        await AskAsync();
+        var visual = Visual(note);
+        NoteLayer.Children.Remove(visual.Block);
+        NoteLayer.Children.Remove(visual.Tick);
+        foreach (var d in note.Drawings) NoteLayer.Children.Remove(PictureOf(d));
     }
 
-    // ---------- asking Claude ----------
-
-    async Task AskAsync()
+    void IPageView.DrawingAdded(NoteModel note, DrawingModel drawing)
     {
-        CancelIdle();
-        if (_busy || _pending.Count == 0) return;
-
-        var conversation = _currentId;
-        var key = ApiKeyStore.Load() ?? await PromptForKeyAsync();
-        if (_switching || conversation != _currentId) return; // moved to another conversation meanwhile
-        if (key is null)
-        {
-            ShowToast("Add your Anthropic API key (gear button) to get answers.");
-            return;
-        }
-
-        var ids = new HashSet<uint>(_pending);
-        var strokes = Strokes.GetStrokes().Where(s => ids.Contains(s.Id)).ToList();
-        if (strokes.Count == 0)
-        {
-            _pending.Clear();
-            UpdateAsk();
-            return;
-        }
-
-        // Writing over earlier replies (annotating them) sends those replies along, so Claude sees what the ink refers to.
-        var context = ContextAround(strokes, ids);
-
-        byte[] png;
-        try
-        {
-            try
-            {
-                png = await InkSnapshot.RenderPngAsync(strokes, context);
-            }
-            catch (Exception) when (context is not null)
-            {
-                // The earlier replies are a bonus: rather than not asking, send the new ink alone.
-                context = null;
-                ShowToast("Claude will only see your new ink this time.");
-                png = await InkSnapshot.RenderPngAsync(strokes);
-            }
-        }
-        catch (Exception ex)
-        {
-            ShowToast("Couldn't capture the handwriting: " + ex.Message);
-            return;
-        }
-        if (_switching || conversation != _currentId) return;
-        _pending.Clear();
-
-        // The answer goes at the end of the page, so it never lands in the middle of what is already there. Anything the user
-        // writes below it while it streams is pushed down out of the way.
-        var note = AddNote(EndOfPage(), "…", isHint: false, done: false);
-        note.Text = "";
-        double occupied = note.Span;
-        ShiftBelow(note.Y, occupied, note, ids);
-        EnsureVisible(note.Bottom);
-
-        void Grow()
-        {
-            Remeasure(note);
-            Position(note);
-            if (note.Span != occupied)
-            {
-                ShiftBelow(note.Y + occupied, note.Span - occupied, note, ids);
-                occupied = note.Span;
-            }
-            EnsureVisible(note.Bottom);
-        }
-
-        bool answered = false;
-        _busy = true;
-        _cts = new CancellationTokenSource();
-        UpdateAsk();
-        try
-        {
-            // Connected apps whose sign-in can't be renewed are skipped; say so, since Claude won't have them.
-            var (connectors, expired) = await ConnectorStore.ActiveAsync(_oauth, _cts.Token);
-            var agentTools = BuildAgentTools();
-            var legend = await SymbolStore.LegendAsync();
-            if (expired.Count > 0) ShowToast("Sign in again to " + string.Join(", ", expired) + " (apps button).", 6);
-
-            var result = await new ClaudeService(key, connectors, ModelStore.Load(), agentTools: agentTools).AskAsync(png, History(), progress =>
-            {
-                note.Heard = progress.Heard;
-                note.Text = progress.Body;
-                bool hasDrawing = progress.Drawing || progress.Drawings is { Count: > 0 };
-                note.Block.Text = progress.Body.Length > 0 ? progress.Body : progress.Drawing ? "drawing…" : hasDrawing ? "" : "…";
-                AddNewDrawings(note, progress.Drawings);
-                Grow();
-            }, _cts.Token, status =>
-            {
-                // A tool is running: show what it is doing in place of the reply, which is written after it finishes.
-                note.Text = "";
-                ClearDrawings(note);
-                note.Block.Text = status;
-                Grow();
-            }, hasContext: context is not null, legend: legend);
-
-            note.Heard = result.Heard;
-            AddNewDrawings(note, result.Drawings);
-            note.Text = result.Outcome switch
-            {
-                ReplyOutcome.Refused when result.Body.Length == 0 && note.Drawings.Count == 0 => "I can't help with that one.",
-                ReplyOutcome.Truncated => result.Body + " …",
-                _ => result.Body.Length > 0 || note.Drawings.Count > 0 ? result.Body : "I couldn't come up with a reply. Try writing it again?",
-            };
-            note.Done = true;
-            note.Block.Text = note.Text;
-            Grow();
-            answered = true;
-        }
-        catch (OperationCanceledException)
-        {
-            if ((note.Text.Length > 0 || note.Drawings.Count > 0) && !_discardOnCancel) FinishPartial(note, Grow);
-            else Discard(note, occupied, ids);
-        }
-        catch (AnthropicUnauthorizedException)
-        {
-            Discard(note, occupied, ids);
-            ShowToast("Anthropic rejected the API key. Check it with the gear button, then tap Ask.", 6);
-        }
-        catch (AnthropicRateLimitException)
-        {
-            Discard(note, occupied, ids);
-            ShowToast("Too many requests right now. Wait a moment, then tap Ask.", 6);
-        }
-        catch (Exception ex)
-        {
-            Discard(note, occupied, ids);
-            ShowToast("Claude couldn't answer: " + ex.Message + " Tap Ask to try again.", 7);
-        }
-        finally
-        {
-            _busy = false;
-            _cts?.Dispose();
-            _cts = null;
-            UpdateAsk();
-            ScheduleSave();
-            // Only re-arm the pause timer after a good answer, so a failing request is never retried in a loop.
-            if (answered && _pending.Count > 0) ScheduleIdle();
-        }
+        var image = new Image { Stretch = Stretch.Uniform };
+        Windows.UI.Xaml.Automation.AutomationProperties.SetName(image, drawing.Alt);
+        drawing.View = image;
+        NoteLayer.Children.Add(image);
+        _ = LoadDrawingAsync(drawing);
     }
 
-    /// <summary>The first free rule below all the ink and all the replies.</summary>
-    double EndOfPage()
+    void IPageView.DrawingsCleared(NoteModel note)
     {
-        double ink = Strokes.GetStrokes().Select(s => s.BoundingRect.Y + s.BoundingRect.Height).DefaultIfEmpty(Top).Max() - LineHeight * 0.3;
-        double notes = _notes.Where(n => !n.IsHint).Select(n => n.Bottom).DefaultIfEmpty(Top).Max();
-        return RuleAtOrBelow(Math.Max(ink, notes));
+        foreach (var d in note.Drawings) NoteLayer.Children.Remove(PictureOf(d));
     }
 
-    /// <summary>
-    /// When the new ink overlaps earlier replies, what Claude should be shown of the page around it: those replies, and the
-    /// writing they answered. Null when the ink simply follows the page.
-    /// </summary>
-    PageContext? ContextAround(List<InkStroke> strokes, HashSet<uint> ids)
+    Task IPageView.MeasureAsync(NoteModel note)
     {
-        var replies = _notes.Where(n => !n.IsHint && n.Done && (n.Text.Length > 0 || n.Drawings.Count > 0)).OrderBy(n => n.Y).ToList();
-        var band = AnnotationContext.Find(
-            strokes.Min(s => s.BoundingRect.Y),
-            strokes.Max(s => s.BoundingRect.Y + s.BoundingRect.Height),
-            replies.Select(n => (n.Y, n.Y + (n.Lines + n.DrawLines) * LineHeight)).ToList(),
-            Top);
-        if (band is not { } found) return null;
+        Remeasure(note);
+        return Task.CompletedTask;
+    }
 
-        var earlier = Strokes.GetStrokes()
-            .Where(s => !ids.Contains(s.Id) && s.BoundingRect.Y < found.To && s.BoundingRect.Y + s.BoundingRect.Height > found.From)
-            .ToList();
+    void IPageView.Place(NoteModel note) => Position(note);
+    void IPageView.ContentChanged() => UpdateSheetHeight();
+    void IPageView.EnsureVisible(double bottom) => EnsureVisible(bottom);
+
+    void IPageView.PageShown()
+    {
+        ApplyTheme(recolorInk: true); // loaded strokes take the current theme's ink colour
+        LayoutSheet();
+        Scroller.ChangeView(null, 0, null);
+    }
+
+    async Task<byte[]> IPageView.RenderSnapshotAsync(IReadOnlyList<uint> strokeIds, SnapshotContext? context)
+    {
+        var wanted = strokeIds.ToHashSet();
+        var strokes = Strokes.GetStrokes().Where(s => wanted.Contains(s.Id)).ToList();
+        if (context is null) return await InkSnapshot.RenderPngAsync(strokes);
+
+        var earlierIds = context.EarlierInk.ToHashSet();
+        var earlier = Strokes.GetStrokes().Where(s => earlierIds.Contains(s.Id)).ToList();
         // Each reply's words and each of its drawings are drawn into the picture on their own.
         var shown = new List<PageReply>();
-        foreach (var n in found.Replies.Select(i => replies[i]))
+        foreach (var n in context.Replies)
         {
+            var block = Visual(n).Block;
             if (n.Text.Length > 0)
-                shown.Add(new PageReply(new Rect(MarginX, n.Y + TextNudge, n.Block.ActualWidth, n.Block.ActualHeight), scale => RenderElementAsync(n.Block, scale)));
+                shown.Add(new PageReply(new Rect(MarginX, n.Y + TextNudge, block.ActualWidth, block.ActualHeight), scale => RenderElementAsync(block, scale)));
             foreach (var d in n.Drawings)
-                shown.Add(new PageReply(new Rect(MarginX, Canvas.GetTop(d.Image), d.Image.ActualWidth, d.Image.ActualHeight), scale => RenderElementAsync(d.Image, scale)));
+            {
+                var image = PictureOf(d);
+                shown.Add(new PageReply(new Rect(MarginX, Canvas.GetTop(image), image.ActualWidth, image.ActualHeight), scale => RenderElementAsync(image, scale)));
+            }
         }
-        return new PageContext(earlier, shown);
+        return await InkSnapshot.RenderPngAsync(strokes, new PageContext(earlier, shown));
     }
 
     static async Task<RenderedText> RenderElementAsync(FrameworkElement element, double scale)
@@ -996,20 +574,26 @@ public sealed partial class MainPage : Page
         return new RenderedText(pixels.ToArray(), bitmap.PixelWidth, bitmap.PixelHeight);
     }
 
-    static void FinishPartial(Note note, Action grow)
+    Task<string?> IPageView.RequestApiKeyAsync() => PromptForKeyAsync();
+    void IPageView.Toast(string message, double seconds) => ShowToast(message, seconds);
+
+    void IPageView.StateChanged(PageState state)
     {
-        if (note.Text.Length > 0) note.Text += " …";
-        note.Block.Text = note.Text;
-        note.Done = true;
-        grow();
+        AskLabel.Text = state.Busy ? "Stop" : "Ask";
+        BusyRing.IsActive = state.Busy;
+        AskIcon.Visibility = state.Busy || state.Counting ? Visibility.Collapsed : Visibility.Visible;
+        AskButton.IsEnabled = state.CanAsk;
     }
 
-    /// <summary>Removes an answer that never arrived and gives the writing back so it can be asked again.</summary>
-    void Discard(Note note, double occupied, HashSet<uint> ids)
+    void IPageView.IdleProgress(double? progress)
     {
-        RemoveNote(note);
-        ShiftBelow(note.Y + occupied, -occupied, null, ids);
-        foreach (var s in Strokes.GetStrokes()) if (ids.Contains(s.Id)) _pending.Add(s.Id);
+        if (progress is null)
+        {
+            Countdown.Visibility = Visibility.Collapsed;
+            return;
+        }
+        Countdown.Value = Math.Min(1, progress.Value);
+        Countdown.Visibility = Visibility.Visible;
     }
 
     // ---------- connected apps ----------
@@ -1715,7 +1299,7 @@ public sealed partial class MainPage : Page
             var key = box.Password.Trim();
             ApiKeyStore.Save(key);
             ShowToast("API key saved.");
-            ScheduleIdle();
+            _session.ScheduleIdle();
             return key;
         }
         if (choice == ContentDialogResult.Secondary)
@@ -1726,7 +1310,7 @@ public sealed partial class MainPage : Page
         return ApiKeyStore.Load();
     }
 
-    // ---------- toast + saving ----------
+    // ---------- toast ----------
 
     void ShowToast(string message, double seconds = 3.5)
     {
@@ -1736,42 +1320,4 @@ public sealed partial class MainPage : Page
         _toastTimer.Interval = TimeSpan.FromSeconds(seconds);
         _toastTimer.Start();
     }
-
-    void ScheduleSave()
-    {
-        if (!_loaded) return;
-        _dirty = true;
-        if (_switching) return; // the switch saves when it has stopped the answer
-        _saveTimer.Stop();
-        _saveTimer.Start();
-    }
-
-    async Task SaveAsync()
-    {
-        await _saveLock.WaitAsync();
-        try
-        {
-            if (!_dirty || _currentId.Length == 0) return;
-            _dirty = false;
-            var id = _currentId;
-            var notes = _notes.Where(n => n.Done).Select(n => new SavedNote(n.Y, n.Text, n.Heard, n.IsHint, n.Drawings.Count > 0 ? n.Drawings.Select(d => d.Markup).ToList() : null)).ToList();
-            await PageStore.SaveAsync(await ConversationStore.FolderAsync(id), Strokes, notes);
-
-            _index.Touch(id, DateTimeOffset.UtcNow, blank: IsBlankNow());
-            // The title comes from the first thing Claude heard on the page.
-            var first = _notes.Where(n => !n.IsHint && n.Heard.Length > 0).OrderBy(n => n.Y).FirstOrDefault();
-            if (first is not null) _index.SetAutoTitle(id, first.Heard);
-            await ConversationStore.SaveAsync(_index);
-        }
-        catch (Exception ex)
-        {
-            _dirty = true;
-            ShowToast("Couldn't save the page: " + ex.Message);
-        }
-        finally
-        {
-            _saveLock.Release();
-        }
-    }
-
 }

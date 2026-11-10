@@ -125,6 +125,10 @@ sealed class FakeAnthropic : FakeServer
 {
     /// <summary>False answers straight away, without first asking for the calendar tool.</summary>
     public bool AskForTool { get; set; } = true;
+    /// <summary>Answers every request with this HTTP error instead (0 = answer normally).</summary>
+    public int FailStatus { get; set; }
+    /// <summary>Waits this long before answering, so a test can act while the answer is still being written.</summary>
+    public int ReplyDelayMs { get; set; }
     public string FinalText { get; set; } = "HEARD: what is on tomorrow\n---\nYou have a standup at 9.";
 
     static string Sse(string type, string json) => $"event: {type}\ndata: {json}\n\n";
@@ -135,6 +139,13 @@ sealed class FakeAnthropic : FakeServer
     protected override async Task Handle(Request r, HttpListenerResponse response)
     {
         if (r.Method != "POST" || !r.Path.EndsWith("/messages")) { await Write(response, 404, "text/plain", ""); return; }
+
+        if (ReplyDelayMs > 0) await Task.Delay(ReplyDelayMs);
+        if (FailStatus != 0)
+        {
+            await Write(response, FailStatus, "application/json", """{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}""");
+            return;
+        }
 
         int calls;
         lock (Requests) calls = Requests.FindAll(q => q.Path.EndsWith("/messages")).Count;
