@@ -61,7 +61,7 @@ static class AgentChecks
     public static async Task RunAsync(Action<string, bool> check)
     {
         // ----- iCalendar -----
-        var events = ICalendar.ParseEvents(Ics.Replace("\n", "\r\n"), "Personal", Plus1);
+        var events = ICalendar.ParseEvents(Ics.Replace("\r\n", "\n").Replace("\n", "\r\n"), "Personal", Plus1);
         check("cancelled events are skipped", events.All(e => e.Title != "Cancelled thing") && events.Count == 4);
         var standup = events.First(e => e.Title.StartsWith("Standup"));
         check("escaped characters are read", standup.Title == "Standup, daily" && standup.Location == "Room 2");
@@ -95,7 +95,7 @@ static class AgentChecks
             var calendars = await nc.ListCalendarsAsync(account, default);
             check("only event calendars are listed", calendars.Count == 1 && calendars[0].Name == "Personal");
 
-            server.Ics = Ics.Replace("\n", "\r\n");
+            server.Ics = Ics.Replace("\r\n", "\n").Replace("\n", "\r\n");
             var tool = new CalendarTool(nc, account, Plus1, () => from);
             var text = await tool.RunAsync(Args("""{"start":"2026-11-11","end":"2026-11-11"}"""), default);
             check("the tool returns the day's agenda", text.Contains("Standup, daily") && text.Contains("Conference") && text.Contains("(test+1)"));

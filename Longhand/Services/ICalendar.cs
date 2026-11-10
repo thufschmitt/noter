@@ -103,8 +103,10 @@ public static class ICalendar
     static IEnumerable<string> Unfold(string ics)
     {
         var current = new StringBuilder();
-        foreach (var raw in ics.Replace("\r\n", "\n").Split('\n'))
+        // Lines end in CRLF; a stray CR left by another line-ending conversion is dropped too.
+        foreach (var line in ics.Split('\n'))
         {
+            var raw = line.TrimEnd('\r');
             if (raw.Length > 0 && (raw[0] == ' ' || raw[0] == '\t')) { current.Append(raw, 1, raw.Length - 1); continue; }
             if (current.Length > 0) yield return current.ToString();
             current.Clear().Append(raw);
