@@ -34,20 +34,41 @@ jobs:
         with:
           dotnet-version: 9.0.x
       - uses: microsoft/setup-msbuild@v2
-      - name: Build
+
+      - name: Load the signing certificate
+        id: cert
+        # Windows PowerShell, for the certificate cmdlets. The subject must match the Publisher in Package.appxmanifest.
+        shell: powershell
+        env:
+          PFX_BASE64: ${{ secrets.LONGHAND_PFX_BASE64 }}
+          PFX_PASSWORD: ${{ secrets.LONGHAND_PFX_PASSWORD }}
+        run: |
+          if (-not $env:PFX_BASE64) { throw "Add the LONGHAND_PFX_BASE64 and LONGHAND_PFX_PASSWORD repository secrets." }
+          $pfx = Join-Path $env:RUNNER_TEMP "longhand.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_BASE64))
+          $password = ConvertTo-SecureString $env:PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          Remove-Item $pfx
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "thumbprint=$($cert.Thumbprint)" -Encoding ascii
+          New-Item -ItemType Directory -Force AppPackages | Out-Null
+          Export-Certificate -Cert $cert -FilePath AppPackages\Longhand.cer | Out-Null
+
+      - name: Build and sign
         # Visual Studio's MSBuild carries the UWP XAML compiler and packaging targets.
         run: >
           msbuild Longhand/Longhand.csproj -restore -nologo -v:minimal
           -p:Configuration=Release
           -p:Platform=${{ matrix.platform }}
-          -p:AppxPackageSigningEnabled=false
+          -p:AppxPackageSigningEnabled=true
+          -p:PackageCertificateThumbprint=${{ steps.cert.outputs.thumbprint }}
           -p:GenerateAppxPackageOnBuild=true
           -p:AppxBundle=Never
           -p:AppxPackageDir=${{ github.workspace }}\AppPackages\
+
       - name: Upload app package
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Longhand-${{ matrix.platform }}
           path: AppPackages/
-          if-no-files-found: warn
+          if-no-files-found: error
