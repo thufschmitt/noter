@@ -53,6 +53,34 @@
             <TextBlock x:Name="ToastText" FontSize="13" TextWrapping="Wrap" />
         </Border>
 
+        <!-- A box to type a note instead of writing it; opened with the keyboard button. -->
+        <Border
+            x:Name="TypeBar"
+            Margin="12,0,12,76"
+            Padding="8"
+            Width="560"
+            MaxWidth="560"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Bottom"
+            BorderThickness="1"
+            CornerRadius="12"
+            Visibility="Collapsed">
+            <Grid ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="TypeBox" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="40" MaxHeight="140" MaxLength="4000"
+                         PlaceholderText="Type a note for Claude. Enter sends, Shift+Enter starts a new line."
+                         KeyDown="TypeBox_KeyDown" TextChanged="TypeBox_TextChanged" />
+                <Button x:Name="TypeSend" Grid.Column="1" Click="TypeSend_Click" VerticalAlignment="Bottom"
+                        Style="{StaticResource AccentButtonStyle}" Height="40" Width="44" Padding="0" CornerRadius="20"
+                        ToolTipService.ToolTip="Send" AutomationProperties.Name="Send">
+                    <FontIcon Glyph="&#xE724;" FontSize="14" />
+                </Button>
+            </Grid>
+        </Border>
+
         <Border
             x:Name="Tray"
             Margin="12,0,12,16"
@@ -80,6 +108,10 @@
                 <ToggleButton x:Name="TouchButton" Click="Touch_Click" Style="{StaticResource ToolToggle}"
                               ToolTipService.ToolTip="Write with your finger" AutomationProperties.Name="Write with your finger">
                     <FontIcon Glyph="&#xE7C9;" FontSize="18" />
+                </ToggleButton>
+                <ToggleButton x:Name="KeyboardButton" Click="Keyboard_Click" Style="{StaticResource ToolToggle}"
+                              ToolTipService.ToolTip="Type a note" AutomationProperties.Name="Type a note">
+                    <FontIcon Glyph="&#xE765;" FontSize="18" />
                 </ToggleButton>
                 <!-- The flyout (conversation list) is built in code. -->
                 <Button x:Name="ConversationsButton" Style="{StaticResource ToolButton}"

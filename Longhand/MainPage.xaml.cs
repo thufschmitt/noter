@@ -78,6 +78,8 @@ public sealed partial class MainPage : Page, IPageView
         Sheet.Background = _paper;
         Tray.Background = _tray;
         Tray.BorderBrush = _trayLine;
+        TypeBar.Background = _tray;
+        TypeBar.BorderBrush = _trayLine;
         ToastBox.Background = _tray;
         ToastBox.BorderBrush = _trayLine;
         ToastText.Foreground = _uiText;
@@ -244,6 +246,53 @@ public sealed partial class MainPage : Page, IPageView
 
     void OnStrokesErased(InkPresenter sender, InkStrokesErasedEventArgs args) =>
         _session.StrokesErased(args.Strokes.Select(s => s.Id).ToList(), args.Strokes.Select(s => s.Clone()).ToList());
+
+    // ---------- typing ----------
+
+    bool _typingNoted;
+
+    void ShowTypeBar(bool on)
+    {
+        TypeBar.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        KeyboardButton.IsChecked = on;
+        if (on) TypeBox.Focus(FocusState.Programmatic);
+    }
+
+    void Keyboard_Click(object sender, RoutedEventArgs e) => ShowTypeBar(KeyboardButton.IsChecked == true);
+
+    async Task SendTypedAsync()
+    {
+        var text = TypeBox.Text.Trim();
+        if (text.Length == 0) return;
+        TypeBox.Text = "";
+        _typingNoted = false;
+        await _session.TypeAsync(text);
+    }
+
+    async void TypeSend_Click(object sender, RoutedEventArgs e) => await SendTypedAsync();
+
+    async void TypeBox_KeyDown(object sender, Windows.UI.Xaml.Input.KeyRoutedEventArgs e)
+    {
+        if (e.Key == Windows.System.VirtualKey.Escape)
+        {
+            e.Handled = true;
+            ShowTypeBar(false);
+            return;
+        }
+        if (e.Key != Windows.System.VirtualKey.Enter) return;
+        bool shift = Window.Current.CoreWindow.GetKeyState(Windows.System.VirtualKey.Shift).HasFlag(CoreVirtualKeyStates.Down);
+        if (shift) return; // a new line
+        e.Handled = true;
+        await SendTypedAsync();
+    }
+
+    /// <summary>Typing is writing: it holds off the pause that would otherwise ask by itself while you are still composing.</summary>
+    void TypeBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (TypeBox.Text.Length == 0 || _typingNoted) return;
+        _typingNoted = true;
+        _session.StrokeStarted();
+    }
 
     // ---------- toolbar ----------
 
@@ -577,8 +626,13 @@ public sealed partial class MainPage : Page, IPageView
     Task<string?> IPageView.RequestApiKeyAsync() => PromptForKeyAsync();
     void IPageView.Toast(string message, double seconds) => ShowToast(message, seconds);
 
-    /// <summary>This page has no place to type yet, so there is nothing to give the words back to.</summary>
-    void IPageView.RestoreTyped(string text) { }
+    /// <summary>A note that couldn't be sent: its words come back into the box (ahead of anything typed since).</summary>
+    void IPageView.RestoreTyped(string text)
+    {
+        ShowTypeBar(true);
+        TypeBox.Text = TypeBox.Text.Length > 0 ? text + "\n" + TypeBox.Text : text;
+        TypeBox.SelectionStart = TypeBox.Text.Length;
+    }
 
     void IPageView.StateChanged(PageState state)
     {
