@@ -21,6 +21,23 @@ If Visual Studio won't load the project file, create a new project from the **UW
 - Copy `MainPage.xaml`, `MainPage.xaml.cs` and the `Services` folder into the new project.
 - Add `<PublishAot>false</PublishAot>` to the new project's csproj.
 
+## Installing and updating
+
+Every push to `main` builds signed packages and publishes them in two places: a GitHub Release, and a GitHub Pages site that lets Windows update the app by itself.
+
+One-time setup of the repository:
+
+1. Settings → Pages → Source: **GitHub Actions**.
+2. Add a repository variable holding a random string. It becomes the secret part of the Pages URL, and nothing is served above it, so nothing is listed:
+   `gh variable set LONGHAND_PAGES_PATH --body "$(openssl rand -hex 16)"`
+
+One-time setup of each PC:
+
+1. Trust the certificate, in an administrator terminal: `certutil -addstore TrustedPeople Longhand.cer`
+2. Open the `.appinstaller` link for your PC (x64 or ARM64) and choose Install. The links are in the summary of the latest "Update feed" job run, and look like `https://<owner>.github.io/noter/<random>/Longhand-x64.appinstaller`.
+
+After that the app checks for a newer version each time it starts, and every few hours in the background. An update installs when the app is next closed. Installing the `.msix` from a Release by hand works too, but doesn't update itself.
+
 ## Using it
 
 | | |
