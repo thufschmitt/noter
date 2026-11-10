@@ -28,6 +28,9 @@ public sealed class PageSession
         public required NoteModel Note;
         public required HashSet<uint> Ids;
         public double Occupied;
+        /// <summary>The note the user typed, which this answers (it sits just above), and the room it takes.</summary>
+        public NoteModel? Typed;
+        public double TypedOccupied;
         public bool Pumping, Again;
         public Task Pump = Task.CompletedTask;
     }
@@ -193,10 +196,32 @@ public sealed class PageSession
         else await AskAsync();
     }
 
-    public async Task AskAsync()
+    public Task AskAsync() => AskCoreAsync(null);
+
+    /// <summary>Sends a note typed with the keyboard, together with any writing that hasn't been answered yet.</summary>
+    public async Task TypeAsync(string text)
+    {
+        text = (text ?? "").Trim();
+        if (text.Length == 0) return;
+        if (text.Length > MaxTyped)
+        {
+            _view.Toast($"That note is too long to send (the most is {MaxTyped} characters).");
+            _view.RestoreTyped(text);
+            return;
+        }
+        if (_busy || _switching)
+        {
+            _view.Toast("Claude is still answering. Send it again in a moment.");
+            _view.RestoreTyped(text);
+            return;
+        }
+        await AskCoreAsync(text);
+    }
+
+    async Task AskCoreAsync(string? typed)
     {
         CancelIdle();
-        if (_busy || _pending.Count == 0) return;
+        if (_busy || (_pending.Count == 0 && typed is null)) return;
 
         var conversation = _currentId;
         var key = _data.ApiKey ?? await _view.RequestApiKeyAsync();
@@ -204,12 +229,13 @@ public sealed class PageSession
         if (key is null)
         {
             _view.Toast("Add your Anthropic API key (gear button) to get answers.");
+            if (typed is not null) _view.RestoreTyped(typed);
             return;
         }
 
         var ids = new HashSet<uint>(_pending);
         var spans = _view.Strokes().Where(s => ids.Contains(s.Id)).ToList();
-        if (spans.Count == 0)
+        if (spans.Count == 0 && typed is null)
         {
             _pending.Clear();
             UpdateState();
@@ -218,36 +244,53 @@ public sealed class PageSession
         var strokeIds = spans.Select(s => s.Id).ToList();
 
         // Writing over earlier replies (annotating them) sends those replies along, so Claude sees what the ink refers to.
-        var context = ContextAround(spans, ids);
+        var context = spans.Count > 0 ? ContextAround(spans, ids) : null;
 
-        byte[] png;
+        // A typed note on its own has no picture.
+        byte[]? png = null;
         try
         {
-            try
+            if (spans.Count > 0)
             {
-                png = await _view.RenderSnapshotAsync(strokeIds, context);
-            }
-            catch (Exception) when (context is not null)
-            {
-                // The earlier replies are a bonus: rather than not asking, send the new ink alone.
-                context = null;
-                _view.Toast("Claude will only see your new ink this time.");
-                png = await _view.RenderSnapshotAsync(strokeIds, null);
+                try
+                {
+                    png = await _view.RenderSnapshotAsync(strokeIds, context);
+                }
+                catch (Exception) when (context is not null)
+                {
+                    // The earlier replies are a bonus: rather than not asking, send the new ink alone.
+                    context = null;
+                    _view.Toast("Claude will only see your new ink this time.");
+                    png = await _view.RenderSnapshotAsync(strokeIds, null);
+                }
             }
         }
         catch (Exception ex)
         {
             _view.Toast("Couldn't capture the handwriting: " + ex.Message);
+            if (typed is not null) _view.RestoreTyped(typed);
             return;
         }
         if (_switching || conversation != _currentId) return;
         _pending.Clear();
 
+        // What was typed goes on the page first, below the writing, and the answer follows it.
+        NoteModel? typedNote = null;
+        double typedOccupied = 0;
+        if (typed is not null)
+        {
+            // The hint says what to do on an empty page, and the typed note takes its place.
+            foreach (var hint in _notes.Where(n => n.IsHint).ToList()) RemoveNote(hint);
+            typedNote = await AddNoteAsync(EndOfPage(), typed, isHint: false, done: true, typed: true);
+            typedOccupied = typedNote.Span;
+            ShiftBelow(typedNote.Y, typedOccupied, typedNote, ids);
+        }
+
         // The answer goes at the end of the page, so it never lands in the middle of what is already there. Anything the user
         // writes below it while it streams is pushed down out of the way.
         var note = await AddNoteAsync(EndOfPage(), "…", isHint: false, done: false);
         note.Text = "";
-        var answer = new Answer { Note = note, Ids = ids, Occupied = note.Span };
+        var answer = new Answer { Note = note, Ids = ids, Occupied = note.Span, Typed = typedNote, TypedOccupied = typedOccupied };
         ShiftBelow(note.Y, answer.Occupied, note, ids);
         _view.EnsureVisible(note.Bottom);
 
@@ -279,7 +322,7 @@ public sealed class PageSession
                 note.Shown = status;
                 _view.NoteChanged(note);
                 RequestGrow(answer);
-            }, hasContext: context is not null, legend: prepared.Legend);
+            }, hasContext: context is not null, legend: prepared.Legend, typed: typed);
 
             note.Heard = result.Heard;
             AddNewDrawings(note, result.Drawings);
@@ -341,7 +384,7 @@ public sealed class PageSession
     /// </summary>
     SnapshotContext? ContextAround(List<StrokeSpan> strokes, HashSet<uint> ids)
     {
-        var replies = _notes.Where(n => !n.IsHint && n.Done && n.HasContent).OrderBy(n => n.Y).ToList();
+        var replies = _notes.Where(n => !n.IsHint && !n.IsTyped && n.Done && n.HasContent).OrderBy(n => n.Y).ToList();
         var band = AnnotationContext.Find(
             strokes.Min(s => s.Top),
             strokes.Max(s => s.Bottom),
@@ -358,7 +401,7 @@ public sealed class PageSession
 
     /// <summary>What Claude is told of the earlier exchanges on the page, top to bottom.</summary>
     public IReadOnlyList<Turn> History() => _notes
-        .Where(n => !n.IsHint && n.Done && n.HasContent)
+        .Where(n => !n.IsHint && !n.IsTyped && n.Done && n.HasContent)
         .OrderBy(n => n.Y)
         .Select(n => new Turn(n.Heard.Length > 0 ? n.Heard : "(unclear handwriting)", (n.Text + string.Concat(n.Drawings.Select(d => " [I drew: " + d.Alt + "]"))).Trim()))
         .ToList();
@@ -426,14 +469,21 @@ public sealed class PageSession
         await a.Pump; // let a measurement in flight finish first
         RemoveNote(a.Note);
         ShiftBelow(a.Note.Y + a.Occupied, -a.Occupied, null, a.Ids);
+        if (a.Typed is { } typed)
+        {
+            // The words go back to where they were typed, unless the user is leaving the conversation (then they go with it).
+            RemoveNote(typed);
+            ShiftBelow(typed.Y + a.TypedOccupied, -a.TypedOccupied, null, a.Ids);
+            if (!_discardOnCancel) _view.RestoreTyped(typed.Text);
+        }
         foreach (var s in _view.Strokes()) if (a.Ids.Contains(s.Id)) _pending.Add(s.Id);
     }
 
     // ---------- notes ----------
 
-    async Task<NoteModel> AddNoteAsync(double y, string text, bool isHint, bool done)
+    async Task<NoteModel> AddNoteAsync(double y, string text, bool isHint, bool done, bool typed = false)
     {
-        var note = new NoteModel { Y = y, IsHint = isHint, Done = done, Text = text, Shown = text };
+        var note = new NoteModel { Y = y, IsHint = isHint, IsTyped = typed, Done = done, Text = text, Shown = text };
         _notes.Add(note);
         _view.NoteAdded(note);
         await LayoutAsync(note);
@@ -514,7 +564,7 @@ public sealed class PageSession
         if (saved is { Count: > 0 })
             foreach (var n in saved)
             {
-                var note = await AddNoteAsync(n.Y, n.Text, n.IsHint, done: true);
+                var note = await AddNoteAsync(n.Y, n.Text, n.IsHint, done: true, typed: n.Typed);
                 note.Heard = n.Heard;
                 foreach (var svg in n.Drawings ?? new List<string>()) AddDrawing(note, svg);
                 note.DrawingsSeen = note.Drawings.Count;
@@ -665,7 +715,7 @@ public sealed class PageSession
             _dirty = false;
             var id = _currentId;
             var notes = _notes.Where(n => n.Done)
-                .Select(n => new SavedNote(n.Y, n.Text, n.Heard, n.IsHint, n.Drawings.Count > 0 ? n.Drawings.Select(d => d.Markup).ToList() : null))
+                .Select(n => new SavedNote(n.Y, n.Text, n.Heard, n.IsHint, n.Drawings.Count > 0 ? n.Drawings.Select(d => d.Markup).ToList() : null, n.IsTyped))
                 .ToList();
             await _data.SavePageAsync(id, notes);
 

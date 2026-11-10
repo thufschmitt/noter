@@ -43,6 +43,7 @@ public sealed class ClaudeService
         - Sometimes the image also shows earlier parts of the page, with the newest handwriting in black on top: grey is what I wrote before and blue is your earlier replies. The black ink is then usually an annotation of that content (circling, striking out, a correction, a question in the margin). Answer the annotation, and in HEARD describe it and what it points at in [brackets], followed by any words I wrote. Your reply is written at the end of the page, away from the annotation, so say which part you mean when it isn't obvious.
         - You can search the web and fetch pages, and may have connected apps. Use them when they would make the answer better or when the user asks for something current or personal. If you use any tool, call it before writing anything else: write no text until all tool use is finished, then give the reply in the format above.
         - You can draw. When a picture says it better than words (a diagram, sketch, chart, floor plan, map or geometry figure), put a complete SVG in your reply after your words, up to three. Write it as <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300">…</svg> with a width between 300 and 600 and a height of at most 450, and a <title> that says in a few words what it shows. Draw like a pen sketch: stroke="currentColor" fill="none" stroke-width="2" to "3" stroke-linecap="round" stroke-linejoin="round"; use fill="currentColor" with an opacity for shading; no background rectangle, no scripts, no external images, no code fences. Label with <text font-family="Ink Free, Segoe Print, sans-serif" font-size="20" fill="currentColor">. Keep it simple and uncluttered, and don't describe the drawing at length in words. Draw only when it helps: most replies are just words.
+        - Sometimes my newest note is typed text instead of handwriting, or comes with some. Treat typed text like handwriting: answer it the same way, and in HEARD repeat what I typed (shortened if it is long) rather than describing it.
         - I may have defined personal symbols, listed in my message with their meaning and sometimes my own drawing of each. A symbol in my handwriting is a shortcut: do what its meaning says, using the words written next to it, or the whole note when the symbol stands alone, and use your tools to do it. In HEARD, write each symbol you see in brackets, like [envelope symbol], followed by any words. Only act when you are reasonably sure it is one of my symbols; if you aren't, say what you think you saw and ask, and do nothing else.
         - Some tools read the user's own data, such as their calendar. Use them when the question is about it.
         """;
@@ -66,7 +67,7 @@ public sealed class ClaudeService
             : new AnthropicClient { ApiKey = apiKey, BaseUrl = baseUrl };
     }
 
-    public async Task<ReplyResult> AskAsync(byte[] png, IReadOnlyList<Turn> history, Action<ReplyParser.Parsed> onProgress, CancellationToken ct, Action<string>? onStatus = null, bool hasContext = false, IReadOnlyList<LegendEntry>? legend = null)
+    public async Task<ReplyResult> AskAsync(byte[]? png, IReadOnlyList<Turn> history, Action<ReplyParser.Parsed> onProgress, CancellationToken ct, Action<string>? onStatus = null, bool hasContext = false, IReadOnlyList<LegendEntry>? legend = null, string? typed = null)
     {
         var messages = new List<BetaMessageParam>();
         foreach (var turn in history.Skip(Math.Max(0, history.Count - MaxTurns)))
@@ -88,18 +89,23 @@ public sealed class ClaudeService
                 if (entry.Png is not null)
                     content.Add(new BetaImageBlockParam { Source = new BetaBase64ImageSource { Data = Convert.ToBase64String(entry.Png), MediaType = MediaType.ImagePng } });
             }
-            content.Add(new BetaTextBlockParam { Text = "The next picture is my newest handwriting." });
+            content.Add(new BetaTextBlockParam { Text = png is null ? "The next message is my newest note, typed." : "The next picture is my newest handwriting." });
         }
-        content.Add(new BetaImageBlockParam
+        if (png is not null)
         {
-            Source = new BetaBase64ImageSource { Data = Convert.ToBase64String(png), MediaType = MediaType.ImagePng },
-        });
-        content.Add(new BetaTextBlockParam
-        {
-            Text = hasContext
-                ? "This is my newest handwriting: the black ink. The grey ink and blue text are earlier parts of the page that it was written over (my earlier writing and your earlier replies)."
-                : "This is my newest handwriting.",
-        });
+            content.Add(new BetaImageBlockParam
+            {
+                Source = new BetaBase64ImageSource { Data = Convert.ToBase64String(png), MediaType = MediaType.ImagePng },
+            });
+            content.Add(new BetaTextBlockParam
+            {
+                Text = hasContext
+                    ? "This is my newest handwriting: the black ink. The grey ink and blue text are earlier parts of the page that it was written over (my earlier writing and your earlier replies)."
+                    : "This is my newest handwriting.",
+            });
+        }
+        if (!string.IsNullOrWhiteSpace(typed))
+            content.Add(new BetaTextBlockParam { Text = (png is null ? "This is my newest note, typed on a keyboard:\n" : "I also typed this, to go with it:\n") + typed });
         messages.Add(new BetaUserMessageParam { Content = content });
 
         var parameters = new MessageCreateParams

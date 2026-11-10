@@ -21,6 +21,11 @@
 
 <div id="toast" hidden></div>
 
+<div id="typebar" hidden>
+  <textarea id="typeInput" rows="2" maxlength="4000" placeholder="Type a note for Claude. Enter sends, Shift+Enter starts a new line."></textarea>
+  <button id="typeSend" class="accent" title="Send" aria-label="Send"><svg viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg></button>
+</div>
+
 <div id="flyout" hidden>
   <button id="newConversation" class="row"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>New conversation</button>
   <div id="conversationList"></div>
@@ -31,6 +36,7 @@
   <button id="eraser" class="tool" title="Eraser" aria-label="Eraser"><svg viewBox="0 0 24 24"><path d="M20 20H9l-5-5a2 2 0 0 1 0-3l8-8a2 2 0 0 1 3 0l5 5a2 2 0 0 1 0 3L13 19M7 11l6 6"/></svg></button>
   <button id="undo" class="tool" title="Undo" aria-label="Undo"><svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5M20 20v-7a4 4 0 0 0-4-4H4"/></svg></button>
   <button id="touch" class="tool" title="Write with a finger" aria-label="Write with a finger"><svg viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-4 0M14 10V4a2 2 0 0 0-4 0v2M10 10.5V6a2 2 0 0 0-4 0v8M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-6-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg></button>
+  <button id="keyboard" class="tool" title="Type a note" aria-label="Type a note"><svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></svg></button>
   <button id="conversations" class="tool" title="Conversations" aria-label="Conversations"><svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></button>
   <button id="settingsButton" class="tool" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg></button>
   <span class="sep"></span>

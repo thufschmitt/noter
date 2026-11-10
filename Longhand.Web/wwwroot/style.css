@@ -25,6 +25,9 @@ html, body { margin: 0; height: 100%; background: var(--desk); color: var(--text
 .tick { position: absolute; width: 2.5px; border-radius: 1.25px; background: var(--claude); opacity: .6; }
 .tick.hint { opacity: .35; }
 .drawing { position: absolute; left: 76px; }
+/* What you typed is yours, so it is in the ink colour, not Claude's blue. */
+.note.typed { color: var(--text); }
+.tick.typed { background: var(--text); }
 
 #tray { position: fixed; z-index: 10; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; align-items: center; gap: 4px; padding: 6px; border-radius: 14px; background: var(--tray); border: 1px solid var(--trayline); box-shadow: 0 4px 18px rgba(0, 0, 0, .18); backdrop-filter: blur(8px); }
 #tray .sep { width: 1px; height: 22px; margin: 0 4px; background: var(--trayline); }
@@ -77,3 +80,7 @@ dialog textarea { resize: vertical; margin-top: 6px; }
   #tray .sep { margin: 0 2px; }
   button.accent { padding: 6px 9px; gap: 6px; }
 }
+
+#typebar { position: fixed; z-index: 11; left: 50%; bottom: 76px; transform: translateX(-50%); width: min(94vw, 560px); display: flex; gap: 8px; align-items: flex-end; padding: 8px; border-radius: 12px; background: var(--tray); border: 1px solid var(--trayline); box-shadow: 0 4px 18px rgba(0, 0, 0, .18); backdrop-filter: blur(8px); }
+#typebar textarea { flex: 1; min-width: 0; padding: 7px 9px; font: 15px/1.35 system-ui, sans-serif; color: var(--text); background: var(--paper); border: 1px solid var(--muted); border-radius: 6px; resize: none; max-height: 40vh; }
+body.typing #toast { bottom: 150px; }

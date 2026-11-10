@@ -71,7 +71,20 @@ await sleep(300);
 await shot('6-flyout');
 await evaluate(`document.getElementById('newConversation').click()`);
 check('a new conversation shows the hint again', await until(`document.querySelectorAll('.note:not(.hint)').length === 0 && document.querySelector('.note.hint') !== null`));
+// Type a note with the real keyboard path: the bar opens, text goes in, Enter sends.
+await evaluate(`document.getElementById('keyboard').click()`);
+check('the typing bar opens with the box focused', await evaluate(`!document.getElementById('typebar').hidden && document.activeElement === document.getElementById('typeInput')`));
+await call('Input.insertText', { text: 'What is the capital of France?' });
+await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
+await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+check('Enter sends it and empties the box', await until(`document.getElementById('typeInput').value === ''`));
+check('the typed note appears in the user\'s ink', await until(`[...document.querySelectorAll('.note.typed')].some(n => n.textContent === 'What is the capital of France?')`));
+check('the hint is gone and the typed note is on the first rule', await evaluate(`!document.querySelector('.note.hint') && parseFloat(document.querySelector('.note.typed').style.top) === 123`));
+check('and Claude answers below it', await until(`[...document.querySelectorAll('.note:not(.hint):not(.typed)')].some(n => n.textContent.includes('quick sketch'))`, 20000));
+await sleep(800);
+await shot('6b-typed');
 await evaluate(`document.getElementById('settingsButton').click()`);
+
 check('the settings dialog opens with the models', await until(`document.getElementById('settings').open && document.getElementById('modelSelect').options.length === 3`));
 await sleep(300);
 await shot('7-settings');

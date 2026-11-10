@@ -63,6 +63,8 @@ sealed class FakeView : IPageView
 
     public Task<string?> RequestApiKeyAsync() => Task.FromResult<string?>(null);
     public void Toast(string message, double seconds = 3.5) => Toasts.Add(message);
+    public readonly List<string> Restored = new();
+    public void RestoreTyped(string text) => Restored.Add(text);
     public void StateChanged(PageState state) => State = state;
     public void IdleProgress(double? progress) => Idle = progress;
 }
@@ -222,6 +224,51 @@ static class PageChecks
         check("deleting the open conversation opens another", session.CurrentId == firstId && !session.Index.Items.Any(c => c.Id == busyId) && !data.Pages.ContainsKey(busyId));
         await session.RenameConversationAsync(firstId, "  My   notes ");
         check("a name the user gave is kept", session.Index.Find(firstId)!.CustomTitle == "My notes" && session.Index.Find(firstId)!.Title == "My notes");
+
+        // ----- typing -----
+        int turnsBefore = session.History().Count, snapshotsBefore = view.Snapshots, requestsBefore = api.Requests.Count(r => r.Path.EndsWith("/messages"));
+        await session.TypeAsync("  what is 2+2?  ");
+        var typedNote = session.Notes.Single(n => n.IsTyped);
+        var typedReply = session.Notes.Where(n => !n.IsHint && !n.IsTyped).OrderBy(n => n.Y).Last();
+        check("there is no hint left once something is typed", !session.Notes.Any(n => n.IsHint));
+        check("a typed note goes on the page in the user's words, and the answer follows it", typedNote.Text == "what is 2+2?" && typedNote.Done && typedReply.Y >= typedNote.Y + typedNote.Span && typedReply.Done);
+        var typedBody = api.Requests.Last(r => r.Path.EndsWith("/messages")).Body.Replace("\\u002B", "+");
+        check("Claude is sent the text, and no picture, for a note typed on its own", typedBody.Contains("This is my newest note, typed on a keyboard:\\nwhat is 2+2?") && view.Snapshots == snapshotsBefore && api.Requests.Count(r => r.Path.EndsWith("/messages")) == requestsBefore + 1);
+        check("the typed note is not a turn of its own in the history", session.History().Count == turnsBefore + 1 && session.History().All(t => t.Heard != "what is 2+2?" || t.Reply.Length > 0));
+        await session.SaveAsync();
+        check("it is saved as typed, and comes back as typed", data.Pages[session.CurrentId].Notes.Any(n => n.Typed && n.Text == "what is 2+2?"));
+        var reopen = session.CurrentId;
+        await session.NewConversationAsync();
+        await session.OpenConversationAsync(reopen);
+        check("reopening keeps it typed, and it is not shown to Claude as a reply to annotate", session.Notes.Count(n => n.IsTyped) == 1 && session.History().Count == turnsBefore + 1);
+
+        var inkForTyped = view.Draw(3000, 3040);
+        session.StrokesCollected(new[] { inkForTyped });
+        await session.TypeAsync("and this one");
+        var mixedBody = api.Requests.Last(r => r.Path.EndsWith("/messages")).Body;
+        check("typing with writing waiting sends both", view.Snapshots == snapshotsBefore + 1 && mixedBody.Contains("I also typed this, to go with it:\\nand this one") && session.PendingCount == 0);
+
+        int notesWithTyped = session.Notes.Count;
+        view.Restored.Clear();
+        api.FailStatus = 401;
+        await session.TypeAsync("this will fail");
+        api.FailStatus = 0;
+        check("a typed note that gets no answer comes off the page and its words go back", session.Notes.Count == notesWithTyped && view.Restored.SequenceEqual(new[] { "this will fail" }) && !view.State.Busy);
+
+        view.Restored.Clear();
+        await session.TypeAsync(new string('x', PageLayout.MaxTyped + 1));
+        check("a note that is too long is refused with its words given back", view.Restored.Count == 1 && session.Notes.Count == notesWithTyped);
+        await session.TypeAsync("   ");
+        check("typing nothing does nothing", session.Notes.Count == notesWithTyped && view.Restored.Count == 1);
+
+        view.Restored.Clear();
+        api.ReplyDelayMs = 1000;
+        var slow = session.TypeAsync("slow one");
+        check("the page is busy while a typed note is answered", await Until(() => session.Busy, 2000));
+        await session.TypeAsync("too soon");
+        check("a second note sent meanwhile is given back", view.Restored.SequenceEqual(new[] { "too soon" }));
+        await slow;
+        api.ReplyDelayMs = 0;
 
         // ----- a narrower page measures the notes again -----
         var wrapped = session.Notes.First(n => !n.IsHint);

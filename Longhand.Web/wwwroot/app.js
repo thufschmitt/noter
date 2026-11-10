@@ -217,13 +217,13 @@ inkCanvas.addEventListener('contextmenu', e => e.preventDefault());
 
 function addNote(m) {
   const el = document.createElement('div');
-  el.className = 'note' + (m.hint ? ' hint' : '');
+  el.className = 'note' + (m.hint ? ' hint' : '') + (m.typed ? ' typed' : '');
   el.textContent = m.text;
   el.style.left = MARGIN_X + 'px';
   el.style.width = textWidth() + 'px';
   el.style.top = m.y + TEXT_NUDGE + 'px';
   const tick = document.createElement('div');
-  tick.className = 'tick' + (m.hint ? ' hint' : '');
+  tick.className = 'tick' + (m.hint ? ' hint' : '') + (m.typed ? ' typed' : '');
   tick.style.left = MARGIN_X - 31 + 'px';
   tick.style.top = m.y + LINE * 0.35 + 'px';
   tick.style.height = '4px';
@@ -372,6 +372,12 @@ const handlers = {
     if (!$('flyout').hidden) renderConversations();
   },
   needKey: () => openSettings(true),
+  // A typed note couldn't be sent: its words come back into the box.
+  typed(m) {
+    showTypeBar(true);
+    const box = $('typeInput');
+    box.value = box.value ? m.text + '\n' + box.value : m.text;
+  },
 };
 
 // ---------- the picture Claude reads ----------
@@ -484,6 +490,37 @@ $('touch').onclick = () => {
   toast(touchWrite ? 'Finger writing is on. Scroll with the mouse wheel.' : 'Fingers scroll the page again. Write with a pen or mouse.');
 };
 $('ask').onclick = () => send({ t: 'ask' });
+
+// ---------- typing ----------
+
+let typingNoted = false;
+
+function showTypeBar(on) {
+  $('typebar').hidden = !on;
+  document.body.classList.toggle('typing', on);
+  $('keyboard').classList.toggle('on', on);
+  if (on) $('typeInput').focus();
+}
+
+function sendTyped() {
+  const box = $('typeInput'), text = box.value.trim();
+  if (!text) return;
+  send({ t: 'type', text });
+  box.value = '';
+  typingNoted = false;
+}
+
+$('keyboard').onclick = () => showTypeBar($('typebar').hidden);
+$('typeSend').onclick = sendTyped;
+$('typeInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendTyped(); }
+  else if (e.key === 'Escape') showTypeBar(false);
+});
+// Typing is writing: it holds off the pause that would otherwise ask by itself while you are still composing.
+$('typeInput').addEventListener('input', () => {
+  if (!typingNoted) { typingNoted = true; send({ t: 'strokeStarted' }); }
+});
+$('typeInput').addEventListener('blur', () => { typingNoted = false; });
 document.addEventListener('keydown', e => {
   if (e.target.closest && e.target.closest('dialog, input, textarea')) return;
   if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); send({ t: 'undo' }); }

@@ -10,6 +10,8 @@ public static class PageLayout
     public const double PageMaxWidth = 880, LineHeight = 40, Top = 120, MarginX = 76, RightPad = 36, FontPx = 26;
     /// <summary>Nudges Claude's text so its baseline sits on the ruled line.</summary>
     public const double TextNudge = 3;
+    /// <summary>The longest note that can be typed.</summary>
+    public const int MaxTyped = 4000;
     public static readonly TimeSpan PauseBeforeAsking = TimeSpan.FromMilliseconds(2200);
 
     public const string HintText = "Write anything with your pen: a question, a sum, a sketch. Pause for a moment or tap Ask, and I'll reply right here on the page.";
@@ -19,7 +21,7 @@ public static class PageLayout
 }
 
 /// <summary>A note Claude wrote on the page, as saved to disk.</summary>
-public sealed record SavedNote(double Y, string Text, string Heard, bool IsHint, List<string>? Drawings = null);
+public sealed record SavedNote(double Y, string Text, string Heard, bool IsHint, List<string>? Drawings = null, bool Typed = false);
 
 /// <summary>Where a stroke sits on the page. The page only ever needs heights: it is one vertical strip.</summary>
 public readonly record struct StrokeSpan(uint Id, double Top, double Bottom);
@@ -40,6 +42,8 @@ public sealed class NoteModel
 {
     public double Y;
     public bool IsHint;
+    /// <summary>Typed by the user with the keyboard (their own words, not a reply of Claude's).</summary>
+    public bool IsTyped;
     public bool Done;
     public string Heard = "";
     /// <summary>The words of the reply: what is saved and what Claude is told in later turns.</summary>

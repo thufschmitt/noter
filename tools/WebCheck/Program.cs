@@ -118,7 +118,13 @@ try
         Check("the next ask tells Claude about the symbol", await b.UntilAsync(_ => api.Requests.Count(r => r.Path.EndsWith("/messages")) == 2, 8000) && api.Requests.Last(r => r.Path.EndsWith("/messages")).Body.Replace("\\u0022", "\"").Contains("Symbol \"envelope\" means: Add what I wrote to my Todoist inbox."));
         Check("it was the second of two snapshots", b.Snapshots == 1);
 
+        await b.SendAsync(new { t = "type", text = "typed hello" });
+        Check("a typed note shows on the page as the user's, and is answered", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "note" && m.GetProperty("typed").GetBoolean() && m.GetProperty("text").GetString() == "typed hello") && api.Requests.Count(r => r.Path.EndsWith("/messages")) == 3, 8000));
+        Check("what Claude was sent is the text", api.Requests.Last(r => r.Path.EndsWith("/messages")).Body.Contains("typed on a keyboard:\\ntyped hello"));
+        await b.SendAsync(new { t = "type", text = new string('x', 5000) });
+        Check("a note that is too long comes back to the box", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "typed" && m.GetProperty("text").GetString()!.Length == 5000)));
         await http.SendAsync(Req(HttpMethod.Delete, "/api/symbols/" + id));
+
         Check("a symbol can be deleted", JsonDocument.Parse(await http.GetStringAsync("/api/symbols")).RootElement.GetArrayLength() == 0 && !File.Exists(Path.Combine(data, "symbols", id + ".png")));
 
         // ----- conversations -----

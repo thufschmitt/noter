@@ -215,6 +215,10 @@ public sealed class WebConnection : IPageView, IPageData
             case "undo":
                 _session.Undo();
                 break;
+            case "type":
+                if (_started && Str(m, "text") is { } typed) await _session.TypeAsync(typed);
+                else if (Str(m, "text") is { } lost) RestoreTyped(lost);
+                break;
             case "ask":
                 if (_started) await _session.AskOrStopAsync();
                 break;
@@ -276,7 +280,7 @@ public sealed class WebConnection : IPageView, IPageData
     public void NoteAdded(NoteModel note)
     {
         note.View = ++_noteSeq;
-        Send("note", ("id", NoteId(note)), ("y", note.Y), ("hint", note.IsHint), ("text", note.Shown));
+        Send("note", ("id", NoteId(note)), ("y", note.Y), ("hint", note.IsHint), ("typed", note.IsTyped), ("text", note.Shown));
     }
 
     public void NoteChanged(NoteModel note) => Send("text", ("id", NoteId(note)), ("text", note.Shown));
@@ -338,6 +342,7 @@ public sealed class WebConnection : IPageView, IPageData
         return Task.FromResult<string?>(null);
     }
 
+    public void RestoreTyped(string text) => Send("typed", ("text", text));
     public void Toast(string message, double seconds = 3.5) => Send("toast", ("message", message), ("seconds", seconds));
     public void StateChanged(PageState state) => Send("state", ("busy", state.Busy), ("canAsk", state.CanAsk), ("counting", state.Counting));
     public void IdleProgress(double? progress) => Send("idle", ("progress", progress));

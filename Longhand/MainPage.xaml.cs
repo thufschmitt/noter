@@ -488,12 +488,12 @@ public sealed partial class MainPage : Page, IPageView
             LineHeight = LineHeight,
             LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
             TextWrapping = TextWrapping.WrapWholeWords,
-            Foreground = _claudeInk,
+            Foreground = note.IsTyped ? _uiText : _claudeInk,
             Width = TextWidth,
             Opacity = note.IsHint ? 0.8 : 1,
             IsTextScaleFactorEnabled = false,
         };
-        var tick = new Rectangle { Width = 2.5, RadiusX = 1.25, RadiusY = 1.25, Fill = _claudeInk, Opacity = note.IsHint ? 0.35 : 0.6 };
+        var tick = new Rectangle { Width = 2.5, RadiusX = 1.25, RadiusY = 1.25, Fill = note.IsTyped ? _uiText : _claudeInk, Opacity = note.IsHint ? 0.35 : 0.6 };
         Canvas.SetLeft(block, MarginX);
         Canvas.SetLeft(tick, MarginX - 31);
         NoteLayer.Children.Add(tick);
@@ -576,6 +576,9 @@ public sealed partial class MainPage : Page, IPageView
 
     Task<string?> IPageView.RequestApiKeyAsync() => PromptForKeyAsync();
     void IPageView.Toast(string message, double seconds) => ShowToast(message, seconds);
+
+    /// <summary>This page has no place to type yet, so there is nothing to give the words back to.</summary>
+    void IPageView.RestoreTyped(string text) { }
 
     void IPageView.StateChanged(PageState state)
     {

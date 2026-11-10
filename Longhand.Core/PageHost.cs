@@ -47,6 +47,8 @@ public interface IPageView
     /// <summary>Asks for the API key; null when the user doesn't give one.</summary>
     Task<string?> RequestApiKeyAsync();
     void Toast(string message, double seconds = 3.5);
+    /// <summary>A typed note couldn't be sent, so the words go back where they were typed.</summary>
+    void RestoreTyped(string text);
     void StateChanged(PageState state);
     /// <summary>How far the pause before asking has got (0 to 1), or null when it isn't running.</summary>
     void IdleProgress(double? progress);
