@@ -142,7 +142,6 @@ await AgentChecks.RunAsync(Check);
 await RegistryChecks.RunAsync(Check);
 await SymbolChecks.RunAsync(Check);
 await CachingChecks.RunAsync(Check);
-SvgTextChecks.Run(Check);
 await PageChecks.RunAsync(Check);
 await BookChecks.RunAsync(Check);
 

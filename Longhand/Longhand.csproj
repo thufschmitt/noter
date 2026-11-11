@@ -32,6 +32,8 @@
 
   <ItemGroup>
     <PackageReference Include="Anthropic" Version="13.7.0" />
+    <!-- WinUI 2, for WebView2: Claude's HTML blocks are rendered to pictures with it (Services/BlockRenderer.cs). -->
+    <PackageReference Include="Microsoft.UI.Xaml" Version="2.8.7" />
   </ItemGroup>
 
   <ItemGroup>

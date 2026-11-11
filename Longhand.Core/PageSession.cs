@@ -423,7 +423,7 @@ public sealed class PageSession
     }
 
     static Turn ToTurn(NoteModel n) =>
-        new(n.Heard.Length > 0 ? n.Heard : "(unclear handwriting)", (n.Text + string.Concat(n.Drawings.Select(d => " [I drew: " + d.Alt + "]"))).Trim());
+        new(n.Heard.Length > 0 ? n.Heard : "(unclear handwriting)", (n.Text + string.Concat(n.Drawings.Select(d => "\n" + Html.Text(d.Markup)))).Trim());
 
     /// <summary>The first free rule below all the ink and all the replies.</summary>
     double EndOfPage()
@@ -570,8 +570,9 @@ public sealed class PageSession
     /// <summary>Adds one of Claude's SVG drawings under the note's words. False when the drawing isn't safe or sensible to show.</summary>
     bool AddDrawing(NoteModel note, string raw)
     {
-        if (note.Drawings.Count >= Svg.MaxDrawings || Svg.Sanitize(raw) is not { } svg) return false;
-        var drawing = new DrawingModel { Markup = svg, Aspect = Svg.Aspect(svg), Alt = Svg.Title(svg) };
+        if (note.Drawings.Count >= Html.MaxBlocks || Html.Sanitize(raw) is not { } block) return false;
+        // The view works out its shape when it lays the block out at the page's width.
+        var drawing = new DrawingModel { Markup = block, Alt = Html.Title(block) };
         note.Drawings.Add(drawing);
         _view.DrawingAdded(note, drawing);
         return true;
@@ -582,7 +583,7 @@ public sealed class PageSession
     {
         if (drawings is null) return;
         for (; note.DrawingsSeen < drawings.Count; note.DrawingsSeen++)
-            if (!AddDrawing(note, drawings[note.DrawingsSeen])) _view.Toast("A drawing from Claude couldn't be shown.");
+            if (!AddDrawing(note, drawings[note.DrawingsSeen])) _view.Toast("A table or drawing from Claude couldn't be shown.");
     }
 
     void ClearDrawings(NoteModel note)

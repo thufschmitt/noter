@@ -310,21 +310,35 @@ public sealed class WebConnection : IPageView, IPageData
     public void DrawingAdded(NoteModel note, DrawingModel drawing)
     {
         drawing.View = ++_drawingSeq;
-        Send("drawing", ("note", NoteId(note)), ("id", DrawingId(drawing)), ("svg", drawing.Markup), ("alt", drawing.Alt));
+        // The page renders the block from this document (filling in the ink colour), in a frame that runs nothing.
+        Send("drawing", ("note", NoteId(note)), ("id", DrawingId(drawing)), ("doc", Html.Document(drawing.Markup)), ("alt", drawing.Alt), ("text", Html.Text(drawing.Markup)));
     }
 
     public void DrawingsCleared(NoteModel note) => Send("drawingsCleared", ("note", NoteId(note)));
 
-    /// <summary>The browser says how many lines the words take (it has the font); the drawings' sizes follow from their shape.</summary>
+    /// <summary>
+    /// The browser says how many lines the words take (it has the font), and the shape of each block laid out at the text
+    /// width; the blocks' sizes follow from their shapes.
+    /// </summary>
     public async Task MeasureAsync(NoteModel note)
     {
-        var value = await RequestAsync("measure", MeasureTimeout, ("note", NoteId(note)), ("text", note.Shown), ("width", TextWidth));
-        int words = value.ValueKind == JsonValueKind.Number ? value.GetInt32() : 1;
-        // A reply that is only a drawing has no line of words above it.
+        var value = await RequestAsync("measure", MeasureTimeout, ("note", NoteId(note)), ("text", note.Shown), ("width", TextWidth),
+            ("blocks", note.Drawings.Select(DrawingId).ToList()));
+        int words = 1;
+        if (value.ValueKind == JsonValueKind.Number) words = value.GetInt32();
+        else if (value.ValueKind == JsonValueKind.Object)
+        {
+            if (value.TryGetProperty("lines", out var l) && l.ValueKind == JsonValueKind.Number) words = l.GetInt32();
+            if (value.TryGetProperty("aspects", out var aspects) && aspects.ValueKind == JsonValueKind.Object)
+                foreach (var d in note.Drawings)
+                    if (aspects.TryGetProperty(DrawingId(d).ToString(System.Globalization.CultureInfo.InvariantCulture), out var a) && a.ValueKind == JsonValueKind.Number && a.GetDouble() > 0)
+                        d.Aspect = a.GetDouble();
+        }
+        // A reply that is only blocks has no line of words above them.
         note.Lines = Math.Max(note.Drawings.Count > 0 && note.Shown.Length == 0 ? 0 : 1, words);
         foreach (var d in note.Drawings)
         {
-            var (_, h) = Svg.Fit(d.Aspect, Math.Min(TextWidth, 560), 480);
+            var (_, h) = Html.Fit(d.Aspect, TextWidth);
             d.Lines = (int)Math.Ceiling(h / LineHeight);
         }
     }
@@ -335,8 +349,9 @@ public sealed class WebConnection : IPageView, IPageData
         var drawings = new List<object>();
         foreach (var d in note.Drawings)
         {
-            var (w, h) = Svg.Fit(d.Aspect, Math.Min(TextWidth, 560), 480);
-            drawings.Add(new { id = DrawingId(d), top, w, h });
+            // Laid out at the text width (its natural size), then scaled down to the shown size if it is too tall.
+            var (w, h) = Html.Fit(d.Aspect, TextWidth);
+            drawings.Add(new { id = DrawingId(d), top, w, h, nw = TextWidth, nh = TextWidth / d.Aspect });
             top += d.Lines * LineHeight;
         }
         Send("place", ("id", NoteId(note)), ("y", note.Y), ("lines", note.Lines), ("drawLines", note.DrawLines), ("drawings", drawings));

@@ -53,15 +53,26 @@ const replyTop = await evaluate(`parseFloat([...document.querySelectorAll('.note
 await stroke([[ox + 90, replyTop + 20], [ox + 400, replyTop + 24], [ox + 500, replyTop + 20]]);
 await until(`!document.getElementById('ask').disabled`);
 await evaluate(`document.getElementById('ask').click()`);
-check('a drawing arrives with the second reply', await until(`document.querySelectorAll('img.drawing').length === 1`, 20000));
+check('a block arrives with the second reply', await until(`document.querySelectorAll('iframe.drawing').length === 1`, 20000));
 await sleep(1500);
-check('the drawing is loaded and sized', await evaluate(`(() => { const i = document.querySelector('img.drawing'); return i.complete && i.naturalWidth > 0 && parseFloat(i.style.width) > 100; })()`));
-await shot('4-drawing');
+check('the block is rendered and sized to its content', await evaluate(`(() => { const f = document.querySelector('iframe.drawing'); const d = f.contentDocument; return parseFloat(f.style.width) > 300 && parseFloat(f.style.height) > 200 && d.querySelectorAll('td').length === 2 && d.querySelector('svg text').getBBox().width > 10; })()`));
+check('nothing in the block ran, and it runs nothing', await evaluate(`window.hacked === undefined && !document.querySelector('iframe.drawing').contentDocument.querySelector('script') && document.querySelector('iframe.drawing').getAttribute('sandbox') === 'allow-same-origin'`));
+check('the block is in the ink colour, on a clear background', await evaluate(`(() => { const d = document.querySelector('iframe.drawing').contentDocument; return getComputedStyle(d.body).color === 'rgb(44, 79, 196)' && getComputedStyle(d.body).backgroundColor === 'rgba(0, 0, 0, 0)'; })()`));
+check('the words above the block are only the words', await evaluate(`[...document.querySelectorAll('.note')].some(n => n.textContent === 'Here is your week, with a sketch.')`));
+await shot('4-block');
+
+// Annotate the block: the picture sent to Claude shows it.
+const block = await evaluate(`(() => { const f = document.querySelector('iframe.drawing'); return { top: parseFloat(f.style.top), h: parseFloat(f.style.height) }; })()`);
+await stroke([[ox + 120, block.top + 30], [ox + 200, block.top + block.h / 2], [ox + 260, block.top + 40]]);
+await until(`!document.getElementById('ask').disabled`);
+await evaluate(`document.getElementById('ask').click()`);
+check('annotating the block gets a reply', await until(`document.querySelectorAll('iframe.drawing').length === 2`, 20000));
+await sleep(800);
 
 // Reload: the conversation comes back.
 await call('Page.navigate', { url: pageUrl });
-check('reloading restores the replies and the drawing', await until(`document.querySelectorAll('.note:not(.hint)').length === 2 && document.querySelectorAll('img.drawing').length === 1`));
-check('and the ink', await until(`typeof strokes !== 'undefined' && strokes.size === 4`));
+check('reloading restores the replies and the blocks', await until(`document.querySelectorAll('.note:not(.hint)').length === 3 && document.querySelectorAll('iframe.drawing').length === 2`));
+check('and the ink', await until(`typeof strokes !== 'undefined' && strokes.size === 5`));
 await sleep(800);
 await shot('5-reloaded');
 
@@ -80,7 +91,7 @@ await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter
 check('Enter sends it and empties the box', await until(`document.getElementById('typeInput').value === ''`));
 check('the typed note appears in the user\'s ink', await until(`[...document.querySelectorAll('.note.typed')].some(n => n.textContent === 'What is the capital of France?')`));
 check('the hint is gone and the typed note is on the first rule', await evaluate(`!document.querySelector('.note.hint') && parseFloat(document.querySelector('.note.typed').style.top) === 123`));
-check('and Claude answers below it', await until(`[...document.querySelectorAll('.note:not(.hint):not(.typed)')].some(n => n.textContent.includes('quick sketch'))`, 20000));
+check('and Claude answers below it', await until(`[...document.querySelectorAll('.note:not(.hint):not(.typed)')].some(n => n.textContent.includes('with a sketch'))`, 20000));
 await sleep(800);
 await shot('6b-typed');
 // Connected apps: the dialog opens, the registry can be searched, and an app added by address shows up.
