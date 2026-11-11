@@ -130,6 +130,9 @@ sealed class FakeAnthropic : FakeServer
     /// <summary>Waits this long before answering, so a test can act while the answer is still being written.</summary>
     public int ReplyDelayMs { get; set; }
     public string FinalText { get; set; } = "HEARD: what is on tomorrow\n---\nYou have a standup at 9.";
+    /// <summary>Answers a request that carries a page summary with a 400, as the API does for a summary it won't take.</summary>
+    public bool RejectSummary { get; set; }
+    public const string SummaryText = "Summary of the page: the user asked about their week.";
 
     static string Sse(string type, string json) => $"event: {type}\ndata: {json}\n\n";
 
@@ -144,6 +147,18 @@ sealed class FakeAnthropic : FakeServer
         if (FailStatus != 0)
         {
             await Write(response, FailStatus, "application/json", """{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}""");
+            return;
+        }
+
+        if (r.Body.Contains("\"compaction\":{"))
+        {
+            // An on-demand compaction request: only the summary block comes back, with a signature to send back verbatim.
+            await Write(response, 200, "application/json", """{"id":"msg_c","type":"message","role":"assistant","model":"claude-haiku-5-5","content":[{"type":"compaction","content":"@S@","signature":"sig-compact","encrypted_content":"enc-1"}],"stop_reason":"compaction","stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0,"iterations":[{"type":"compaction","input_tokens":144,"output_tokens":20}]}}""".Replace("@S@", SummaryText));
+            return;
+        }
+        if (RejectSummary && r.Body.Contains("\"type\":\"compaction\""))
+        {
+            await Write(response, 400, "application/json", """{"type":"error","error":{"type":"invalid_request_error","message":"compaction block signature is invalid"}}""");
             return;
         }
 

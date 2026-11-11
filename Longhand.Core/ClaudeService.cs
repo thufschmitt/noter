@@ -2,11 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Anthropic;
+using Anthropic.Core;
 using Anthropic.Helpers.Beta;
 using Anthropic.Models.Beta;
+using Anthropic.Exceptions;
 using Anthropic.Models.Beta.Messages;
 
 namespace Longhand.Services;
@@ -16,7 +19,14 @@ public sealed record Turn(string Heard, string Reply);
 
 public enum ReplyOutcome { Done, Truncated, Refused }
 
-public sealed record ReplyResult(ReplyOutcome Outcome, string Heard, string Body, IReadOnlyList<string> Drawings);
+/// <param name="SummaryRejected">The API refused the page summary that was sent (it was answered without it), so it should be dropped.</param>
+public sealed record ReplyResult(ReplyOutcome Outcome, string Heard, string Body, IReadOnlyList<string> Drawings, bool SummaryRejected = false);
+
+/// <summary>
+/// The API's summary of the earlier page (a compaction block), kept exactly as it came back so it can be sent back verbatim,
+/// and the model that wrote it: a summary is only sent to the model that made it.
+/// </summary>
+public sealed record PageSummary(string Model, string Block);
 
 /// <summary>
 /// Sends the newest handwriting (as a PNG) plus a text transcript of earlier turns to Claude,
@@ -24,7 +34,16 @@ public sealed record ReplyResult(ReplyOutcome Outcome, string Heard, string Body
 /// </summary>
 public sealed class ClaudeService
 {
+    /// <summary>The most earlier turns sent after the page summary. Compaction normally keeps them below this.</summary>
     const int MaxTurns = 12;
+    /// <summary>Once this many turns follow the summary, the older ones are folded into a new summary.</summary>
+    public const int CompactAt = MaxTurns;
+    /// <summary>How many of the latest turns stay word for word after a compaction.</summary>
+    public const int KeepRecent = 4;
+
+    const string CompactionInstructions = """
+        Summarize this handwritten notebook page so the conversation can continue from the summary alone. Keep what the user wrote and asked, the answers given, and every fact, number, name, date, list and decision in them; what any drawings showed; what the user asked to be remembered or done; and anything still open. Write plain text, in the order things happened. Do not call tools; respond with the summary text only.
+        """;
     const int MaxToolRounds = 6;
 
     const string SystemPrompt = """
@@ -70,22 +89,30 @@ public sealed class ClaudeService
             : new AnthropicClient { ApiKey = apiKey, BaseUrl = baseUrl };
     }
 
-    public async Task<ReplyResult> AskAsync(byte[]? png, IReadOnlyList<Turn> history, Action<ReplyParser.Parsed> onProgress, CancellationToken ct, Action<string>? onStatus = null, bool hasContext = false, IReadOnlyList<LegendEntry>? legend = null, string? typed = null)
+    /// <summary>The model this service asks.</summary>
+    public string Model => _model;
+
+    /// <param name="history">The earlier turns on the page; with a <paramref name="summary"/>, only those after the turns it covers.</param>
+    /// <param name="summary">The page summary from <see cref="CompactAsync"/>, sent in place of the turns it covers. Ignored if another model made it.</param>
+    public async Task<ReplyResult> AskAsync(byte[]? png, IReadOnlyList<Turn> history, Action<ReplyParser.Parsed> onProgress, CancellationToken ct, Action<string>? onStatus = null, bool hasContext = false, IReadOnlyList<LegendEntry>? legend = null, string? typed = null, PageSummary? summary = null)
     {
-        var messages = new List<BetaMessageParam>();
-        var earlier = history.Skip(Math.Max(0, history.Count - MaxTurns)).ToList();
-        for (var i = 0; i < earlier.Count; i++)
+        if (summary is not null && summary.Model != _model) summary = null;
+        bool started = false;
+        try
         {
-            var turn = earlier[i];
-            messages.Add(new BetaUserMessageParam { Content = $"(earlier handwriting, transcribed) {turn.Heard}" });
-            // A cache breakpoint at the end of the earlier page: the next note's request starts with the same turns,
-            // so it reads them from the cache instead of paying for them again.
-            var said = $"HEARD: {turn.Heard}\n---\n{turn.Reply}";
-            var reply = i == earlier.Count - 1
-                ? new BetaTextBlockParam { Text = said, CacheControl = new BetaCacheControlEphemeral() }
-                : new BetaTextBlockParam { Text = said };
-            messages.Add(new BetaAssistantMessageParam { Content = new List<BetaContentBlockParam> { reply } });
+            return await AskCoreAsync(png, history, summary, p => { started = true; onProgress(p); }, ct, s => { started = true; onStatus?.Invoke(s); }, hasContext, legend, typed);
         }
+        catch (AnthropicBadRequestException) when (summary is not null && !started)
+        {
+            // The summary was refused (a bad signature, or the tools changed since it was made): answer without it, from the turns.
+            var result = await AskCoreAsync(png, history, null, onProgress, ct, onStatus, hasContext, legend, typed);
+            return result with { SummaryRejected = true };
+        }
+    }
+
+    async Task<ReplyResult> AskCoreAsync(byte[]? png, IReadOnlyList<Turn> history, PageSummary? summary, Action<ReplyParser.Parsed> onProgress, CancellationToken ct, Action<string>? onStatus, bool hasContext, IReadOnlyList<LegendEntry>? legend, string? typed)
+    {
+        var messages = Earlier(summary, history.Skip(Math.Max(0, history.Count - MaxTurns)).ToList(), cacheLast: true);
         var content = new List<BetaContentBlockParam>();
         // My own symbols come first, so the picture of the handwriting that follows is read with them in mind.
         if (legend is { Count: > 0 })
@@ -131,13 +158,11 @@ public sealed class ClaudeService
             CacheControl = new BetaCacheControlEphemeral(),
             Messages = messages,
             Tools = Tools(),
-            McpServers = _connectors.Count == 0 ? null : _connectors.Select(c => new BetaRequestMcpServerUrlDefinition { Name = c.Name, Url = c.Url, AuthorizationToken = c.Token }).ToList(),
+            McpServers = McpServers(),
             // Short notebook replies: low effort keeps the wait short on the larger models.
             OutputConfig = ModelChoice.UsesLowEffort(_model) ? new BetaOutputConfig { Effort = Effort.Low } : null,
             // If a safety classifier declines, the API re-serves the request on a suitable fallback model in the same stream.
-            Betas = _connectors.Count == 0
-                ? [AnthropicBeta.ServerSideFallback2026_07_01]
-                : [AnthropicBeta.ServerSideFallback2026_07_01, AnthropicBeta.McpClient2025_11_20],
+            Betas = Betas(AnthropicBeta.ServerSideFallback2026_07_01, summary is not null),
             Fallbacks = new Default(),
         };
 
@@ -186,6 +211,68 @@ public sealed class ClaudeService
             _ => ReplyOutcome.Done,
         };
         return new ReplyResult(outcome, final.Heard, final.Body, final.Drawings ?? Array.Empty<string>());
+    }
+
+    /// <summary>
+    /// Folds the earlier page into a summary with the API's on-demand compaction: the previous summary, if any, and the given turns.
+    /// Null when no summary came back. The request carries the same system prompt and tools as a reply, which the summary is bound to.
+    /// </summary>
+    public async Task<PageSummary?> CompactAsync(PageSummary? earlier, IReadOnlyList<Turn> turns, CancellationToken ct)
+    {
+        if (earlier is not null && earlier.Model != _model) earlier = null;
+        var parameters = new MessageCreateParams
+        {
+            Model = _model,
+            MaxTokens = 4096,
+            System = new List<BetaTextBlockParam> { new() { Text = SystemPrompt, CacheControl = new BetaCacheControlEphemeral() } },
+            Messages = Earlier(earlier, turns, cacheLast: false),
+            Tools = Tools().Concat(_agentTools.Select(t => t.Definition)).ToList(),
+            McpServers = McpServers(),
+            Betas = Betas(AnthropicBeta.Compact2026_09_04, false),
+            Compaction = new BetaCompactionConfig { Instructions = CompactionInstructions },
+        };
+        var message = await _client.Beta.Messages.Create(parameters, cancellationToken: ct);
+        foreach (var block in message.Content)
+            if (block.TryPickCompaction(out var compaction) && !string.IsNullOrWhiteSpace(compaction.Content))
+                return new PageSummary(_model, JsonSerializer.Serialize(compaction.RawData));
+        return null;
+    }
+
+    /// <summary>
+    /// The earlier page as messages: the summary first (the API wants it there), then the turns after it. With
+    /// <paramref name="cacheLast"/>, a cache breakpoint ends them: the next note's request starts with the same messages,
+    /// so it reads them from the cache instead of paying for them again.
+    /// </summary>
+    static List<BetaMessageParam> Earlier(PageSummary? summary, IReadOnlyList<Turn> turns, bool cacheLast)
+    {
+        var messages = new List<BetaMessageParam>();
+        if (summary is not null)
+        {
+            var raw = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(summary.Block)!;
+            messages.Add(new BetaAssistantMessageParam { Content = new List<BetaContentBlockParam> { BetaCompactionBlockParam.FromRawUnchecked(raw) } });
+        }
+        for (var i = 0; i < turns.Count; i++)
+        {
+            var turn = turns[i];
+            messages.Add(new BetaUserMessageParam { Content = $"(earlier handwriting, transcribed) {turn.Heard}" });
+            var said = $"HEARD: {turn.Heard}\n---\n{turn.Reply}";
+            var reply = cacheLast && i == turns.Count - 1
+                ? new BetaTextBlockParam { Text = said, CacheControl = new BetaCacheControlEphemeral() }
+                : new BetaTextBlockParam { Text = said };
+            messages.Add(new BetaAssistantMessageParam { Content = new List<BetaContentBlockParam> { reply } });
+        }
+        return messages;
+    }
+
+    List<BetaRequestMcpServerUrlDefinition>? McpServers() =>
+        _connectors.Count == 0 ? null : _connectors.Select(c => new BetaRequestMcpServerUrlDefinition { Name = c.Name, Url = c.Url, AuthorizationToken = c.Token }).ToList();
+
+    List<ApiEnum<string, AnthropicBeta>> Betas(AnthropicBeta first, bool compacted)
+    {
+        var betas = new List<ApiEnum<string, AnthropicBeta>> { first };
+        if (compacted) betas.Add(AnthropicBeta.Compact2026_09_04);
+        if (_connectors.Count > 0) betas.Add(AnthropicBeta.McpClient2025_11_20);
+        return betas;
     }
 
     IReadOnlyList<BetaToolUnion> Tools()

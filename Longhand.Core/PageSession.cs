@@ -295,6 +295,7 @@ public sealed class PageSession
         _view.EnsureVisible(note.Bottom);
 
         bool answered = false;
+        PreparedAsk? prepared = null;
         _busy = true;
         _askCts = new CancellationTokenSource();
         var ct = _askCts.Token;
@@ -302,10 +303,11 @@ public sealed class PageSession
         try
         {
             // Connected apps whose sign-in can't be renewed are skipped; say so, since Claude won't have them.
-            var prepared = await _data.PrepareAskAsync(key, ct);
+            prepared = await _data.PrepareAskAsync(key, ct);
             if (prepared.ExpiredApps.Count > 0) _view.Toast("Sign in again to " + string.Join(", ", prepared.ExpiredApps) + " (apps button).", 6);
 
-            var result = await prepared.Claude.AskAsync(png, History(), progress =>
+            var (summary, after) = Conversation(prepared.Claude.Model);
+            var result = await prepared.Claude.AskAsync(png, after.Select(ToTurn).ToList(), progress =>
             {
                 note.Heard = progress.Heard;
                 note.Text = progress.Body;
@@ -322,7 +324,10 @@ public sealed class PageSession
                 note.Shown = status;
                 _view.NoteChanged(note);
                 RequestGrow(answer);
-            }, hasContext: context is not null, legend: prepared.Legend, typed: typed);
+            }, hasContext: context is not null, legend: prepared.Legend, typed: typed, summary: summary);
+
+            if (result.SummaryRejected)
+                foreach (var n in _notes.Where(n => n.Summary?.Model == prepared.Claude.Model)) n.Summary = null;
 
             note.Heard = result.Heard;
             AddNewDrawings(note, result.Drawings);
@@ -368,7 +373,57 @@ public sealed class PageSession
             // Only re-arm the pause timer after a good answer, so a failing request is never retried in a loop.
             if (answered && _pending.Count > 0) ScheduleIdle();
         }
+        if (answered && prepared is not null) _ = CompactAsync(prepared.Claude);
     }
+
+    bool _compacting;
+
+    /// <summary>
+    /// Once a long run of turns follows the page summary (or the page has no summary yet), folds all but the latest few into a new
+    /// summary with the API's compaction, and keeps it on the last note it covers. Runs after an answer, so no answer waits for it;
+    /// if it fails, the next answer is sent the latest turns as they are.
+    /// </summary>
+    async Task CompactAsync(ClaudeService claude)
+    {
+        if (_compacting) return;
+        var (summary, after) = Conversation(claude.Model);
+        if (after.Count < ClaudeService.CompactAt) return;
+        var fold = after.Take(after.Count - ClaudeService.KeepRecent).ToList();
+        var page = _currentId;
+        _compacting = true;
+        try
+        {
+            var made = await claude.CompactAsync(summary, fold.Select(ToTurn).ToList(), default);
+            if (made is null || page != _currentId || !_notes.Contains(fold[^1])) return;
+            fold[^1].Summary = made;
+            ScheduleSave();
+        }
+        catch (Exception)
+        {
+            // Not needed for the answer that was just written; the next answer will try again.
+        }
+        finally
+        {
+            _compacting = false;
+        }
+    }
+
+    /// <summary>The exchanges on the page, top to bottom.</summary>
+    List<NoteModel> Exchanges() => _notes
+        .Where(n => !n.IsHint && !n.IsTyped && n.Done && n.HasContent)
+        .OrderBy(n => n.Y)
+        .ToList();
+
+    /// <summary>The latest page summary this model can be sent, and the exchanges after it (all of them when there is none).</summary>
+    (PageSummary? Summary, List<NoteModel> After) Conversation(string model)
+    {
+        var all = Exchanges();
+        int last = all.FindLastIndex(n => n.Summary?.Model == model);
+        return last < 0 ? (null, all) : (all[last].Summary, all.Skip(last + 1).ToList());
+    }
+
+    static Turn ToTurn(NoteModel n) =>
+        new(n.Heard.Length > 0 ? n.Heard : "(unclear handwriting)", (n.Text + string.Concat(n.Drawings.Select(d => " [I drew: " + d.Alt + "]"))).Trim());
 
     /// <summary>The first free rule below all the ink and all the replies.</summary>
     double EndOfPage()
@@ -400,11 +455,7 @@ public sealed class PageSession
     }
 
     /// <summary>What Claude is told of the earlier exchanges on the page, top to bottom.</summary>
-    public IReadOnlyList<Turn> History() => _notes
-        .Where(n => !n.IsHint && !n.IsTyped && n.Done && n.HasContent)
-        .OrderBy(n => n.Y)
-        .Select(n => new Turn(n.Heard.Length > 0 ? n.Heard : "(unclear handwriting)", (n.Text + string.Concat(n.Drawings.Select(d => " [I drew: " + d.Alt + "]"))).Trim()))
-        .ToList();
+    public IReadOnlyList<Turn> History() => Exchanges().Select(ToTurn).ToList();
 
     // ----- keeping the layout in step with a growing answer -----
 
@@ -566,6 +617,7 @@ public sealed class PageSession
             {
                 var note = await AddNoteAsync(n.Y, n.Text, n.IsHint, done: true, typed: n.Typed);
                 note.Heard = n.Heard;
+                note.Summary = n.Summary;
                 foreach (var svg in n.Drawings ?? new List<string>()) AddDrawing(note, svg);
                 note.DrawingsSeen = note.Drawings.Count;
                 await LayoutAsync(note);
@@ -715,7 +767,7 @@ public sealed class PageSession
             _dirty = false;
             var id = _currentId;
             var notes = _notes.Where(n => n.Done)
-                .Select(n => new SavedNote(n.Y, n.Text, n.Heard, n.IsHint, n.Drawings.Count > 0 ? n.Drawings.Select(d => d.Markup).ToList() : null, n.IsTyped))
+                .Select(n => new SavedNote(n.Y, n.Text, n.Heard, n.IsHint, n.Drawings.Count > 0 ? n.Drawings.Select(d => d.Markup).ToList() : null, n.IsTyped, n.Summary))
                 .ToList();
             await _data.SavePageAsync(id, notes);
 
