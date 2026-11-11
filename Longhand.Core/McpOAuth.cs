@@ -25,7 +25,7 @@ public sealed record SignInRequest(Uri AuthorizeUrl, string State, string Verifi
 
 /// <summary>
 /// The OAuth sign-in that MCP servers ask for: find the server's authorization server, register as a public client,
-/// authorize with PKCE, then trade the code for tokens and keep them fresh. Anthropic's servers then use the access token.
+/// authorize with PKCE, then trade the code for tokens and keep them fresh. Longhand's MCP client then sends the access token.
 /// </summary>
 public sealed class McpOAuth
 {

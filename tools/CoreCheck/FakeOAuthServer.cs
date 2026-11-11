@@ -37,13 +37,23 @@ sealed class FakeOAuthServer : IAsyncDisposable
             var path = c.Request.Url!.AbsolutePath;
             var body = await new StreamReader(c.Request.InputStream).ReadToEndAsync();
             string? json = null;
+            var auth = c.Request.Headers["Authorization"];
             switch (path)
             {
                 case "/open":
-                    json = "{}";
+                    json = FakeMcp.Answer(body, "add_note") ?? "{}";
+                    if (json == "") { c.Response.StatusCode = 202; json = null; }
+                    break;
+                case "/closed" when auth == "Bearer secret-token-1":
+                    json = FakeMcp.Answer(body, "lookup") ?? "{}";
+                    if (json == "") { c.Response.StatusCode = 202; json = null; }
                     break;
                 case "/closed":
                     c.Response.StatusCode = 401; // asks for a token but says nothing about signing in
+                    break;
+                case "/mcp" when auth == "Bearer access-1":
+                    json = FakeMcp.Answer(body, "search") ?? "{}";
+                    if (json == "") { c.Response.StatusCode = 202; json = null; }
                     break;
                 case "/406":
                     c.Response.StatusCode = 406;

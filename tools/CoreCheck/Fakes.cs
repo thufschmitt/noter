@@ -178,6 +178,9 @@ sealed class FakeCodex : FakeServer
     /// <summary>Fails the answer mid-stream with this error code instead.</summary>
     public string? FailCode { get; set; }
     public string FinalText { get; set; } = "HEARD: what is on tomorrow\n---\nYou have a standup at 9.";
+    /// <summary>The tool it asks for first, and with what.</summary>
+    public string ToolName { get; set; } = "calendar_events";
+    public string ToolArguments { get; set; } = """{"start":"2026-11-11","end":"2026-11-11"}""";
 
     /// <summary>The access token requests must carry; renewing replaces it.</summary>
     public string AccessToken { get; set; } = Jwt(DateTimeOffset.UtcNow.AddDays(10), "acct-1");
@@ -235,8 +238,8 @@ sealed class FakeCodex : FakeServer
             var reasoning = new { type = "reasoning", id = "rs_1", summary = Array.Empty<object>(), encrypted_content = "enc-reasoning-1" };
             sb.Append(Sse(new { type = "response.output_item.added", item = reasoning }));
             sb.Append(Sse(new { type = "response.output_item.done", item = reasoning }));
-            sb.Append(Sse(new { type = "response.output_item.added", item = new { type = "function_call", id = "fc_1", call_id = "call_1", name = "calendar_events", arguments = "" } }));
-            sb.Append(Sse(new { type = "response.output_item.done", item = new { type = "function_call", id = "fc_1", call_id = "call_1", name = "calendar_events", arguments = """{"start":"2026-11-11","end":"2026-11-11"}""" } }));
+            sb.Append(Sse(new { type = "response.output_item.added", item = new { type = "function_call", id = "fc_1", call_id = "call_1", name = ToolName, arguments = "" } }));
+            sb.Append(Sse(new { type = "response.output_item.done", item = new { type = "function_call", id = "fc_1", call_id = "call_1", name = ToolName, arguments = ToolArguments } }));
         }
         else
         {
@@ -259,6 +262,87 @@ sealed class FakeCodex : FakeServer
     static IEnumerable<string> Chunks(string text)
     {
         for (int i = 0; i < text.Length; i += 7) yield return text.Substring(i, Math.Min(7, text.Length - i));
+    }
+}
+
+/// <summary>
+/// An MCP server over the Streamable HTTP transport, for the client: a session id, two pages of tools (the second answered as an
+/// event stream, after a log message), tool calls that echo, a token it insists on, and a way to forget the session.
+/// </summary>
+sealed class FakeMcp : FakeServer
+{
+    public string Token { get; set; } = "mcp-token";
+    public string Session { get; private set; } = "session-1";
+    public int Sessions { get; private set; }
+    /// <summary>Answers requests in the current session with 404, as a server that restarted would.</summary>
+    public bool ForgetSession { get; set; }
+
+    static string Result(string id, string result) => "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":" + result + "}";
+    static string Error(string id, string message) => "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32601,\"message\":\"" + message + "\"}}";
+    static string Tool(string name, string description, string properties, string? required = null) =>
+        "{\"name\":\"" + name + "\",\"description\":\"" + description + "\",\"inputSchema\":{\"type\":\"object\",\"properties\":" + properties + (required is null ? "" : ",\"required\":[\"" + required + "\"]") + "}}";
+    static string Text(string text) => "{\"type\":\"text\",\"text\":" + System.Text.Json.JsonSerializer.Serialize(text) + "}";
+
+    /// <summary>The JSON-RPC answer to a request in <paramref name="body"/> for a server with one tool; "" for a notification, null if it isn't JSON-RPC.</summary>
+    public static string? Answer(string body, string tool)
+    {
+        System.Text.Json.Nodes.JsonNode? m;
+        try { m = System.Text.Json.Nodes.JsonNode.Parse(body); } catch (System.Text.Json.JsonException) { return null; }
+        var method = (string?)m?["method"];
+        if (method is null) return null;
+        var id = m!["id"]?.ToJsonString() ?? "null";
+        return method switch
+        {
+            "initialize" => Result(id, """{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fake","version":"1"}}"""),
+            "tools/list" => Result(id, "{\"tools\":[" + Tool(tool, "Does " + tool + ".", """{"text":{"type":"string"}}""") + "]}"),
+            "tools/call" => Result(id, "{\"content\":[" + Text(tool + " done") + "]}"),
+            _ when method.StartsWith("notifications/") => "",
+            _ => Error(id, "no such method"),
+        };
+    }
+
+    protected override async Task Handle(Request r, HttpListenerResponse response)
+    {
+        if (r.Method != "POST" || r.Path != "/mcp") { await Write(response, 404, "text/plain", ""); return; }
+        if (!r.Headers.TryGetValue("Authorization", out var auth) || auth != "Bearer " + Token) { await Write(response, 401, "text/plain", ""); return; }
+        var m = System.Text.Json.Nodes.JsonNode.Parse(r.Body)!;
+        var method = (string?)m["method"];
+        var id = m["id"]?.ToJsonString() ?? "null";
+        if (method == "initialize")
+        {
+            Sessions++;
+            Session = "session-" + Sessions;
+            ForgetSession = false;
+            response.Headers["Mcp-Session-Id"] = Session;
+            await Write(response, 200, "application/json", Result(id, """{"protocolVersion":"2025-03-26","capabilities":{"tools":{}},"serverInfo":{"name":"notes","version":"1"}}"""));
+            return;
+        }
+        if (!r.Headers.TryGetValue("Mcp-Session-Id", out var session) || session != Session || ForgetSession) { await Write(response, 404, "text/plain", "no such session"); return; }
+        switch (method)
+        {
+            case "notifications/initialized":
+                await Write(response, 202, "text/plain", "");
+                break;
+            case "tools/list" when (m["params"]?["cursor"]) is null:
+                await Write(response, 200, "application/json", Result(id, "{\"tools\":[" + Tool("add note", "Adds a note.", """{"text":{"type":"string"}}""", "text") + "],\"nextCursor\":\"page-2\"}"));
+                break;
+            case "tools/list":
+                // The second page comes as an event stream, with a log message before the answer.
+                await Write(response, 200, "text/event-stream",
+                    "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{\"level\":\"info\",\"data\":\"listing\"}}\n\n" +
+                    "event: message\ndata: " + Result(id, "{\"tools\":[" + Tool("search", "Searches the notes.", """{"q":{"type":"string"}}""") + "]}") + "\n\n");
+                break;
+            case "tools/call":
+                var name = (string?)m["params"]?["name"];
+                var args = m["params"]?["arguments"]?.ToJsonString() ?? "{}";
+                await Write(response, 200, "application/json", name == "search"
+                    ? Result(id, "{\"content\":[" + Text("nothing found") + "],\"isError\":true}")
+                    : Result(id, "{\"content\":[" + Text("added: ") + "," + Text(args) + ",{\"type\":\"image\",\"data\":\"AAAA\",\"mimeType\":\"image/png\"}]}"));
+                break;
+            default:
+                await Write(response, 200, "application/json", Error(id, "no such method"));
+                break;
+        }
     }
 }
 

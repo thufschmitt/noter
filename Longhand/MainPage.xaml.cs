@@ -955,7 +955,7 @@ public sealed partial class MainPage : Page, IPageView
             var url = urlBox.Text.Trim();
             if (name.Length == 0 || !McpRegistry.IsPublicHttps(url))
             {
-                message.Text = "An app needs a name and an https address that is reachable from the internet (Anthropic's servers call it).";
+                message.Text = "An app needs a name and an https address that is reachable from the internet.";
                 return;
             }
             add.IsEnabled = false;
@@ -1062,12 +1062,6 @@ public sealed partial class MainPage : Page, IPageView
         });
         panel.Children.Add(nextcloud);
         panel.Children.Add(new TextBlock { Text = "Other apps (MCP servers)", FontWeight = Windows.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 0) });
-        panel.Children.Add(new TextBlock { Text = "Not available while answers come through ChatGPT: its servers don't call your apps. Apps added before are kept for later.", TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.75, MaxWidth = 380 });
-        // The rest of the MCP section stays built (and its apps kept) for when they can be used again, but isn't shown.
-        var mcp = new StackPanel { Spacing = 12, Visibility = Visibility.Collapsed };
-        panel.Children.Add(mcp);
-        var root = panel;
-        panel = mcp;
         panel.Children.Add(list);
         panel.Children.Add(message);
         panel.Children.Add(new TextBlock { Text = "Find more in the MCP registry", FontWeight = Windows.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 0) });
@@ -1094,7 +1088,7 @@ public sealed partial class MainPage : Page, IPageView
         var dialog = new ContentDialog
         {
             Title = "Connected apps",
-            Content = new ScrollViewer { Content = root, MaxHeight = 520, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
+            Content = new ScrollViewer { Content = panel, MaxHeight = 520, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
             CloseButtonText = "Done",
         };
         await dialog.ShowAsync();

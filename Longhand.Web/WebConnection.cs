@@ -422,13 +422,18 @@ public sealed class WebConnection : IPageView, IPageData
     public Task DeletePageAsync(string id) => _store.DeletePageAsync(id);
 
     /// <summary>
-    /// The calendar is offered only while a Nextcloud account is connected. A renewed sign-in is saved at once, since the old
-    /// refresh token stops working when it is used.
+    /// The model gets the calendar while a Nextcloud account is connected, and the tools of the connected apps (Longhand calls
+    /// them itself); apps whose sign-in can't be renewed or that can't be reached are left out and named. A renewed ChatGPT
+    /// sign-in is saved at once, since the old refresh token stops working when it is used.
     /// </summary>
-    public Task<PreparedAsk> PrepareAskAsync(CodexSignIn signIn, string model, CancellationToken ct)
+    public async Task<PreparedAsk> PrepareAskAsync(CodexSignIn signIn, string model, CancellationToken ct)
     {
-        IReadOnlyList<IAgentTool> tools = _store.Nextcloud.Load() is { } account ? CalendarTools.For(_apps.NextcloudClient, account, _zone) : Array.Empty<IAgentTool>();
+        var tools = new List<IAgentTool>();
+        if (_store.Nextcloud.Load() is { } account) tools.AddRange(CalendarTools.For(_apps.NextcloudClient, account, _zone));
+        var (connectors, expired) = await _apps.ActiveAsync(ct);
+        var (appTools, unreachable) = await McpTool.ForAsync(connectors, ct);
+        tools.AddRange(appTools);
         var service = new CodexService(signIn, renewed => { _store.SaveSignIn(renewed); return Task.CompletedTask; }, model, tools, _zone, _store.CodexBaseUrl, _store.CodexRefreshUrl);
-        return Task.FromResult(new PreparedAsk(service, _store.Legend()));
+        return new PreparedAsk(service, _store.Legend(), expired.Concat(unreachable).ToList());
     }
 }

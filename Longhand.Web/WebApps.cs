@@ -78,7 +78,7 @@ public sealed class WebApps
             var name = McpRegistry.Slug(body.Name ?? "");
             var url = (body.Url ?? "").Trim();
             if (string.IsNullOrWhiteSpace(body.Name) || !Allowed(url))
-                return Results.BadRequest(new { error = "An app needs a name and an https address that is reachable from the internet (Anthropic's servers call it)." });
+                return Results.BadRequest(new { error = "An app needs a name and an https address that is reachable from the internet." });
             McpAccess found;
             try { found = await _oauth.InspectAsync(url, ctx.RequestAborted); }
             catch (OperationCanceledException) { return Results.StatusCode(499); }

@@ -39,8 +39,8 @@ public sealed record RegistryServer(string Name, string Title, string Descriptio
 public sealed record RegistryPage(IReadOnlyList<RegistryServer> Servers, int Hidden, string? NextCursor);
 
 /// <summary>
-/// Searches the official MCP registry (registry.modelcontextprotocol.io). Claude reaches MCP servers from Anthropic's side, so only
-/// servers hosted online (a "remote") are of use; ones that are installed and run on your own PC are left out.
+/// Searches the official MCP registry (registry.modelcontextprotocol.io). Longhand calls MCP servers over HTTP and can't start
+/// programs, so only servers hosted online (a "remote") are of use; ones that are installed and run on your own PC are left out.
 /// </summary>
 public sealed class McpRegistry
 {
@@ -128,7 +128,7 @@ public sealed class McpRegistry
                 if (!required) continue; // optional headers are skipped, and the server may still work without them
                 var name = Str(h, "name");
                 var shape = Str(h, "value") + Str(h, "placeholder");
-                // Anthropic's connector can only send "Authorization: Bearer <token>".
+                // Longhand's MCP client only sends "Authorization: Bearer <token>".
                 if (name.Equals("Authorization", StringComparison.OrdinalIgnoreCase) && (shape.Length == 0 || shape.TrimStart('"').StartsWith("Bearer", StringComparison.OrdinalIgnoreCase)))
                     tokenRequired = true;
                 else
@@ -151,8 +151,8 @@ public sealed class McpRegistry
           && official.TryGetProperty("status", out var status) && status.ValueKind == JsonValueKind.String && status.GetString() != "active");
 
     /// <summary>
-    /// True for an https address on the public internet. Anthropic's servers call it, so an address on this PC or a private
-    /// network could never work.
+    /// True for an https address on the public internet: the only kind of app address accepted (it was a must when Anthropic's
+    /// servers called the apps; Longhand calls them itself now, but keeps the rule).
     /// </summary>
     public static bool IsPublicHttps(string url)
     {

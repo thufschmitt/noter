@@ -132,6 +132,7 @@ await CodexChecks.RunAsync(Check);
 await ModelChecks.RunAsync(Check);
 await CalendarWriteChecks.RunAsync(Check);
 await StarChecks.RunAsync(Check);
+await McpChecks.RunAsync(Check);
 await PageChecks.RunAsync(Check);
 await BookChecks.RunAsync(Check);
 

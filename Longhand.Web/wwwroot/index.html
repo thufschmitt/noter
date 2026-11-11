@@ -50,12 +50,10 @@
   <h3>Nextcloud calendar</h3>
   <div id="nextcloud"></div>
   <h3>Other apps (MCP servers)</h3>
-  <p class="note-text">Not available while answers come through ChatGPT: its servers don't call your apps. Apps added before are kept for later.</p>
-  <div id="mcpApps" hidden>
   <div id="appList"></div>
   <p id="appsMessage" class="note-text"></p>
   <h3>Find more in the MCP registry</h3>
-  <p class="note-text">Anyone can publish a server there. Only add ones you trust: the model can use what they offer, and what it sends them leaves this server.</p>
+  <p class="note-text">Anyone can publish a server there. Only add ones you trust: the model can use what they offer, and the server this page came from sends them what it asks.</p>
   <div class="buttons"><input id="registryQuery" placeholder="Search the registry (todo, github, calendar…)"><button id="registrySearch" type="button">Search</button></div>
   <div id="registryResults"></div>
   <p id="registryNote" class="note-text"></p>
@@ -65,7 +63,6 @@
   <input id="appName" placeholder="Name">
   <input id="appUrl" placeholder="https://server/mcp">
   <div class="buttons"><button id="appAdd" type="button">Add</button></div>
-  </div>
   <div class="buttons end"><button id="appsClose" type="button" class="accent">Done</button></div>
 </dialog>
 

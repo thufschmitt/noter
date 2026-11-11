@@ -58,7 +58,8 @@ public interface IPageView
 }
 
 /// <summary>What one Ask needs, gathered fresh each time so changes to settings and connected apps take effect at once.</summary>
-public sealed record PreparedAsk(CodexService Model, IReadOnlyList<LegendEntry> Legend);
+/// <param name="Unavailable">Connected apps left out of this answer: their sign-in couldn't be renewed, or they couldn't be reached.</param>
+public sealed record PreparedAsk(CodexService Model, IReadOnlyList<LegendEntry> Legend, IReadOnlyList<string>? Unavailable = null);
 
 /// <summary>Where the conversations and settings live: Windows storage in the app, a data folder on the server.</summary>
 public interface IPageData

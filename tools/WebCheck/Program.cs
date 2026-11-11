@@ -229,8 +229,9 @@ try
         await tab.SendAsync(new { t = "type", text = "what is on" });
         Check("a typed note is answered", await tab.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "text"), 8000));
         var body = api.Requests.Last(r => r.Path.EndsWith("/responses")).Body;
-        // ChatGPT's servers don't call MCP servers, so the connected apps (and their tokens) stay here.
-        Check("connected apps and their tokens are not sent while answers come through ChatGPT", !body.Contains("/open") && !body.Contains("secret-token-1") && !body.Contains("access-1") && !body.Contains("\"mcp\""));
+        // Longhand calls the connected apps itself: the model gets their tools, and the apps' tokens never leave this server.
+        Check("open, token and signed-in apps' tools are all offered to the model", body.Contains("\"notes-app__add_note\"") && body.Contains("\"keyed__lookup\"") && body.Contains("\"mcp__search\""));
+        Check("and their tokens aren't sent to the model", !body.Contains("secret-token-1") && !body.Contains("access-1"));
         Check("and the date is in the browser's time zone", body.Contains("time zone Asia/Tokyo"));
         Check("no calendar is offered until Nextcloud is connected", !body.Contains("calendar_events"));
     }
