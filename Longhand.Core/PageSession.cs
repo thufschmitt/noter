@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Anthropic.Exceptions;
 using static Longhand.Services.PageLayout;
 
 namespace Longhand.Services;
@@ -67,8 +66,8 @@ public sealed class PageSession
         await ShowConversationAsync(start.Id);
         await _data.SaveIndexAsync(_index);
         _loaded = true;
-        if (_data.ApiKey is null)
-            _view.Toast("Add your Anthropic API key (gear button) so Claude can answer. You can write in the meantime.", 6);
+        if (_data.SignIn is null)
+            _view.Toast("Sign in with ChatGPT (gear button) to get answers. You can write in the meantime.", 6);
     }
 
     /// <summary>The bottom of the lowest thing on the page, which the sheet has to reach past.</summary>
@@ -195,7 +194,7 @@ public sealed class PageSession
         }
         if (_busy || _switching)
         {
-            _view.Toast("Claude is still answering. Send it again in a moment.");
+            _view.Toast("Still answering. Send it again in a moment.");
             _view.RestoreTyped(text);
             return;
         }
@@ -207,11 +206,11 @@ public sealed class PageSession
         if (_busy || (_pending.Count == 0 && typed is null)) return;
 
         var conversation = _currentId;
-        var key = _data.ApiKey ?? await _view.RequestApiKeyAsync();
+        var signIn = _data.SignIn ?? await _view.RequestSignInAsync();
         if (_switching || conversation != _currentId) return; // moved to another conversation meanwhile
-        if (key is null)
+        if (signIn is null)
         {
-            _view.Toast("Add your Anthropic API key (gear button) to get answers.");
+            _view.Toast("Sign in with ChatGPT (gear button) to get answers.");
             if (typed is not null) _view.RestoreTyped(typed);
             return;
         }
@@ -243,7 +242,7 @@ public sealed class PageSession
                 {
                     // The earlier replies are a bonus: rather than not asking, send the new ink alone.
                     context = null;
-                    _view.Toast("Claude will only see your new ink this time.");
+                    _view.Toast("Only your new ink is sent this time.");
                     png = await _view.RenderSnapshotAsync(strokeIds, null);
                 }
             }
@@ -277,7 +276,6 @@ public sealed class PageSession
         ShiftBelow(note.Y, answer.Occupied, note, ids);
         _view.EnsureVisible(note.Bottom);
 
-        bool answered = false;
         PreparedAsk? prepared = null;
         _busy = true;
         _askCts = new CancellationTokenSource();
@@ -285,12 +283,8 @@ public sealed class PageSession
         UpdateState();
         try
         {
-            // Connected apps whose sign-in can't be renewed are skipped; say so, since Claude won't have them.
-            prepared = await _data.PrepareAskAsync(key, CurrentModel, ct);
-            if (prepared.ExpiredApps.Count > 0) _view.Toast("Sign in again to " + string.Join(", ", prepared.ExpiredApps) + " (apps button).", 6);
-
-            var (summary, after) = Conversation(prepared.Claude.Model);
-            var result = await prepared.Claude.AskAsync(png, after.Select(ToTurn).ToList(), progress =>
+            prepared = await _data.PrepareAskAsync(signIn, CurrentModel, ct);
+            var result = await prepared.Model.AskAsync(png, History(), progress =>
             {
                 note.Heard = progress.Heard;
                 note.Text = progress.Body;
@@ -307,10 +301,7 @@ public sealed class PageSession
                 note.Shown = status;
                 _view.NoteChanged(note);
                 RequestGrow(answer);
-            }, hasContext: context is not null, legend: prepared.Legend, typed: typed, summary: summary);
-
-            if (result.SummaryRejected)
-                foreach (var n in _notes.Where(n => n.Summary?.Model == prepared.Claude.Model)) n.Summary = null;
+            }, hasContext: context is not null, legend: prepared.Legend, typed: typed, cacheKey: conversation);
 
             note.Heard = result.Heard;
             AddNewDrawings(note, result.Drawings);
@@ -324,27 +315,26 @@ public sealed class PageSession
             note.Shown = note.Text;
             _view.NoteChanged(note);
             await FlushGrowAsync(answer);
-            answered = true;
         }
         catch (OperationCanceledException)
         {
             if ((note.Text.Length > 0 || note.Drawings.Count > 0) && !_discardOnCancel) await FinishPartialAsync(answer);
             else await DiscardAsync(answer);
         }
-        catch (AnthropicUnauthorizedException)
+        catch (CodexSignInException ex)
         {
             await DiscardAsync(answer);
-            _view.Toast("Anthropic rejected the API key. Check it with the gear button, then tap Ask.", 6);
+            _view.Toast(ex.Message, 8);
         }
-        catch (AnthropicRateLimitException)
+        catch (CodexRateLimitException ex)
         {
             await DiscardAsync(answer);
-            _view.Toast("Too many requests right now. Wait a moment, then tap Ask.", 6);
+            _view.Toast("ChatGPT is limiting requests right now (" + ex.Message.TrimEnd('.') + "). Wait a moment, then tap Ask.", 7);
         }
         catch (Exception ex)
         {
             await DiscardAsync(answer);
-            _view.Toast("Claude couldn't answer: " + ex.Message + " Tap Ask to try again.", 7);
+            _view.Toast("No answer: " + ex.Message + " Tap Ask to try again.", 7);
         }
         finally
         {
@@ -354,39 +344,6 @@ public sealed class PageSession
             UpdateState();
             ScheduleSave();
         }
-        if (answered && prepared is not null) _ = CompactAsync(prepared.Claude);
-    }
-
-    bool _compacting;
-
-    /// <summary>
-    /// Once a long run of turns follows the page summary (or the page has no summary yet), folds all but the latest few into a new
-    /// summary with the API's compaction, and keeps it on the last note it covers. Runs after an answer, so no answer waits for it;
-    /// if it fails, the next answer is sent the latest turns as they are.
-    /// </summary>
-    async Task CompactAsync(ClaudeService claude)
-    {
-        if (_compacting) return;
-        var (summary, after) = Conversation(claude.Model);
-        if (after.Count < ClaudeService.CompactAt) return;
-        var fold = after.Take(after.Count - ClaudeService.KeepRecent).ToList();
-        var page = _currentId;
-        _compacting = true;
-        try
-        {
-            var made = await claude.CompactAsync(summary, fold.Select(ToTurn).ToList(), default);
-            if (made is null || page != _currentId || !_notes.Contains(fold[^1])) return;
-            fold[^1].Summary = made;
-            ScheduleSave();
-        }
-        catch (Exception)
-        {
-            // Not needed for the answer that was just written; the next answer will try again.
-        }
-        finally
-        {
-            _compacting = false;
-        }
     }
 
     /// <summary>The exchanges on the page, top to bottom.</summary>
@@ -394,14 +351,6 @@ public sealed class PageSession
         .Where(n => !n.IsHint && !n.IsTyped && n.Done && n.HasContent)
         .OrderBy(n => n.Y)
         .ToList();
-
-    /// <summary>The latest page summary this model can be sent, and the exchanges after it (all of them when there is none).</summary>
-    (PageSummary? Summary, List<NoteModel> After) Conversation(string model)
-    {
-        var all = Exchanges();
-        int last = all.FindLastIndex(n => n.Summary?.Model == model);
-        return last < 0 ? (null, all) : (all[last].Summary, all.Skip(last + 1).ToList());
-    }
 
     static Turn ToTurn(NoteModel n) =>
         new(n.Heard.Length > 0 ? n.Heard : "(unclear handwriting)", (n.Text + string.Concat(n.Drawings.Select(d => "\n" + Html.Text(d.Markup)))).Trim());
@@ -564,7 +513,7 @@ public sealed class PageSession
     {
         if (drawings is null) return;
         for (; note.DrawingsSeen < drawings.Count; note.DrawingsSeen++)
-            if (!AddDrawing(note, drawings[note.DrawingsSeen])) _view.Toast("A table or drawing from Claude couldn't be shown.");
+            if (!AddDrawing(note, drawings[note.DrawingsSeen])) _view.Toast("A table or drawing in the answer couldn't be shown.");
     }
 
     void ClearDrawings(NoteModel note)
@@ -600,7 +549,6 @@ public sealed class PageSession
             {
                 var note = await AddNoteAsync(n.Y, n.Text, n.IsHint, done: true, typed: n.Typed);
                 note.Heard = n.Heard;
-                note.Summary = n.Summary;
                 foreach (var svg in n.Drawings ?? new List<string>()) AddDrawing(note, svg);
                 note.DrawingsSeen = note.Drawings.Count;
                 await LayoutAsync(note);
@@ -765,7 +713,7 @@ public sealed class PageSession
             _dirty = false;
             var id = _currentId;
             var notes = _notes.Where(n => n.Done)
-                .Select(n => new SavedNote(n.Y, n.Text, n.Heard, n.IsHint, n.Drawings.Count > 0 ? n.Drawings.Select(d => d.Markup).ToList() : null, n.IsTyped, n.Summary))
+                .Select(n => new SavedNote(n.Y, n.Text, n.Heard, n.IsHint, n.Drawings.Count > 0 ? n.Drawings.Select(d => d.Markup).ToList() : null, n.IsTyped))
                 .ToList();
             await _data.SavePageAsync(id, notes);
 

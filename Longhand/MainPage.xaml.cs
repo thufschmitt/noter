@@ -4,7 +4,6 @@ using System.Linq;
 using System.Runtime.InteropServices.WindowsRuntime;
 using System.Threading;
 using System.Threading.Tasks;
-using Anthropic.Exceptions;
 using Longhand.Services;
 using Windows.Foundation;
 using Windows.Storage.Streams;
@@ -497,7 +496,7 @@ public sealed partial class MainPage : Page, IPageView
         return row;
     }
 
-    async void Settings_Click(object sender, RoutedEventArgs e) => await PromptForKeyAsync();
+    async void Settings_Click(object sender, RoutedEventArgs e) => await PromptForSignInAsync();
 
     async void Ask_Click(object sender, RoutedEventArgs e) => await _session.AskOrStopAsync();
 
@@ -645,7 +644,7 @@ public sealed partial class MainPage : Page, IPageView
         return new RenderedText(pixels.ToArray(), bitmap.PixelWidth, bitmap.PixelHeight);
     }
 
-    Task<string?> IPageView.RequestApiKeyAsync() => PromptForKeyAsync();
+    Task<CodexSignIn?> IPageView.RequestSignInAsync() => PromptForSignInAsync();
     void IPageView.Toast(string message, double seconds) => ShowToast(message, seconds);
 
     /// <summary>A note that couldn't be sent: its words come back into the box (ahead of anything typed since).</summary>
@@ -979,7 +978,7 @@ public sealed partial class MainPage : Page, IPageView
             {
                 nextcloud.Children.Add(new TextBlock
                 {
-                    Text = "Lets Claude read your calendar, and add, change or delete events when you ask it to. You approve the connection in your browser; no password is typed here.",
+                    Text = "Lets the model read your calendar, and add, change or delete events when you ask it to. You approve the connection in your browser; no password is typed here.",
                     TextWrapping = TextWrapping.Wrap,
                     FontSize = 12,
                     Opacity = 0.75,
@@ -1001,7 +1000,7 @@ public sealed partial class MainPage : Page, IPageView
                         var calendars = await _nextcloud.ListCalendarsAsync(connected, cts.Token);
                         message.Text = calendars.Count == 0
                             ? "Connected, but no calendars were found."
-                            : "Connected. Claude can use: " + string.Join(", ", calendars.Select(c => c.Label)) + ".";
+                            : "Connected. The model can use: " + string.Join(", ", calendars.Select(c => c.Label)) + ".";
                     }
                     catch (OperationCanceledException)
                     {
@@ -1026,7 +1025,7 @@ public sealed partial class MainPage : Page, IPageView
                     try
                     {
                         var calendars = await _nextcloud.ListCalendarsAsync(account, cts.Token);
-                        message.Text = calendars.Count == 0 ? "No calendars found." : "Claude can use: " + string.Join(", ", calendars.Select(c => c.Label)) + ".";
+                        message.Text = calendars.Count == 0 ? "No calendars found." : "The model can use: " + string.Join(", ", calendars.Select(c => c.Label)) + ".";
                     }
                     catch (OperationCanceledException)
                     {
@@ -1057,18 +1056,24 @@ public sealed partial class MainPage : Page, IPageView
         var panel = new StackPanel { Spacing = 12 };
         panel.Children.Add(new TextBlock
         {
-            Text = "Claude can always search the web. Connected apps let it use your own services too. Sign in once in your browser; Longhand keeps the sign-in on this PC.",
+            Text = "The model can always search the web. Connected apps let it use your own services too. Sign in once in your browser; Longhand keeps the sign-in on this PC.",
             TextWrapping = TextWrapping.Wrap,
             MaxWidth = 380,
         });
         panel.Children.Add(nextcloud);
         panel.Children.Add(new TextBlock { Text = "Other apps (MCP servers)", FontWeight = Windows.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 0) });
+        panel.Children.Add(new TextBlock { Text = "Not available while answers come through ChatGPT: its servers don't call your apps. Apps added before are kept for later.", TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.75, MaxWidth = 380 });
+        // The rest of the MCP section stays built (and its apps kept) for when they can be used again, but isn't shown.
+        var mcp = new StackPanel { Spacing = 12, Visibility = Visibility.Collapsed };
+        panel.Children.Add(mcp);
+        var root = panel;
+        panel = mcp;
         panel.Children.Add(list);
         panel.Children.Add(message);
         panel.Children.Add(new TextBlock { Text = "Find more in the MCP registry", FontWeight = Windows.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 0) });
         panel.Children.Add(new TextBlock
         {
-            Text = "Anyone can publish a server there. Only add ones you trust: Claude can use what they offer, and what it sends them leaves your PC.",
+            Text = "Anyone can publish a server there. Only add ones you trust: the model can use what they offer, and what it sends them leaves your PC.",
             TextWrapping = TextWrapping.Wrap,
             FontSize = 12,
             Opacity = 0.75,
@@ -1089,7 +1094,7 @@ public sealed partial class MainPage : Page, IPageView
         var dialog = new ContentDialog
         {
             Title = "Connected apps",
-            Content = new ScrollViewer { Content = panel, MaxHeight = 520, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
+            Content = new ScrollViewer { Content = root, MaxHeight = 520, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
             CloseButtonText = "Done",
         };
         await dialog.ShowAsync();
@@ -1135,7 +1140,7 @@ public sealed partial class MainPage : Page, IPageView
         pad.InkPresenter.InputDeviceTypes = CoreInputDeviceTypes.Pen | CoreInputDeviceTypes.Mouse;
         pad.InkPresenter.UpdateDefaultDrawingAttributes(new InkDrawingAttributes { Color = _uiText.Color, Size = new Size(2.4, 2.4), FitToCurve = true, PenTip = PenTipShape.Circle });
         var padFrame = new Border { Child = pad, BorderBrush = _muted, BorderThickness = new Thickness(1), Background = _paper, Width = 380 };
-        var padHint = new TextBlock { Text = "Optional: draw the symbol here (pen or mouse) so Claude can recognise it.", TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.75 };
+        var padHint = new TextBlock { Text = "Optional: draw the symbol here (pen or mouse) so the model can recognise it.", TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.75 };
         var savedImage = new Image { Height = 56, Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Left, Visibility = Visibility.Collapsed };
         var savedLabel = new TextBlock { Text = "Saved drawing (draw above to replace it):", FontSize = 12, Opacity = 0.75, Visibility = Visibility.Collapsed };
         var clearPad = new Button { Content = "Clear drawing" };
@@ -1299,7 +1304,7 @@ public sealed partial class MainPage : Page, IPageView
 
         section.Children.Add(new TextBlock
         {
-            Text = "Symbols are your own shortcuts: a mark you draw in the margin that means something to you. Give it a name and say what it means; Claude then does that when it sees the symbol in your writing. There are none until you add some. They are saved as you go.",
+            Text = "Symbols are your own shortcuts: a mark you draw in the margin that means something to you. Give it a name and say what it means; the model then does that when it sees the symbol in your writing. There are none until you add some. They are saved as you go.",
             TextWrapping = TextWrapping.Wrap,
             FontSize = 12,
             Opacity = 0.75,
@@ -1331,16 +1336,16 @@ public sealed partial class MainPage : Page, IPageView
         return section;
     }
 
-    async Task<string?> PromptForKeyAsync()
+    async Task<CodexSignIn?> PromptForSignInAsync()
     {
-        bool hasKey = ApiKeyStore.Load() is not null;
-        var box = new PasswordBox { PlaceholderText = hasKey ? "A key is saved. Paste a new one to replace it." : "sk-ant-…", Width = 380 };
+        bool hasKey = SignInStore.Load() is not null;
+        var box = new PasswordBox { PlaceholderText = hasKey ? "Signed in. Paste a new auth.json to replace it." : "Paste the contents of ~/.codex/auth.json", Width = 380 };
         var models = new ComboBox { Width = 380, ItemsSource = ModelChoice.All.Select(o => o.Label).ToList() };
         models.SelectedIndex = ModelChoice.All.ToList().FindIndex(o => o.Id == _session.CurrentModel);
         var panel = new StackPanel { Spacing = 12 };
         panel.Children.Add(new TextBlock
         {
-            Text = "Longhand sends your handwriting to Claude using your own Anthropic API key. The key is stored in Windows Credential Manager on this PC.",
+            Text = "Longhand sends your handwriting to OpenAI's models through your ChatGPT subscription, the way the Codex CLI does. Sign in to the Codex CLI with ChatGPT, then paste the contents of ~/.codex/auth.json (in your user folder) below. It is stored in Windows Credential Manager on this PC. This uses ChatGPT's private Codex service: it may stop working without notice. Longhand renews the sign-in when it runs out, after which the Codex CLI's copy stops working (and the other way round), so you may have to sign in there again.",
             TextWrapping = TextWrapping.Wrap,
             MaxWidth = 380,
         });
@@ -1361,24 +1366,28 @@ public sealed partial class MainPage : Page, IPageView
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Primary,
         };
-        if (hasKey) dialog.SecondaryButtonText = "Remove key";
+        if (hasKey) dialog.SecondaryButtonText = "Sign out";
 
         var choice = await dialog.ShowAsync();
         if (choice != ContentDialogResult.None && models.SelectedIndex >= 0 && ModelChoice.All[models.SelectedIndex].Id != _session.CurrentModel)
             await _session.SetModelAsync(ModelChoice.All[models.SelectedIndex].Id);
         if (choice == ContentDialogResult.Primary && !string.IsNullOrWhiteSpace(box.Password))
         {
-            var key = box.Password.Trim();
-            ApiKeyStore.Save(key);
-            ShowToast("API key saved.");
-            return key;
+            if (CodexSignIn.Parse(box.Password) is not { } signIn)
+            {
+                ShowToast("That isn't a ChatGPT sign-in. Paste the whole contents of ~/.codex/auth.json (after signing in to the Codex CLI with ChatGPT).", 7);
+                return SignInStore.Load();
+            }
+            SignInStore.Save(signIn);
+            ShowToast("Signed in with ChatGPT.");
+            return signIn;
         }
         if (choice == ContentDialogResult.Secondary)
         {
-            ApiKeyStore.Clear();
-            ShowToast("API key removed.");
+            SignInStore.Clear();
+            ShowToast("Signed out.");
         }
-        return ApiKeyStore.Load();
+        return SignInStore.Load();
     }
 
     // ---------- toast ----------

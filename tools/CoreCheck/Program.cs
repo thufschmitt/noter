@@ -43,10 +43,9 @@ var smaller = AlphaMask.Resize(leftHalf, 4, 2, 8, 4);
 Check("enlarging keeps what is where", smaller[0] == 255 && smaller[7] == 0 && smaller[3] == 255 && smaller[4] == 0);
 Check("a blend is averaged", AlphaMask.Resize(Px(2, 1, (x, y) => (byte)(x == 0 ? 100 : 200)), 2, 1, 1, 1)[0] == 150);
 
-Check("default model is Haiku", ModelChoice.Default == "claude-haiku-5-5");
-Check("unknown saved model falls back to the default", ModelChoice.Resolve("claude-gone") == ModelChoice.Default && ModelChoice.Resolve(null) == ModelChoice.Default);
-Check("a listed model is kept", ModelChoice.Resolve("claude-opus-5-5") == "claude-opus-5-5");
-Check("low effort only for the larger models", !ModelChoice.UsesLowEffort("claude-haiku-5-5") && ModelChoice.UsesLowEffort("claude-opus-5-5") && ModelChoice.UsesLowEffort("claude-sonnet-5-5"));
+Check("the default model is the first offered", ModelChoice.Default == "gpt-6.1-sol");
+Check("a model no longer offered (a Claude one, saved before) falls back to the default", ModelChoice.Resolve("claude-haiku-5-5") == ModelChoice.Default && ModelChoice.Resolve(null) == ModelChoice.Default);
+Check("a listed model is kept", ModelChoice.Resolve("gpt-6.1-terra") == "gpt-6.1-terra");
 
 // Conversations: the list, titles, renaming, deleting and cleaning up blanks.
 var t0 = new DateTimeOffset(2026, 11, 10, 9, 0, 0, TimeSpan.Zero);
@@ -91,9 +90,6 @@ Check("a damaged file gives an empty list", ConversationIndex.Parse("{ not json"
 var dangling = ConversationIndex.Parse($$"""{"Items":[{"Id":"a","AutoTitle":"A","CustomTitle":"","Updated":"2026-11-10T09:00:00+00:00","Blank":false}],"CurrentId":"gone"}""");
 Check("an open conversation that no longer exists falls back to the newest", dangling.CurrentId == "a");
 
-// Constructing the service exercises the SDK types used to build the request.
-_ = new ClaudeService("sk-ant-placeholder", new[] { new Connector("x", "https://x.example/mcp", "t") });
-Check("service constructs", true);
 
 // MCP sign-in against a small in-process fake of an OAuth-protected server.
 await using (var fake = new FakeOAuthServer())
@@ -128,20 +124,11 @@ if (Environment.GetEnvironmentVariable("LONGHAND_MCP_URL") is { Length: > 0 } mc
     Console.WriteLine("  scope: " + (McpOAuth.ParseQuery(real.AuthorizeUrl.Query).TryGetValue("scope", out var scope) ? scope : "(none)"));
 }
 
-// Optional: stream against a local fake of the API (set LONGHAND_FAKE_API to its URL), to exercise the request and event loop.
-if (Environment.GetEnvironmentVariable("LONGHAND_FAKE_API") is { Length: > 0 } fakeApi)
-{
-    var png = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==");
-    var updates = 0;
-    var result = await new ClaudeService("sk-ant-placeholder", baseUrl: fakeApi).AskAsync(png, new[] { new Turn("hello", "Hi there.") }, _ => updates++, default);
-    Check("streamed reply parsed", result.Outcome == ReplyOutcome.Done && result.Heard == "what is 2+2" && result.Body == "2 + 2 = 4.");
-    Check("progress reported while streaming", updates >= 1);
-}
 
 await AgentChecks.RunAsync(Check);
 await RegistryChecks.RunAsync(Check);
 await SymbolChecks.RunAsync(Check);
-await CachingChecks.RunAsync(Check);
+await CodexChecks.RunAsync(Check);
 await ModelChecks.RunAsync(Check);
 await CalendarWriteChecks.RunAsync(Check);
 await StarChecks.RunAsync(Check);

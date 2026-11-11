@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using Longhand.Services;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -14,13 +16,13 @@ int failures = 0;
 void Check(string name, bool ok) { Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {name}"); if (!ok) failures++; }
 
 var data = Path.Combine(Path.GetTempPath(), "longhand-web-check-" + Guid.NewGuid().ToString("N"));
-await using var api = new FakeAnthropic { AskForTool = false };
+await using var api = new FakeCodex { AskForTool = false };
 await using var mcp = new FakeOAuthServer();
 await using var registry = new FakeRegistry();
 await using var cloud = new FakeNextcloud();
 var app = WebApp.Build(new WebOptions
 {
-    DataDir = data, Urls = "http://127.0.0.1:0", AnthropicBaseUrl = api.BaseUrl, ApiKey = "sk-ant-test",
+    DataDir = data, Urls = "http://127.0.0.1:0", CodexBaseUrl = api.BaseUrl, CodexRefreshUrl = api.BaseUrl + "/oauth/token", SignIn = api.SignIn.ToJson(),
     AllowPrivateApps = true, RegistryBaseUrl = registry.BaseUrl, NextcloudPollInterval = TimeSpan.FromMilliseconds(30),
 }); 
 await app.StartAsync();
@@ -40,7 +42,7 @@ try
     using (var other = new HttpRequestMessage(HttpMethod.Get, "/api/settings")) { other.Headers.Host = "evil.example"; Check("a request addressed to another name is refused", (await http.SendAsync(other)).StatusCode == HttpStatusCode.Forbidden); }
     var settings = JsonDocument.Parse(await http.GetStringAsync("/api/settings")).RootElement;
     Check("settings carry the version", settings.GetProperty("version").GetString() is { Length: > 0 } ver && ver != "unknown" && char.IsDigit(ver[0]));
-    Check("settings say there is a key and list the models", settings.GetProperty("hasKey").GetBoolean() && settings.GetProperty("keySource").GetString() == "environment" && settings.GetProperty("models").GetArrayLength() == 3 && settings.GetProperty("model").GetString() == "claude-haiku-5-5");
+    Check("settings say there is a sign-in and list the models", settings.GetProperty("hasSignIn").GetBoolean() && settings.GetProperty("signInSource").GetString() == "environment" && settings.GetProperty("models").GetArrayLength() == ModelChoice.All.Count && settings.GetProperty("model").GetString() == ModelChoice.Default);
 
     var noHeader = await http.PutAsync("/api/settings", new StringContent("""{"model":"claude-sonnet-5-5"}""", Encoding.UTF8, "application/json"));
     Check("a change without the page's header is refused", noHeader.StatusCode == HttpStatusCode.Forbidden);
@@ -51,8 +53,14 @@ try
         Check("a change from another site is refused", (await http.SendAsync(crossSite)).StatusCode == HttpStatusCode.Forbidden);
     }
     HttpRequestMessage Put(string path, string json) { var r = new HttpRequestMessage(HttpMethod.Put, path) { Content = new StringContent(json, Encoding.UTF8, "application/json") }; r.Headers.Add("X-Longhand", "1"); return r; }
-    Check("the model can be changed", (await http.SendAsync(Put("/api/settings", """{"model":"claude-sonnet-5-5"}"""))).IsSuccessStatusCode && JsonDocument.Parse(await http.GetStringAsync("/api/settings")).RootElement.GetProperty("model").GetString() == "claude-sonnet-5-5");
-    await http.SendAsync(Put("/api/settings", """{"model":"claude-haiku-5-5"}"""));
+    Check("the model can be changed", (await http.SendAsync(Put("/api/settings", """{"model":"gpt-6.1-terra"}"""))).IsSuccessStatusCode && JsonDocument.Parse(await http.GetStringAsync("/api/settings")).RootElement.GetProperty("model").GetString() == "gpt-6.1-terra");
+    await http.SendAsync(Put("/api/settings", """{"model":"gpt-6.1-sol"}"""));
+    var notSignIn = await http.SendAsync(Put("/api/settings", """{"signIn":"sk-ant-not-a-sign-in"}"""));
+    Check("something that isn't a ChatGPT sign-in is refused, saying what to paste", notSignIn.StatusCode == HttpStatusCode.BadRequest && (await notSignIn.Content.ReadAsStringAsync()).Contains("auth.json"));
+    var pasted = await http.SendAsync(Put("/api/settings", JsonSerializer.Serialize(new { signIn = JsonSerializer.Serialize(new Dictionary<string, object?> { ["OPENAI_API_KEY"] = null, ["tokens"] = new { access_token = api.AccessToken, refresh_token = api.RefreshToken, account_id = "acct-1" } }) })));
+    var afterPaste = JsonDocument.Parse(await http.GetStringAsync("/api/settings")).RootElement;
+    Check("a pasted auth.json is kept, readable only by this user", pasted.IsSuccessStatusCode && afterPaste.GetProperty("signInSource").GetString() == "saved"
+        && File.Exists(Path.Combine(data, "chatgpt-signin.json")) && (OperatingSystem.IsWindows() || (File.GetUnixFileMode(Path.Combine(data, "chatgpt-signin.json")) & (UnixFileMode.GroupRead | UnixFileMode.OtherRead)) == 0));
 
     var wrongOrigin = new ClientWebSocket();
     wrongOrigin.Options.SetRequestHeader("Origin", "http://evil.example");
@@ -76,14 +84,14 @@ try
         await b.SendAsync(new { t = "stroke", stroke = new { id = 1, pts = new[] { new[] { 100.0, 160.0 }, new[] { 140.0, 190.0 }, new[] { 180.0, 160.0 } } } });
         Check("writing makes the page askable", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "state" && m.GetProperty("canAsk").GetBoolean())));
         await Task.Delay(2600);
-        Check("nothing is asked by itself", b.Snapshots == 0 && !api.Requests.Any(r => r.Path.EndsWith("/messages")));
+        Check("nothing is asked by itself", b.Snapshots == 0 && !api.Requests.Any(r => r.Path.EndsWith("/responses")));
 
         // ----- asking -----
         await b.SendAsync(new { t = "ask" });
         Check("Ask gets a reply", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "place" && m.GetProperty("y").GetDouble() == 200), 8000));
         Check("the browser was asked for a picture of the ink", await b.UntilAsync(_ => b.Snapshots == 1) && b.LastSnapshotRequest.GetProperty("ids").EnumerateArray().Select(e => e.GetInt32()).SequenceEqual(new[] { 1 }));
         Check("the reply text was sent as it arrived", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "text" && m.GetProperty("text").GetString() == "You have a standup at 9.")));
-        Check("the request carried the picture the browser drew", api.Requests.Any(r => r.Path.EndsWith("/messages") && r.Body.Contains(FakeBrowser.Png[..40])));
+        Check("the request carried the picture the browser drew", api.Requests.Any(r => r.Path.EndsWith("/responses") && r.Body.Contains(FakeBrowser.Png[..40])));
         Check("the button goes back to idle", await b.UntilAsync(l => l.Where(m => m.GetProperty("t").GetString() == "state").LastOrDefault() is { ValueKind: JsonValueKind.Object } s && !s.GetProperty("busy").GetBoolean() && !s.GetProperty("canAsk").GetBoolean()));
 
         // ----- erasing and undo -----
@@ -125,14 +133,14 @@ try
 
         await b.SendAsync(new { t = "stroke", stroke = new { id = 20, pts = new[] { new[] { 100.0, 700.0 }, new[] { 160.0, 720.0 } } } });
         await b.SendAsync(new { t = "ask" });
-        Check("the next ask tells Claude about the symbol", await b.UntilAsync(_ => api.Requests.Count(r => r.Path.EndsWith("/messages")) == 2, 8000) && api.Requests.Last(r => r.Path.EndsWith("/messages")).Body.Replace("\\u0022", "\"").Contains("Symbol \"envelope\" means: Add what I wrote to my Todoist inbox."));
+        Check("the next ask tells Claude about the symbol", await b.UntilAsync(_ => api.Requests.Count(r => r.Path.EndsWith("/responses")) == 2, 8000) && api.Requests.Last(r => r.Path.EndsWith("/responses")).Body.Replace("\\u0022", "\"").Contains("Symbol \"envelope\" means: Add what I wrote to my Todoist inbox."));
         Check("it was the second of two snapshots", b.Snapshots == 1);
 
         // The ask above is still being answered when its request reaches the fake API; typing is refused until it is done.
         await b.UntilAsync(l => l.Where(m => m.GetProperty("t").GetString() == "state").LastOrDefault() is { ValueKind: JsonValueKind.Object } st && !st.GetProperty("busy").GetBoolean());
         await b.SendAsync(new { t = "type", text = "typed hello" });
-        Check("a typed note shows on the page as the user's, and is answered", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "note" && m.GetProperty("typed").GetBoolean() && m.GetProperty("text").GetString() == "typed hello") && api.Requests.Count(r => r.Path.EndsWith("/messages")) == 3, 8000));
-        Check("what Claude was sent is the text", api.Requests.Last(r => r.Path.EndsWith("/messages")).Body.Contains("typed on a keyboard:\\ntyped hello"));
+        Check("a typed note shows on the page as the user's, and is answered", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "note" && m.GetProperty("typed").GetBoolean() && m.GetProperty("text").GetString() == "typed hello") && api.Requests.Count(r => r.Path.EndsWith("/responses")) == 3, 8000));
+        Check("what Claude was sent is the text", api.Requests.Last(r => r.Path.EndsWith("/responses")).Body.Contains("typed on a keyboard:\\ntyped hello"));
         await b.SendAsync(new { t = "type", text = new string('x', 5000) });
         Check("a note that is too long comes back to the box", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "typed" && m.GetProperty("text").GetString()!.Length == 5000)));
         await http.SendAsync(Req(HttpMethod.Delete, "/api/symbols/" + id));
@@ -214,14 +222,15 @@ try
     Check("a server needing a token says so", servers.Single(s => s.GetProperty("name").GetString() == "com.example/keyed").GetProperty("tokenRequired").GetBoolean());
     Check("more results follow the cursor", (await Json(await http.GetAsync("/api/registry?cursor=next-1"))).GetProperty("servers")[0].GetProperty("name").GetString() == "com.example/second");
 
-    // ----- the apps reach Claude, in the browser's time zone -----
+    // ----- what the model gets, in the browser's time zone -----
     await using (var tab = await FakeBrowser.ConnectAsync(url, zone: "Asia/Tokyo"))
     {
         await tab.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "page"));
         await tab.SendAsync(new { t = "type", text = "what is on" });
-        Check("the connected apps are sent to Claude with their tokens", await tab.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "text"), 8000));
-        var body = api.Requests.Last(r => r.Path.EndsWith("/messages")).Body;
-        Check("open, token and signed-in apps all travel (each with what it needs)", body.Contains("mcp_servers") && body.Contains("/open") && body.Contains("secret-token-1") && body.Contains("access-1"));
+        Check("a typed note is answered", await tab.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "text"), 8000));
+        var body = api.Requests.Last(r => r.Path.EndsWith("/responses")).Body;
+        // ChatGPT's servers don't call MCP servers, so the connected apps (and their tokens) stay here.
+        Check("connected apps and their tokens are not sent while answers come through ChatGPT", !body.Contains("/open") && !body.Contains("secret-token-1") && !body.Contains("access-1") && !body.Contains("\"mcp\""));
         Check("and the date is in the browser's time zone", body.Contains("time zone Asia/Tokyo"));
         Check("no calendar is offered until Nextcloud is connected", !body.Contains("calendar_events"));
     }
@@ -244,10 +253,10 @@ try
     await using (var tab = await FakeBrowser.ConnectAsync(url))
     {
         await tab.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "page"));
-        int before = api.Requests.Count(r => r.Path.EndsWith("/messages"));
+        int before = api.Requests.Count(r => r.Path.EndsWith("/responses"));
         await tab.SendAsync(new { t = "type", text = "and now" });
-        await tab.UntilAsync(_ => api.Requests.Count(r => r.Path.EndsWith("/messages")) > before, 8000);
-        Check("with Nextcloud connected Claude is offered the calendar", api.Requests.Last(r => r.Path.EndsWith("/messages")).Body.Contains("calendar_events"));
+        await tab.UntilAsync(_ => api.Requests.Count(r => r.Path.EndsWith("/responses")) > before, 8000);
+        Check("with Nextcloud connected Claude is offered the calendar", api.Requests.Last(r => r.Path.EndsWith("/responses")).Body.Contains("calendar_events"));
         await tab.UntilAsync(l => l.Where(m => m.GetProperty("t").GetString() == "state").LastOrDefault() is { ValueKind: JsonValueKind.Object } st && !st.GetProperty("busy").GetBoolean());
     }
     await http.SendAsync(ApiReq(HttpMethod.Post, "/api/nextcloud/disconnect"));
@@ -260,7 +269,7 @@ try
 
     // A server run with the normal rules refuses addresses that Anthropic's servers couldn't reach.
     var strictData = Path.Combine(data, "strict");
-    var strict = WebApp.Build(new WebOptions { DataDir = strictData, Urls = "http://127.0.0.1:0", ApiKey = "sk-ant-test" });
+    var strict = WebApp.Build(new WebOptions { DataDir = strictData, Urls = "http://127.0.0.1:0", SignIn = api.SignIn.ToJson() });
     await strict.StartAsync();
     using (var strictHttp = new HttpClient { BaseAddress = new Uri(strict.Urls.First().Replace("[::1]", "127.0.0.1")) })
     {
@@ -277,7 +286,7 @@ try
     var www = Path.Combine(data, "www");
     Directory.CreateDirectory(www);
     File.WriteAllText(Path.Combine(www, "index.html"), "<!doctype html><canvas></canvas><p>version one</p>");
-    var devApp = WebApp.Build(new WebOptions { DataDir = Path.Combine(data, "dev-data"), Urls = "http://127.0.0.1:0", ApiKey = "sk-ant-test", WwwRoot = www });
+    var devApp = WebApp.Build(new WebOptions { DataDir = Path.Combine(data, "dev-data"), Urls = "http://127.0.0.1:0", SignIn = api.SignIn.ToJson(), WwwRoot = www });
     await devApp.StartAsync();
     var devUrl = devApp.Urls.First().Replace("[::1]", "127.0.0.1");
     using (var devHttp = new HttpClient { BaseAddress = new Uri(devUrl) })

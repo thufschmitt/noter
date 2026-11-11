@@ -37,12 +37,12 @@ static class StarChecks
         check("nor a seven-point star", !StarGesture.IsStar(Through(Enumerable.Range(0, 8).Select(i => (300 + 30 * Math.Cos(2 * Math.PI * (i * 3 % 7) / 7), 300 + 30 * Math.Sin(2 * Math.PI * (i * 3 % 7) / 7))).ToList())));
 
         // ----- on the page -----
-        await using var api = new FakeAnthropic { AskForTool = false };
+        await using var api = new FakeCodex { AskForTool = false };
         var view = new FakeView();
-        var data = new FakeData(view, api.BaseUrl);
+        var data = new FakeData(view, api);
         var session = new PageSession(view, data);
         await session.StartAsync();
-        int Asked() => api.Requests.Count(r => r.Path.EndsWith("/messages"));
+        int Asked() => api.Requests.Count(r => r.Path.EndsWith("/responses"));
         static async Task<bool> Until(Func<bool> condition, int ms = 4000)
         {
             for (int waited = 0; waited < ms && !condition(); waited += 20) await Task.Delay(20);

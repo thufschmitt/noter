@@ -13,7 +13,7 @@
     <EnableMsixTooling>true</EnableMsixTooling>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
-    <!-- The UWP template turns on Native AOT. The Anthropic SDK isn't verified under AOT, so this prototype runs on the JIT. -->
+    <!-- The UWP template turns on Native AOT. HtmlSanitizer and the JSON handling aren't verified under AOT, so this prototype runs on the JIT. -->
     <PublishAot>false</PublishAot>
     <!-- Without AOT the app would need a separately installed .NET 9 runtime; ship the runtime inside the package instead. -->
     <SelfContained>true</SelfContained>
@@ -31,7 +31,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Anthropic" Version="13.7.0" />
     <!-- WinUI 2, for WebView2: Claude's HTML blocks are rendered to pictures with it (Services/BlockRenderer.cs). -->
     <PackageReference Include="Microsoft.UI.Xaml" Version="2.8.7" />
   </ItemGroup>

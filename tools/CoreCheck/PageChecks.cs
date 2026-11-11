@@ -84,7 +84,7 @@ sealed class FakeView : IPageView
         return Task.FromResult(Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="));
     }
 
-    public Task<string?> RequestApiKeyAsync() => Task.FromResult<string?>(null);
+    public Task<CodexSignIn?> RequestSignInAsync() => Task.FromResult<CodexSignIn?>(null);
     public void Toast(string message, double seconds = 3.5) => Toasts.Add(message);
     public readonly List<string> Restored = new();
     public void RestoreTyped(string text) => Restored.Add(text);
@@ -95,18 +95,19 @@ sealed class FakeView : IPageView
 sealed class FakeData : IPageData
 {
     readonly FakeView _view;
-    readonly string _baseUrl;
+    readonly FakeCodex _api;
     string _indexJson = "";
     public readonly Dictionary<string, (List<SavedNote> Notes, List<StrokeSpan> Ink)> Pages = new();
-    public string? ApiKey { get; set; } = "sk-ant-test";
-    public string DefaultModel { get; set; } = "claude-haiku-5-5";
+    public CodexSignIn? SignIn { get; set; }
+    public string DefaultModel { get; set; } = "gpt-6.1-sol";
     /// <summary>The model each Ask was prepared with.</summary>
     public readonly List<string> AskedModels = new();
 
-    public FakeData(FakeView view, string baseUrl)
+    public FakeData(FakeView view, FakeCodex api)
     {
         _view = view;
-        _baseUrl = baseUrl;
+        _api = api;
+        SignIn = api.SignIn;
     }
 
     public Task<ConversationIndex> LoadIndexAsync() => Task.FromResult(ConversationIndex.Parse(_indexJson));
@@ -120,10 +121,10 @@ sealed class FakeData : IPageData
     }
     public Task SavePageAsync(string id, IReadOnlyList<SavedNote> notes) { Pages[id] = (notes.ToList(), _view.Ink.ToList()); return Task.CompletedTask; }
     public Task DeletePageAsync(string id) { Pages.Remove(id); return Task.CompletedTask; }
-    public Task<PreparedAsk> PrepareAskAsync(string apiKey, string model, System.Threading.CancellationToken ct)
+    public Task<PreparedAsk> PrepareAskAsync(CodexSignIn signIn, string model, System.Threading.CancellationToken ct)
     {
         AskedModels.Add(model);
-        return Task.FromResult(new PreparedAsk(new ClaudeService(apiKey, model: model, baseUrl: _baseUrl), Array.Empty<LegendEntry>(), Array.Empty<string>()));
+        return Task.FromResult(new PreparedAsk(new CodexService(signIn, renewed => { SignIn = renewed; return Task.CompletedTask; }, model: model, baseUrl: _api.BaseUrl, refreshUrl: _api.BaseUrl + "/oauth/token"), Array.Empty<LegendEntry>()));
     }
 }
 
@@ -142,9 +143,9 @@ static class PageChecks
 
     public static async Task RunAsync(Action<string, bool> check)
     {
-        await using var api = new FakeAnthropic { AskForTool = false };
+        await using var api = new FakeCodex { AskForTool = false };
         var view = new FakeView();
-        var data = new FakeData(view, api.BaseUrl);
+        var data = new FakeData(view, api);
         var session = new PageSession(view, data);
 
         // ----- a fresh page -----
@@ -158,7 +159,7 @@ static class PageChecks
         session.StrokesCollected(new[] { first });
         check("writing makes the page askable", view.State.CanAsk && session.PendingCount == 1);
         await Task.Delay(2600);
-        check("but nothing is asked until Ask is tapped, however long the pen rests", api.Requests.Count(r => r.Path.EndsWith("/messages")) == 0 && session.Notes.All(n => n.IsHint) && session.PendingCount == 1);
+        check("but nothing is asked until Ask is tapped, however long the pen rests", api.Requests.Count(r => r.Path.EndsWith("/responses")) == 0 && session.Notes.All(n => n.IsHint) && session.PendingCount == 1);
 
         await session.AskAsync();
         var reply = session.Notes.Single(n => !n.IsHint);
@@ -177,14 +178,14 @@ static class PageChecks
         await session.AskAsync();
         var second = session.Notes.Where(n => !n.IsHint).OrderBy(n => n.Y).Last();
         check("a later question is answered at the end of the page", second.Y == 440 && session.Notes.Count(n => !n.IsHint) == 2);
-        check("earlier turns are sent as text", api.Requests.Last(r => r.Path.EndsWith("/messages")).Body.Contains("(earlier handwriting, transcribed) what is on tomorrow"));
+        check("earlier turns are sent as text", api.Requests.Last(r => r.Path.EndsWith("/responses")).Body.Contains("(earlier handwriting, transcribed) what is on tomorrow"));
 
         // ----- writing over an earlier reply -----
         var over = view.Draw(205, 230);
         session.StrokesCollected(new[] { over });
         await session.AskAsync();
         check("ink over a reply sends the reply along", view.LastContext is { } ctx && ctx.Replies.Contains(reply) && ctx.EarlierInk.Contains(first) && !ctx.EarlierInk.Contains(over));
-        check("Claude is told the picture has earlier parts", api.Requests.Last(r => r.Path.EndsWith("/messages")).Body.Contains("grey ink"));
+        check("Claude is told the picture has earlier parts", api.Requests.Last(r => r.Path.EndsWith("/responses")).Body.Contains("grey ink"));
         check("that answer is at the end, away from the annotation", session.Notes.Where(n => !n.IsHint).Max(n => n.Y) > 440);
 
         // ----- undo -----
@@ -207,7 +208,7 @@ static class PageChecks
         api.FailStatus = 401;
         await session.AskAsync();
         api.FailStatus = 0;
-        check("a rejected key says so and leaves no half answer", view.Toasts.Any(t => t.Contains("rejected")) && session.Notes.Count == notesBefore && !view.State.Busy);
+        check("a refused sign-in says to paste a fresh one, and leaves no half answer", view.Toasts.Any(t => t.Contains("refused the sign-in") && t.Contains("auth.json")) && session.Notes.Count == notesBefore && !view.State.Busy);
         check("the writing can be asked again", session.PendingCount == 1 && view.State.CanAsk);
 
         view.Toasts.Clear();
@@ -253,14 +254,14 @@ static class PageChecks
         check("a name the user gave is kept", session.Index.Find(firstId)!.CustomTitle == "My notes" && session.Index.Find(firstId)!.Title == "My notes");
 
         // ----- typing -----
-        int turnsBefore = session.History().Count, snapshotsBefore = view.Snapshots, requestsBefore = api.Requests.Count(r => r.Path.EndsWith("/messages"));
+        int turnsBefore = session.History().Count, snapshotsBefore = view.Snapshots, requestsBefore = api.Requests.Count(r => r.Path.EndsWith("/responses"));
         await session.TypeAsync("  what is 2+2?  ");
         var typedNote = session.Notes.Single(n => n.IsTyped);
         var typedReply = session.Notes.Where(n => !n.IsHint && !n.IsTyped).OrderBy(n => n.Y).Last();
         check("there is no hint left once something is typed", !session.Notes.Any(n => n.IsHint));
         check("a typed note goes on the page in the user's words, and the answer follows it", typedNote.Text == "what is 2+2?" && typedNote.Done && typedReply.Y >= typedNote.Y + typedNote.Span && typedReply.Done);
-        var typedBody = api.Requests.Last(r => r.Path.EndsWith("/messages")).Body.Replace("\\u002B", "+");
-        check("Claude is sent the text, and no picture, for a note typed on its own", typedBody.Contains("This is my newest note, typed on a keyboard:\\nwhat is 2+2?") && view.Snapshots == snapshotsBefore && api.Requests.Count(r => r.Path.EndsWith("/messages")) == requestsBefore + 1);
+        var typedBody = api.Requests.Last(r => r.Path.EndsWith("/responses")).Body.Replace("\\u002B", "+");
+        check("Claude is sent the text, and no picture, for a note typed on its own", typedBody.Contains("This is my newest note, typed on a keyboard:\\nwhat is 2+2?") && view.Snapshots == snapshotsBefore && api.Requests.Count(r => r.Path.EndsWith("/responses")) == requestsBefore + 1);
         check("the typed note is not a turn of its own in the history", session.History().Count == turnsBefore + 1 && session.History().All(t => t.Heard != "what is 2+2?" || t.Reply.Length > 0));
         await session.SaveAsync();
         check("it is saved as typed, and comes back as typed", data.Pages[session.CurrentId].Notes.Any(n => n.Typed && n.Text == "what is 2+2?"));
@@ -272,7 +273,7 @@ static class PageChecks
         var inkForTyped = view.Draw(3000, 3040);
         session.StrokesCollected(new[] { inkForTyped });
         await session.TypeAsync("and this one");
-        var mixedBody = api.Requests.Last(r => r.Path.EndsWith("/messages")).Body;
+        var mixedBody = api.Requests.Last(r => r.Path.EndsWith("/responses")).Body;
         check("typing with writing waiting sends both", view.Snapshots == snapshotsBefore + 1 && mixedBody.Contains("I also typed this, to go with it:\\nand this one") && session.PendingCount == 0);
 
         int notesWithTyped = session.Notes.Count;
@@ -306,11 +307,11 @@ static class PageChecks
         view.CharsPerLine = 30;
 
         // ----- no key -----
-        data.ApiKey = null;
+        data.SignIn = null;
         var late = view.Draw(2000, 2040);
         session.StrokesCollected(new[] { late });
         view.Toasts.Clear();
         await session.AskAsync();
-        check("asking without a key says what to do", view.Toasts.Any(t => t.Contains("API key")) && session.PendingCount == 1);
+        check("asking without a sign-in says what to do", view.Toasts.Any(t => t.Contains("Sign in with ChatGPT")) && session.PendingCount == 1);
     }
 }

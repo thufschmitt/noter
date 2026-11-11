@@ -113,18 +113,18 @@ static class AgentChecks
             await nc.RevokeAsync(account, default);
             check("disconnecting asks the server to forget the app password", server.Requests.Any(q => q.Method == "DELETE" && q.Headers.ContainsKey("OCS-APIRequest")));
 
-            // ----- the whole tool loop through the Claude service, against a fake API -----
-            await using var api = new FakeAnthropic { FinalText = "HEARD: what is on tomorrow\n---\nYou have a standup at 9.\n<svg viewBox=\"0 0 100 50\"><title>A clock</title><circle cx=\"25\" cy=\"25\" r=\"20\"/></svg>" };
+            // ----- the whole tool loop through the service, against a fake of the Codex backend -----
+            await using var api = new FakeCodex { FinalText = "HEARD: what is on tomorrow\n---\nYou have a standup at 9.\n<svg viewBox=\"0 0 100 50\"><title>A clock</title><circle cx=\"25\" cy=\"25\" r=\"20\"/></svg>" };
             var statuses = new List<string>();
             var progress = new List<ReplyParser.Parsed>();
-            var service = new ClaudeService("sk-ant-placeholder", model: "claude-haiku-5-5", baseUrl: api.BaseUrl, agentTools: new IAgentTool[] { tool });
+            var service = new CodexService(api.SignIn, model: "gpt-6.1-sol", agentTools: new IAgentTool[] { tool }, baseUrl: api.BaseUrl);
             var png = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==");
             var result = await service.AskAsync(png, Array.Empty<Turn>(), progress.Add, default, statuses.Add);
 
-            var calls = api.Requests.Where(q => q.Path.EndsWith("/messages")).ToList();
-            check("Claude was called twice: once for the tool call, once with its result", calls.Count == 2);
-            check("the tool was offered to Claude", calls[0].Body.Contains("\"calendar_events\"") && calls[0].Body.Contains("web_search"));
-            check("the second call carries the tool result and the thinking block", calls[1].Body.Contains("\"tool_result\"") && calls[1].Body.Contains("Standup, daily") && calls[1].Body.Contains("sig-abc"));
+            var calls = api.Requests.Where(q => q.Path.EndsWith("/responses")).ToList();
+            check("the model was called twice: once for the tool call, once with its result", calls.Count == 2);
+            check("the tool was offered, with web search", calls[0].Body.Contains("\"calendar_events\"") && calls[0].Body.Contains("\"web_search\""));
+            check("the second call carries the call, its result and the encrypted reasoning", calls[1].Body.Contains("\"function_call_output\"") && calls[1].Body.Contains("\"call_1\"") && calls[1].Body.Contains("Standup, daily") && calls[1].Body.Contains("enc-reasoning-1"));
             check("the page was told a tool was running", statuses.SequenceEqual(new[] { "checking your calendar…" }));
             check("the reply is the last round's text, with its drawing", result.Outcome == ReplyOutcome.Done && result.Heard == "what is on tomorrow" && result.Body == "You have a standup at 9." && result.Drawings.Count == 1);
             check("the streamed reply never showed drawing markup", progress.All(p => !p.Body.Contains('<')) && progress.Any(p => p.Drawings is { Count: 1 }));

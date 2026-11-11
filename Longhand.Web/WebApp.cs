@@ -130,8 +130,8 @@ public static class WebApp
     {
         app.MapGet("/api/settings", () => new
         {
-            hasKey = store.ApiKey is not null,
-            keySource = store.KeySource,
+            hasSignIn = store.SignIn is not null,
+            signInSource = store.SignInSource,
             version = Version,
             model = store.Model,
             models = ModelChoice.All.Select(o => new { id = o.Id, label = o.Label }),
@@ -140,14 +140,14 @@ public static class WebApp
         app.MapPut("/api/settings", (SettingsChange change) =>
         {
             if (change.Model is not null) store.Model = change.Model;
-            if (change.RemoveKey == true) store.ClearKey();
-            if (!string.IsNullOrWhiteSpace(change.ApiKey))
+            if (change.SignOut == true) store.ClearSignIn();
+            if (!string.IsNullOrWhiteSpace(change.SignIn))
             {
-                var key = change.ApiKey.Trim();
-                if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key[7..].Trim();
-                store.SaveKey(key);
+                if (CodexSignIn.Parse(change.SignIn) is not { } signIn)
+                    return Results.BadRequest(new { error = "That isn't a ChatGPT sign-in. Paste the whole contents of ~/.codex/auth.json (after signing in to the Codex CLI with ChatGPT)." });
+                store.SaveSignIn(signIn);
             }
-            return Results.Ok(new { hasKey = store.ApiKey is not null, keySource = store.KeySource, model = store.Model });
+            return Results.Ok(new { hasSignIn = store.SignIn is not null, signInSource = store.SignInSource, model = store.Model });
         });
 
         app.MapGet("/api/symbols", () => store.Symbols().Select(s => new { id = s.Id, name = s.Name, meaning = s.Meaning, hasDrawing = s.HasDrawing }));
@@ -192,6 +192,6 @@ public static class WebApp
         }
     }
 
-    sealed record SettingsChange(string? Model, string? ApiKey, bool? RemoveKey);
+    sealed record SettingsChange(string? Model, string? SignIn, bool? SignOut);
     sealed record SymbolChange(string? Id, string? Name, string? Meaning, string? Drawing, bool? RemoveDrawing);
 }

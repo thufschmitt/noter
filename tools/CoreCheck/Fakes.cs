@@ -1,4 +1,5 @@
 using System;
+using Longhand.Services;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -160,8 +161,11 @@ sealed class FakeNextcloud : FakeServer
     }
 }
 
-/// <summary>Enough of the Anthropic messages API to check the tool loop: it asks for the calendar once, then answers.</summary>
-sealed class FakeAnthropic : FakeServer
+/// <summary>
+/// Enough of ChatGPT's Codex backend (the Responses API, streamed) to check the service: it asks for the calendar tool once,
+/// then answers, and renews sign-ins at /oauth/token. It accepts only the access token it last handed out.
+/// </summary>
+sealed class FakeCodex : FakeServer
 {
     /// <summary>False answers straight away, without first asking for the calendar tool.</summary>
     public bool AskForTool { get; set; } = true;
@@ -169,65 +173,86 @@ sealed class FakeAnthropic : FakeServer
     public int FailStatus { get; set; }
     /// <summary>Waits this long before answering, so a test can act while the answer is still being written.</summary>
     public int ReplyDelayMs { get; set; }
+    /// <summary>Ends the answer as incomplete for this reason ("max_output_tokens", "content_filter") instead of completed.</summary>
+    public string? Incomplete { get; set; }
+    /// <summary>Fails the answer mid-stream with this error code instead.</summary>
+    public string? FailCode { get; set; }
     public string FinalText { get; set; } = "HEARD: what is on tomorrow\n---\nYou have a standup at 9.";
-    /// <summary>Answers a request that carries a page summary with a 400, as the API does for a summary it won't take.</summary>
-    public bool RejectSummary { get; set; }
-    public const string SummaryText = "Summary of the page: the user asked about their week.";
 
-    static string Sse(string type, string json) => $"event: {type}\ndata: {json}\n\n";
+    /// <summary>The access token requests must carry; renewing replaces it.</summary>
+    public string AccessToken { get; set; } = Jwt(DateTimeOffset.UtcNow.AddDays(10), "acct-1");
+    public string RefreshToken { get; set; } = "refresh-1";
+    public int Renewals { get; private set; }
 
-    static string Message(string id) =>
-        Sse("message_start", """{"type":"message_start","message":{"id":"@ID@","type":"message","role":"assistant","model":"claude-haiku-5-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":1}}}""".Replace("@ID@", id));
+    /// <summary>A sign-in this fake accepts.</summary>
+    public CodexSignIn SignIn => new(AccessToken, RefreshToken, "acct-1");
+
+    /// <summary>An unsigned JWT with the claims the app reads: when it expires and the ChatGPT account.</summary>
+    public static string Jwt(DateTimeOffset expires, string account)
+    {
+        static string B64(string json) => Convert.ToBase64String(Encoding.UTF8.GetBytes(json)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        var claims = "{\"exp\":" + expires.ToUnixTimeSeconds() + ",\"https://api.openai.com/auth\":{\"chatgpt_account_id\":\"" + account + "\"}}";
+        return B64("""{"alg":"none"}""") + "." + B64(claims) + ".sig";
+    }
+
+    static string Sse(object data) => "data: " + System.Text.Json.JsonSerializer.Serialize(data) + "\n\n";
 
     protected override async Task Handle(Request r, HttpListenerResponse response)
     {
-        if (r.Method != "POST" || !r.Path.EndsWith("/messages")) { await Write(response, 404, "text/plain", ""); return; }
+        if (r.Method == "POST" && r.Path == "/oauth/token")
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(r.Body);
+            if (doc.RootElement.GetProperty("refresh_token").GetString() != RefreshToken || doc.RootElement.GetProperty("grant_type").GetString() != "refresh_token")
+            {
+                await Write(response, 400, "application/json", """{"error":"invalid_grant","error_description":"refresh_token_reused"}""");
+                return;
+            }
+            Renewals++;
+            AccessToken = Jwt(DateTimeOffset.UtcNow.AddDays(10), "acct-1");
+            RefreshToken = "refresh-" + (Renewals + 1);
+            await Write(response, 200, "application/json", System.Text.Json.JsonSerializer.Serialize(new { access_token = AccessToken, refresh_token = RefreshToken, id_token = AccessToken }));
+            return;
+        }
+        if (r.Method != "POST" || !r.Path.EndsWith("/responses")) { await Write(response, 404, "text/plain", ""); return; }
 
         if (ReplyDelayMs > 0) await Task.Delay(ReplyDelayMs);
+        if (!r.Headers.TryGetValue("Authorization", out var auth) || auth != "Bearer " + AccessToken)
+        {
+            await Write(response, 401, "application/json", """{"detail":"Could not parse your authentication token."}""");
+            return;
+        }
         if (FailStatus != 0)
         {
-            await Write(response, FailStatus, "application/json", """{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}""");
+            await Write(response, FailStatus, "application/json", """{"error":{"message":"The usage limit has been reached","type":"usage_limit_reached"}}""");
             return;
         }
 
-        if (r.Body.Contains("\"compaction\":{"))
-        {
-            // An on-demand compaction request: only the summary block comes back, with a signature to send back verbatim.
-            await Write(response, 200, "application/json", """{"id":"msg_c","type":"message","role":"assistant","model":"claude-haiku-5-5","content":[{"type":"compaction","content":"@S@","signature":"sig-compact","encrypted_content":"enc-1"}],"stop_reason":"compaction","stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0,"iterations":[{"type":"compaction","input_tokens":144,"output_tokens":20}]}}""".Replace("@S@", SummaryText));
-            return;
-        }
-        if (RejectSummary && r.Body.Contains("\"type\":\"compaction\""))
-        {
-            await Write(response, 400, "application/json", """{"type":"error","error":{"type":"invalid_request_error","message":"compaction block signature is invalid"}}""");
-            return;
-        }
-
-        int calls;
-        lock (Requests) calls = Requests.FindAll(q => q.Path.EndsWith("/messages")).Count;
         var sb = new StringBuilder();
-        sb.Append(Message("msg_" + calls));
-        if (AskForTool && !r.Body.Contains("\"tool_result\""))
+        sb.Append(Sse(new { type = "response.created", response = new { id = "resp_1" } }));
+        if (AskForTool && !r.Body.Contains("\"function_call_output\""))
         {
-            // First call: a little thinking, a few words, then the tool call.
-            sb.Append(Sse("content_block_start", """{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}"""));
-            sb.Append(Sse("content_block_delta", """{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Need the calendar."}}"""));
-            sb.Append(Sse("content_block_delta", """{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-abc"}}"""));
-            sb.Append(Sse("content_block_stop", """{"type":"content_block_stop","index":0}"""));
-            sb.Append(Sse("content_block_start", """{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"calendar_events","input":{}}}"""));
-            sb.Append(Sse("content_block_delta", """{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"start\":\"2026-11-11\","}}"""));
-            sb.Append(Sse("content_block_delta", """{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"end\":\"2026-11-11\"}"}}"""));
-            sb.Append(Sse("content_block_stop", """{"type":"content_block_stop","index":1}"""));
-            sb.Append(Sse("message_delta", """{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":20}}"""));
+            // Some reasoning (kept encrypted, to be sent back), then a call to the calendar.
+            var reasoning = new { type = "reasoning", id = "rs_1", summary = Array.Empty<object>(), encrypted_content = "enc-reasoning-1" };
+            sb.Append(Sse(new { type = "response.output_item.added", item = reasoning }));
+            sb.Append(Sse(new { type = "response.output_item.done", item = reasoning }));
+            sb.Append(Sse(new { type = "response.output_item.added", item = new { type = "function_call", id = "fc_1", call_id = "call_1", name = "calendar_events", arguments = "" } }));
+            sb.Append(Sse(new { type = "response.output_item.done", item = new { type = "function_call", id = "fc_1", call_id = "call_1", name = "calendar_events", arguments = """{"start":"2026-11-11","end":"2026-11-11"}""" } }));
         }
         else
         {
-            sb.Append(Sse("content_block_start", """{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"""));
-            foreach (var piece in Chunks(FinalText))
-                sb.Append(Sse("content_block_delta", "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":" + System.Text.Json.JsonSerializer.Serialize(piece) + "}}"));
-            sb.Append(Sse("content_block_stop", """{"type":"content_block_stop","index":0}"""));
-            sb.Append(Sse("message_delta", """{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":30}}"""));
+            sb.Append(Sse(new { type = "response.output_item.added", item = new { type = "message", id = "msg_1", role = "assistant", content = Array.Empty<object>() } }));
+            foreach (var piece in Chunks(FinalText)) sb.Append(Sse(new { type = "response.output_text.delta", delta = piece }));
+            if (FailCode is not null)
+            {
+                sb.Append(Sse(new { type = "response.failed", response = new { error = new { code = FailCode, message = "Something went wrong (" + FailCode + ")." } } }));
+                await Write(response, 200, "text/event-stream", sb.ToString());
+                return;
+            }
+            sb.Append(Sse(new { type = "response.output_item.done", item = new { type = "message", id = "msg_1", role = "assistant", content = new[] { new { type = "output_text", text = FinalText } } } }));
         }
-        sb.Append(Sse("message_stop", """{"type":"message_stop"}"""));
+        sb.Append(Incomplete is not null
+            ? Sse(new { type = "response.incomplete", response = new { id = "resp_1", incomplete_details = new { reason = Incomplete } } })
+            : Sse(new { type = "response.completed", response = new { id = "resp_1", usage = new { input_tokens = 10, output_tokens = 30 } } }));
         await Write(response, 200, "text/event-stream", sb.ToString());
     }
 

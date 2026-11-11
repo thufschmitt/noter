@@ -9,10 +9,12 @@ public sealed class WebOptions
     public string DataDir { get; set; } = "";
     /// <summary>Addresses to listen on. Loopback only by default: there is no sign-in, so don't expose it to a network you don't trust.</summary>
     public string Urls { get; set; } = "http://127.0.0.1:5080";
-    /// <summary>Only for checks against a fake of the API.</summary>
-    public string? AnthropicBaseUrl { get; set; }
-    /// <summary>Overrides ANTHROPIC_API_KEY and the saved key.</summary>
-    public string? ApiKey { get; set; }
+    /// <summary>Only for checks against a fake of the Codex backend (LONGHAND_CODEX_URL).</summary>
+    public string? CodexBaseUrl { get; set; }
+    /// <summary>Only for checks against a fake of the sign-in renewal (LONGHAND_CODEX_REFRESH_URL).</summary>
+    public string? CodexRefreshUrl { get; set; }
+    /// <summary>A ChatGPT sign-in (the Codex CLI's auth.json) to use until one is pasted into the page; LONGHAND_CODEX_SIGNIN does the same.</summary>
+    public string? SignIn { get; set; }
     /// <summary>Development: serve the page from this folder and reload open tabs when it changes (--www or LONGHAND_WWW).</summary>
     public string? WwwRoot { get; set; }
     /// <summary>Only for checks: lets apps on this machine be added (they must be public https otherwise, as Anthropic's servers call them).</summary>
@@ -33,6 +35,8 @@ public sealed class WebOptions
         o.AllowPrivateApps = System.Environment.GetEnvironmentVariable("LONGHAND_ALLOW_PRIVATE_APPS") == "1";
         if (System.Environment.GetEnvironmentVariable("LONGHAND_WWW") is { Length: > 0 } www) o.WwwRoot = www;
         if (System.Environment.GetEnvironmentVariable("LONGHAND_URLS") is { Length: > 0 } urls) o.Urls = urls;
+        if (System.Environment.GetEnvironmentVariable("LONGHAND_CODEX_URL") is { Length: > 0 } codex) o.CodexBaseUrl = codex;
+        if (System.Environment.GetEnvironmentVariable("LONGHAND_CODEX_REFRESH_URL") is { Length: > 0 } refresh) o.CodexRefreshUrl = refresh;
         for (int i = 0; i < args.Length; i++)
         {
             if (args[i] == "--data" && i + 1 < args.Length) o.DataDir = args[++i];

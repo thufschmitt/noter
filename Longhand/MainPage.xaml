@@ -71,7 +71,7 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <TextBox x:Name="TypeBox" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="40" MaxHeight="140" MaxLength="4000"
-                         PlaceholderText="Type a note for Claude. Enter sends, Shift+Enter starts a new line."
+                         PlaceholderText="Type a note. Enter sends, Shift+Enter starts a new line."
                          KeyDown="TypeBox_KeyDown" />
                 <Button x:Name="TypeSend" Grid.Column="1" Click="TypeSend_Click" VerticalAlignment="Bottom"
                         Style="{StaticResource AccentButtonStyle}" Height="40" Width="44" Padding="0" CornerRadius="20"

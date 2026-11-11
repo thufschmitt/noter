@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Opens the web version in a real (headless) Chrome, writes on it, waits for a reply from a fake Anthropic API, and checks what
+# Opens the web version in a real (headless) Chrome, writes on it, waits for a reply from a fake of ChatGPT's Codex backend, and checks what
 # the page does. Needs dotnet 10, node 22 and Chrome or Chromium.
 #   tools/BrowserCheck/run.sh [chrome command] [output folder for screenshots]
 set -euo pipefail
@@ -17,8 +17,8 @@ cleanup() {
 trap cleanup EXIT
 
 dotnet build "$root/Longhand.Web/Longhand.Web.csproj" -o "$work/app" -v q -nologo
-node "$here/fake-anthropic.mjs" "$out" >"$work/fake.log" 2>&1 &
-ANTHROPIC_BASE_URL=http://127.0.0.1:18080 ANTHROPIC_API_KEY=sk-test LONGHAND_DATA="$work/data" \
+node "$here/fake-codex.mjs" "$out" >"$work/fake.log" 2>&1 &
+LONGHAND_CODEX_URL=http://127.0.0.1:18080 LONGHAND_CODEX_SIGNIN='{"tokens":{"access_token":"test-token","refresh_token":"","account_id":"acct-test"}}' LONGHAND_DATA="$work/data" \
   LONGHAND_REGISTRY_URL=http://127.0.0.1:18081 LONGHAND_ALLOW_PRIVATE_APPS=1 \
   dotnet "$work/app/Longhand.Web.dll" --urls http://127.0.0.1:5099 >"$work/server.log" 2>&1 &
 "$chrome" --headless=new --no-sandbox --disable-gpu --remote-debugging-port=9333 --user-data-dir="$work/profile" \

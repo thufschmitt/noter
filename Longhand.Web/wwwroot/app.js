@@ -655,9 +655,9 @@ const api = async (method, path, body) => {
 async function openSettings(needKey) {
   const s = await (await fetch('/api/settings')).json();
   $('keyInput').value = '';
-  $('keyInput').placeholder = s.hasKey ? 'A key is saved. Paste a new one to replace it.' : 'sk-ant-…';
-  $('keyNote').textContent = s.keySource === 'environment' ? 'The key comes from the ANTHROPIC_API_KEY environment variable of the server; a key typed here would be overridden by it.' : needKey ? 'Add your Anthropic API key to get answers.' : '';
-  $('removeKey').hidden = s.keySource !== 'saved';
+  $('keyInput').placeholder = s.hasSignIn ? 'Signed in. Paste a new auth.json to replace it.' : '{"tokens":{"access_token":"…","refresh_token":"…","account_id":"…"}}';
+  $('keyNote').textContent = s.signInSource === 'environment' ? 'The sign-in comes from the LONGHAND_CODEX_SIGNIN environment variable of the server; one pasted here is used instead.' : needKey ? 'Sign in with ChatGPT to get answers.' : '';
+  $('removeKey').hidden = s.signInSource !== 'saved';
   $('version').textContent = 'Longhand version ' + s.version;
   const select = $('modelSelect');
   select.textContent = '';
@@ -671,15 +671,15 @@ async function openSettings(needKey) {
 }
 $('settingsButton').onclick = () => openSettings(false);
 $('settingsClose').onclick = () => $('settings').close();
-$('removeKey').onclick = async () => { await api('PUT', '/api/settings', { removeKey: true }); $('settings').close(); toast('API key removed.'); };
+$('removeKey').onclick = async () => { await api('PUT', '/api/settings', { signOut: true }); $('settings').close(); toast('Signed out.'); };
 $('settingsSave').onclick = async () => {
   const key = $('keyInput').value.trim();
   try {
-    if (key) await api('PUT', '/api/settings', { apiKey: key });
+    if (key) await api('PUT', '/api/settings', { signIn: key });
     const model = $('modelSelect').value;
     if (model && model !== conversationState?.model) send({ t: 'model', id: model });
     $('settings').close();
-    if (key) toast('API key saved.');
+    if (key) toast('Signed in with ChatGPT.');
   } catch (e) { toast(e.message); }
 };
 
@@ -900,7 +900,7 @@ function renderNextcloud() {
       button('Check', 'Check', async () => {
         try {
           const { calendars } = await api('POST', '/api/nextcloud/check');
-          appsSay(calendars.length === 0 ? 'No calendars found.' : 'Claude can use: ' + calendars.join(', ') + '.');
+          appsSay(calendars.length === 0 ? 'No calendars found.' : 'The model can use: ' + calendars.join(', ') + '.');
         } catch (e) { appsSay(e.message); }
       }),
       button('Disconnect', 'Disconnect', async () => { await api('POST', '/api/nextcloud/disconnect'); appsSay('Disconnected from Nextcloud.'); loadApps(); }),
@@ -910,7 +910,7 @@ function renderNextcloud() {
   }
   const intro = document.createElement('p');
   intro.className = 'note-text';
-  intro.textContent = "Lets Claude read your calendar, and add, change or delete events when you ask it to. You approve the connection in your browser; no password is typed here.";
+  intro.textContent = "Lets the model read your calendar, and add, change or delete events when you ask it to. You approve the connection in your browser; no password is typed here.";
   const server = document.createElement('input');
   server.placeholder = 'Your Nextcloud, like cloud.example.com';
   const connect = button(n.pending ? 'Waiting for you to approve…' : 'Connect', 'Connect', async () => {
@@ -925,7 +925,7 @@ function renderNextcloud() {
       const d = appsData.nextcloud;
       if (d.connected) {
         const { calendars } = await api('POST', '/api/nextcloud/check');
-        appsSay(calendars.length === 0 ? 'Connected, but no calendars were found.' : 'Connected. Claude can use: ' + calendars.join(', ') + '.');
+        appsSay(calendars.length === 0 ? 'Connected, but no calendars were found.' : 'Connected. The model can use: ' + calendars.join(', ') + '.');
       } else if (d.error) appsSay("Couldn't connect to Nextcloud: " + d.error);
     } catch (e) {
       if (win) win.close();

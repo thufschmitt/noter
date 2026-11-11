@@ -38,11 +38,11 @@ static class SymbolChecks
         var drawing = new byte[] { 137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3 };
         async Task<(string Body, ReplyResult Result)> Ask(IReadOnlyList<LegendEntry>? legend)
         {
-            await using var api = new FakeAnthropic { AskForTool = false };
-            var service = new ClaudeService("sk-ant-placeholder", model: "claude-haiku-5-5", baseUrl: api.BaseUrl);
+            await using var api = new FakeCodex { AskForTool = false };
+            var service = new CodexService(api.SignIn, model: "gpt-6.1-sol", baseUrl: api.BaseUrl);
             var result = await service.AskAsync(png, Array.Empty<Turn>(), _ => { }, default, legend: legend);
             // The JSON writer escapes quotes and plus signs as \u0022 and \u002B; read them back as the characters they are.
-            var body = api.Requests.First(r => r.Path.EndsWith("/messages")).Body.Replace("\\u0022", "\"").Replace("\\u002B", "+");
+            var body = api.Requests.First(r => r.Path.EndsWith("/responses")).Body.Replace("\\u0022", "\"").Replace("\\u002B", "+");
             return (body, result);
         }
 
@@ -51,7 +51,7 @@ static class SymbolChecks
 
         var (withLegend, answer) = await Ask(new[] { new LegendEntry("envelope", "Add what I wrote to my Todoist inbox.", drawing), new LegendEntry("star", "Remind me about this tomorrow.", null) });
         check("the symbols and what they mean are sent", withLegend.Contains("Symbol \"envelope\" means: Add what I wrote to my Todoist inbox.") && withLegend.Contains("Symbol \"star\" means: Remind me about this tomorrow."));
-        check("an example drawing is sent only for the symbol that has one", withLegend.Contains(Convert.ToBase64String(drawing)) && withLegend.Contains("recognise it from its name") && withLegend.Split("\"type\":\"image\"").Length - 1 == 2);
+        check("an example drawing is sent only for the symbol that has one", withLegend.Contains(Convert.ToBase64String(drawing)) && withLegend.Contains("recognise it from its name") && withLegend.Split("\"type\":\"input_image\"").Length - 1 == 2);
         check("the symbols come before the handwriting, which is named as such", withLegend.IndexOf("personal symbols", StringComparison.Ordinal) < withLegend.IndexOf(Convert.ToBase64String(png), StringComparison.Ordinal) && withLegend.Contains("The next picture is my newest handwriting."));
         check("a reply with symbols still comes back", answer.Outcome == ReplyOutcome.Done && answer.Body.Length > 0);
         check("Claude is told how to treat the symbols", withLegend.Contains("personal symbols") && withLegend.Contains("[envelope symbol]") && withLegend.Contains("reasonably sure"));

@@ -50,7 +50,7 @@ const starPath = [];
 for (let i = 0; i < 5; i++) { const a = tips[(i * 2) % 5], b = tips[((i + 1) * 2) % 5]; for (let k = 0; k < 8; k++) starPath.push([a[0] + (b[0] - a[0]) * k / 8, a[1] + (b[1] - a[1]) * k / 8]); }
 starPath.push(tips[0]);
 await stroke(starPath);
-check('a star drawn beside the writing gets a reply', await until(`[...document.querySelectorAll('.note')].some(n => !n.classList.contains('hint') && n.textContent.includes('Claude answering'))`, 20000));
+check('a star drawn beside the writing gets a reply', await until(`[...document.querySelectorAll('.note')].some(n => !n.classList.contains('hint') && n.textContent.includes('model answering'))`, 20000));
 await sleep(800);
 check('and the star is gone from the page', await evaluate(`strokes.size === 3`));
 check('the reply sits below the ink on a rule line', await evaluate(`(() => { const n = [...document.querySelectorAll('.note')].find(n => !n.classList.contains('hint')); return parseFloat(n.style.top) - 3 === 280 || parseFloat(n.style.top) - 3 >= 240; })()`));
@@ -120,12 +120,12 @@ check('the dialog closes', await until(`!document.getElementById('apps').open`))
 await evaluate(`document.getElementById('settingsButton').click()`);
 
 
-check('the settings dialog opens with the models', await until(`document.getElementById('settings').open && document.getElementById('modelSelect').options.length === 3`));
+check('the settings dialog opens with the models', await until(`document.getElementById('settings').open && document.getElementById('modelSelect').options.length === 2`));
 check('the picker shows this conversation\'s model', await evaluate(`document.getElementById('modelSelect').value === conversationState.model`));
 await sleep(300);
 await shot('7-settings');
-await evaluate(`(() => { document.getElementById('modelSelect').value = 'claude-sonnet-5-5'; document.getElementById('settingsSave').click(); })()`);
-check('choosing a model there changes this conversation\'s', await until(`!document.getElementById('settings').open && conversationState.model === 'claude-sonnet-5-5'`));
+await evaluate(`(() => { document.getElementById('modelSelect').value = 'gpt-6.1-terra'; document.getElementById('settingsSave').click(); })()`);
+check('choosing a model there changes this conversation\'s', await until(`!document.getElementById('settings').open && conversationState.model === 'gpt-6.1-terra'`));
 console.log('console:', JSON.stringify(logs.slice(0, 10)));
 check('no script errors', !logs.some(l => l.startsWith('EXCEPTION')));
 ws.close();

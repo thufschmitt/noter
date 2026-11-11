@@ -379,10 +379,10 @@ public sealed class WebConnection : IPageView, IPageData
 
     // ---------- IPageView: messages ----------
 
-    public Task<string?> RequestApiKeyAsync()
+    public Task<CodexSignIn?> RequestSignInAsync()
     {
         Send("needKey");
-        return Task.FromResult<string?>(null);
+        return Task.FromResult<CodexSignIn?>(null);
     }
 
     public void RestoreTyped(string text) => Send("typed", ("text", text));
@@ -391,7 +391,7 @@ public sealed class WebConnection : IPageView, IPageData
 
     // ---------- IPageData ----------
 
-    public string? ApiKey => _store.ApiKey;
+    public CodexSignIn? SignIn => _store.SignIn;
 
     public string DefaultModel
     {
@@ -421,11 +421,14 @@ public sealed class WebConnection : IPageView, IPageData
     public Task SavePageAsync(string id, IReadOnlyList<SavedNote> notes) => _store.SavePageAsync(id, _ink.ToList(), notes);
     public Task DeletePageAsync(string id) => _store.DeletePageAsync(id);
 
-    /// <summary>Connected apps whose sign-in can't be renewed are left out and named, since Claude won't have them. The calendar is offered only while a Nextcloud account is connected.</summary>
-    public async Task<PreparedAsk> PrepareAskAsync(string apiKey, string model, CancellationToken ct)
+    /// <summary>
+    /// The calendar is offered only while a Nextcloud account is connected. A renewed sign-in is saved at once, since the old
+    /// refresh token stops working when it is used.
+    /// </summary>
+    public Task<PreparedAsk> PrepareAskAsync(CodexSignIn signIn, string model, CancellationToken ct)
     {
-        var (connectors, expired) = await _apps.ActiveAsync(ct);
         IReadOnlyList<IAgentTool> tools = _store.Nextcloud.Load() is { } account ? CalendarTools.For(_apps.NextcloudClient, account, _zone) : Array.Empty<IAgentTool>();
-        return new PreparedAsk(new ClaudeService(apiKey, connectors, model, _store.AnthropicBaseUrl, tools, _zone), _store.Legend(), expired);
+        var service = new CodexService(signIn, renewed => { _store.SaveSignIn(renewed); return Task.CompletedTask; }, model, tools, _zone, _store.CodexBaseUrl, _store.CodexRefreshUrl);
+        return Task.FromResult(new PreparedAsk(service, _store.Legend()));
     }
 }

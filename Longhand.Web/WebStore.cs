@@ -14,7 +14,7 @@ namespace Longhand.Web;
 /// </summary>
 public sealed class WebStore
 {
-    const string SymbolsFile = "symbols.json", SymbolsFolder = "symbols", SettingsFile = "settings.json", KeyFile = "api-key";
+    const string SymbolsFile = "symbols.json", SymbolsFolder = "symbols", SettingsFile = "settings.json", SignInFile = "chatgpt-signin.json";
     readonly WebOptions _options;
     readonly object _lock = new();
 
@@ -36,7 +36,8 @@ public sealed class WebStore
     public WebOptions Options => _options;
 
     public string Dir => _options.DataDir;
-    public string? AnthropicBaseUrl => _options.AnthropicBaseUrl;
+    public string? CodexBaseUrl => _options.CodexBaseUrl;
+    public string? CodexRefreshUrl => _options.CodexRefreshUrl;
     string PathOf(params string[] parts) => Path.Combine(new[] { Dir }.Concat(parts).ToArray());
 
     // ----- files, written so a crash never leaves half a file -----
@@ -55,37 +56,28 @@ public sealed class WebStore
         catch (IOException) { return null; }
     }
 
-    // ----- the API key -----
+    // ----- the ChatGPT sign-in -----
 
-    /// <summary>"environment" when it comes from ANTHROPIC_API_KEY (or the options), "saved" when it was typed into the page, else null.</summary>
-    public string? KeySource => FromEnvironment() is not null ? "environment" : SavedKey() is not null ? "saved" : null;
+    /// <summary>"saved" when one was pasted into the page (it is the one used), "environment" when it comes from LONGHAND_CODEX_SIGNIN (or the options), else null.</summary>
+    public string? SignInSource => SavedSignIn() is not null ? "saved" : FromEnvironment() is not null ? "environment" : null;
 
-    string? FromEnvironment()
+    CodexSignIn? FromEnvironment() => CodexSignIn.Parse(_options.SignIn ?? Environment.GetEnvironmentVariable("LONGHAND_CODEX_SIGNIN"));
+
+    CodexSignIn? SavedSignIn()
     {
-        var key = _options.ApiKey ?? Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
-        return string.IsNullOrWhiteSpace(key) ? null : key.Trim();
-    }
-
-    string? SavedKey()
-    {
-        try
-        {
-            var key = File.Exists(PathOf(KeyFile)) ? File.ReadAllText(PathOf(KeyFile)).Trim() : null;
-            return string.IsNullOrEmpty(key) ? null : key;
-        }
+        try { return File.Exists(PathOf(SignInFile)) ? CodexSignIn.Parse(File.ReadAllText(PathOf(SignInFile))) : null; }
         catch (IOException) { return null; }
     }
 
-    public string? ApiKey => FromEnvironment() ?? SavedKey();
+    /// <summary>The sign-in in use: a saved one (which may have been renewed since) wins over the environment's.</summary>
+    public CodexSignIn? SignIn => SavedSignIn() ?? FromEnvironment();
 
-    public void SaveKey(string key)
-    {
-        PrivateFile.Write(PathOf(KeyFile), key.Trim(), priv: true);
-    }
+    /// <summary>Keeps the sign-in (also a renewed one) in a file only this user can read.</summary>
+    public void SaveSignIn(CodexSignIn signIn) => PrivateFile.Write(PathOf(SignInFile), signIn.ToJson(), priv: true);
 
-    public void ClearKey()
+    public void ClearSignIn()
     {
-        try { File.Delete(PathOf(KeyFile)); } catch (IOException) { }
+        try { File.Delete(PathOf(SignInFile)); } catch (IOException) { }
     }
 
     // ----- the model -----

@@ -22,7 +22,7 @@
 <div id="toast" hidden></div>
 
 <div id="typebar" hidden>
-  <textarea id="typeInput" rows="2" maxlength="4000" placeholder="Type a note for Claude. Enter sends, Shift+Enter starts a new line."></textarea>
+  <textarea id="typeInput" rows="2" maxlength="4000" placeholder="Type a note. Enter sends, Shift+Enter starts a new line."></textarea>
   <button id="typeSend" class="accent" title="Send" aria-label="Send"><svg viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg></button>
 </div>
 
@@ -46,14 +46,16 @@
 
 <dialog id="apps">
   <h2>Connected apps</h2>
-  <p class="note-text">Claude can always search the web. Connected apps let it use your own services too. Sign in once in your browser; the sign-in is kept by the server this page came from.</p>
+  <p class="note-text">The model can always search the web. Connected apps let it use your own services too. Sign in once in your browser; the sign-in is kept by the server this page came from.</p>
   <h3>Nextcloud calendar</h3>
   <div id="nextcloud"></div>
   <h3>Other apps (MCP servers)</h3>
+  <p class="note-text">Not available while answers come through ChatGPT: its servers don't call your apps. Apps added before are kept for later.</p>
+  <div id="mcpApps" hidden>
   <div id="appList"></div>
   <p id="appsMessage" class="note-text"></p>
   <h3>Find more in the MCP registry</h3>
-  <p class="note-text">Anyone can publish a server there. Only add ones you trust: Claude can use what they offer, and what it sends them leaves this server.</p>
+  <p class="note-text">Anyone can publish a server there. Only add ones you trust: the model can use what they offer, and what it sends them leaves this server.</p>
   <div class="buttons"><input id="registryQuery" placeholder="Search the registry (todo, github, calendar…)"><button id="registrySearch" type="button">Search</button></div>
   <div id="registryResults"></div>
   <p id="registryNote" class="note-text"></p>
@@ -63,26 +65,27 @@
   <input id="appName" placeholder="Name">
   <input id="appUrl" placeholder="https://server/mcp">
   <div class="buttons"><button id="appAdd" type="button">Add</button></div>
+  </div>
   <div class="buttons end"><button id="appsClose" type="button" class="accent">Done</button></div>
 </dialog>
 
 <dialog id="settings">
   <h2>Settings</h2>
-  <p class="note-text">Longhand sends your handwriting to Claude with your Anthropic API key. The key stays on the server this page came from.</p>
-  <label for="keyInput">Anthropic API key</label>
-  <input id="keyInput" type="password" autocomplete="off" placeholder="sk-ant-…">
+  <p class="note-text">Longhand sends your handwriting to OpenAI's models through your ChatGPT subscription, the way the Codex CLI does. Sign in to the Codex CLI with ChatGPT, then paste the contents of ~/.codex/auth.json here. The sign-in stays on the server this page came from. This uses ChatGPT's private Codex service: it may stop working without notice. Longhand renews the sign-in when it runs out, after which the Codex CLI's copy stops working (and the other way round), so you may have to sign in there again.</p>
+  <label for="keyInput">ChatGPT sign-in (auth.json)</label>
+  <textarea id="keyInput" rows="3" autocomplete="off" spellcheck="false" placeholder='{"tokens":{"access_token":"…","refresh_token":"…","account_id":"…"}}'></textarea>
   <p id="keyNote" class="note-text"></p>
   <label for="modelSelect">Model for this conversation</label>
   <select id="modelSelect"></select>
   <p class="note-text">Each conversation keeps its own model. New ones start with the one you chose last.</p>
 
   <h3>Symbols</h3>
-  <p class="note-text">Symbols are your own shortcuts: a mark you draw in the margin that means something to you. Give it a name and say what it means; Claude then does that when it sees the symbol in your writing. There are none until you add some. They are saved as you go.</p>
+  <p class="note-text">Symbols are your own shortcuts: a mark you draw in the margin that means something to you. Give it a name and say what it means; the model then does that when it sees the symbol in your writing. There are none until you add some. They are saved as you go.</p>
   <div id="symbolList"></div>
   <h4 id="symbolFormTitle">New symbol</h4>
   <input id="symName" maxlength="40" placeholder="Name, like envelope">
   <textarea id="symMeaning" maxlength="400" rows="3" placeholder="What it means, like: add what I wrote to my Todoist inbox"></textarea>
-  <p class="note-text">Optional: draw the symbol here so Claude can recognise it.</p>
+  <p class="note-text">Optional: draw the symbol here so the model can recognise it.</p>
   <canvas id="pad" width="378" height="140"></canvas>
   <p id="savedLabel" class="note-text" hidden>Saved drawing (draw above to replace it):</p>
   <img id="savedImage" alt="" hidden>
@@ -92,7 +95,7 @@
 
   <p id="version" class="note-text"></p>
   <div class="buttons end">
-    <button id="removeKey" type="button" hidden>Remove key</button>
+    <button id="removeKey" type="button" hidden>Sign out</button>
     <button id="settingsClose" type="button">Cancel</button>
     <button id="settingsSave" type="button" class="accent">Save</button>
   </div>

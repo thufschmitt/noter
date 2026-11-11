@@ -21,7 +21,7 @@ public sealed class WindowsPageData : IPageData
         _nextcloud = nextcloud;
     }
 
-    public string? ApiKey => ApiKeyStore.Load();
+    public CodexSignIn? SignIn => SignInStore.Load();
 
     public string DefaultModel
     {
@@ -40,12 +40,15 @@ public sealed class WindowsPageData : IPageData
 
     public Task DeletePageAsync(string id) => ConversationStore.DeleteAsync(id);
 
-    /// <summary>Connected apps whose sign-in can't be renewed are left out and named, since Claude won't have them. The calendar is offered only while a Nextcloud account is connected.</summary>
-    public async Task<PreparedAsk> PrepareAskAsync(string apiKey, string model, CancellationToken ct)
+    /// <summary>
+    /// The calendar is offered only while a Nextcloud account is connected. A renewed sign-in is saved at once, since the old
+    /// refresh token stops working when it is used.
+    /// </summary>
+    public async Task<PreparedAsk> PrepareAskAsync(CodexSignIn signIn, string model, CancellationToken ct)
     {
-        var (connectors, expired) = await ConnectorStore.ActiveAsync(_oauth, ct);
         IReadOnlyList<IAgentTool> tools = NextcloudStore.Load() is { } account ? CalendarTools.For(_nextcloud, account) : Array.Empty<IAgentTool>();
         var legend = await SymbolStore.LegendAsync();
-        return new PreparedAsk(new ClaudeService(apiKey, connectors, model, agentTools: tools), legend, expired);
+        var service = new CodexService(signIn, renewed => { SignInStore.Save(renewed); return Task.CompletedTask; }, model, tools);
+        return new PreparedAsk(service, legend);
     }
 }

@@ -49,7 +49,8 @@ public interface IPageView
 
     // ----- messages -----
     /// <summary>Asks for the API key; null when the user doesn't give one.</summary>
-    Task<string?> RequestApiKeyAsync();
+    /// <summary>Asks the user to paste their ChatGPT sign-in (the Codex CLI's auth.json), stores it and returns it; null if they don't.</summary>
+    Task<CodexSignIn?> RequestSignInAsync();
     void Toast(string message, double seconds = 3.5);
     /// <summary>A typed note couldn't be sent, so the words go back where they were typed.</summary>
     void RestoreTyped(string text);
@@ -57,12 +58,13 @@ public interface IPageView
 }
 
 /// <summary>What one Ask needs, gathered fresh each time so changes to settings and connected apps take effect at once.</summary>
-public sealed record PreparedAsk(ClaudeService Claude, IReadOnlyList<LegendEntry> Legend, IReadOnlyList<string> ExpiredApps);
+public sealed record PreparedAsk(CodexService Model, IReadOnlyList<LegendEntry> Legend);
 
 /// <summary>Where the conversations and settings live: Windows storage in the app, a data folder on the server.</summary>
 public interface IPageData
 {
-    string? ApiKey { get; }
+    /// <summary>The stored ChatGPT sign-in, or null when there is none.</summary>
+    CodexSignIn? SignIn { get; }
     /// <summary>The model a new conversation starts with: the one last chosen.</summary>
     string DefaultModel { get; set; }
     Task<ConversationIndex> LoadIndexAsync();
@@ -72,5 +74,5 @@ public interface IPageData
     Task SavePageAsync(string id, IReadOnlyList<SavedNote> notes);
     Task DeletePageAsync(string id);
     /// <param name="model">The model the open conversation is answered by.</param>
-    Task<PreparedAsk> PrepareAskAsync(string apiKey, string model, CancellationToken ct);
+    Task<PreparedAsk> PrepareAskAsync(CodexSignIn signIn, string model, CancellationToken ct);
 }

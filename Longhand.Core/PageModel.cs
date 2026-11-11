@@ -19,8 +19,8 @@ public static class PageLayout
     public static double RuleAtOrBelow(double y) => Top + Math.Max(0, Math.Ceiling((y - Top) / LineHeight)) * LineHeight;
 }
 
-/// <summary>A note Claude wrote on the page, as saved to disk. <c>Summary</c> is the page summary that ends at this note, if any.</summary>
-public sealed record SavedNote(double Y, string Text, string Heard, bool IsHint, List<string>? Drawings = null, bool Typed = false, PageSummary? Summary = null);
+/// <summary>A note the model wrote on the page, as saved to disk.</summary>
+public sealed record SavedNote(double Y, string Text, string Heard, bool IsHint, List<string>? Drawings = null, bool Typed = false);
 
 /// <summary>Where a stroke sits on the page. The page only ever needs heights: it is one vertical strip.</summary>
 public readonly record struct StrokeSpan(uint Id, double Top, double Bottom);
@@ -59,11 +59,6 @@ public sealed class NoteModel
     public readonly List<DrawingModel> Drawings = new();
     /// <summary>How many of the reply's drawings have been taken in (shown or refused).</summary>
     public int DrawingsSeen;
-    /// <summary>
-    /// The API's summary of the page from the start up to and including this note, sent to Claude in place of those turns.
-    /// Only a shortcut: the notes themselves are all still there, so it can be made again.
-    /// </summary>
-    public PageSummary? Summary;
     public object? View;
 
     public int DrawLines => Drawings.Sum(d => d.Lines);

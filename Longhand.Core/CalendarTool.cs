@@ -6,7 +6,6 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-using Anthropic.Models.Beta.Messages;
 
 namespace Longhand.Services;
 
@@ -164,26 +163,20 @@ public sealed class CalendarTool : IAgentTool
     public string Name => ToolName;
     public string Status => "checking your calendar…";
 
-    public BetaToolUnion Definition => new BetaTool
-    {
-        Name = ToolName,
-        Description =
-            "Reads the user's calendar from their Nextcloud server. Use it for questions about their schedule, availability, " +
-            "upcoming or past events, or when something is on, and to find an event before changing or deleting it. Returns the " +
-            "events in the range, grouped by day, each with its time, title, calendar, location, whether it repeats, and its " +
-            "{id: …}. Times are in the user's own time zone. Ask for a short range (a day or a week) unless the question needs " +
-            "more; the longest range is about three months.",
-        InputSchema = new InputSchema
+    public ToolSpec Definition => ToolSpec.Object(
+        ToolName,
+        "Reads the user's calendar from their Nextcloud server. Use it for questions about their schedule, availability, " +
+        "upcoming or past events, or when something is on, and to find an event before changing or deleting it. Returns the " +
+        "events in the range, grouped by day, each with its time, title, calendar, location, whether it repeats, and its " +
+        "{id: …}. Times are in the user's own time zone. Ask for a short range (a day or a week) unless the question needs " +
+        "more; the longest range is about three months.",
+        new Dictionary<string, JsonElement>
         {
-            Properties = new Dictionary<string, JsonElement>
-            {
-                ["start"] = CalendarContext.Json("""{"type":"string","description":"First day or moment of the range: a date like 2026-11-10 or a date-time like 2026-11-10T14:00, in the user's local time."}"""),
-                ["end"] = CalendarContext.Json("""{"type":"string","description":"Last day or end of the range. A date alone (2026-11-12) includes that whole day; a date-time is the exclusive end. Defaults to a week after start."}"""),
-                ["search"] = CalendarContext.Json("""{"type":"string","description":"Optional: only events whose title, location or description contain this text."}"""),
-            },
-            Required = new List<string> { "start" },
+            ["start"] = CalendarContext.Json("""{"type":"string","description":"First day or moment of the range: a date like 2026-11-10 or a date-time like 2026-11-10T14:00, in the user's local time."}"""),
+            ["end"] = CalendarContext.Json("""{"type":"string","description":"Last day or end of the range. A date alone (2026-11-12) includes that whole day; a date-time is the exclusive end. Defaults to a week after start."}"""),
+            ["search"] = CalendarContext.Json("""{"type":"string","description":"Optional: only events whose title, location or description contain this text."}"""),
         },
-    };
+        "start");
 
     public async Task<string> RunAsync(IReadOnlyDictionary<string, JsonElement> input, CancellationToken ct)
     {
@@ -216,28 +209,22 @@ public sealed class CalendarAddTool : IAgentTool
     public string Name => ToolName;
     public string Status => "adding it to your calendar…";
 
-    public BetaToolUnion Definition => new BetaTool
-    {
-        Name = ToolName,
-        Description =
-            "Adds an event to the user's Nextcloud calendar. Use it only when the user asked for something to be put in their " +
-            "calendar. Times are in the user's own time zone. A timed event lasts an hour unless an end is given; a date alone " +
-            "makes an all-day event. Returns the event as added, with its id.",
-        InputSchema = new InputSchema
+    public ToolSpec Definition => ToolSpec.Object(
+        ToolName,
+        "Adds an event to the user's Nextcloud calendar. Use it only when the user asked for something to be put in their " +
+        "calendar. Times are in the user's own time zone. A timed event lasts an hour unless an end is given; a date alone " +
+        "makes an all-day event. Returns the event as added, with its id.",
+        new Dictionary<string, JsonElement>
         {
-            Properties = new Dictionary<string, JsonElement>
-            {
-                ["title"] = CalendarContext.Json("""{"type":"string","description":"What the event is, short, as it should appear in the calendar."}"""),
-                ["start"] = CalendarContext.Json("""{"type":"string","description":"When it starts: a date-time like 2026-11-10T14:00, or a date like 2026-11-10 for an all-day event, in the user's local time."}"""),
-                ["end"] = CalendarContext.Json("""{"type":"string","description":"Optional: when it ends (a date-time), or the last day of an all-day event (a date)."}"""),
-                ["all_day"] = CalendarContext.Json("""{"type":"boolean","description":"Optional: true for an all-day event. A start given as a date alone already means all day."}"""),
-                ["location"] = CalendarContext.Json("""{"type":"string","description":"Optional: where it is."}"""),
-                ["description"] = CalendarContext.Json("""{"type":"string","description":"Optional: notes for the event."}"""),
-                ["calendar"] = CalendarContext.Json("""{"type":"string","description":"Optional: the name of the calendar to add it to. Defaults to the user's own default calendar."}"""),
-            },
-            Required = new List<string> { "title", "start" },
+            ["title"] = CalendarContext.Json("""{"type":"string","description":"What the event is, short, as it should appear in the calendar."}"""),
+            ["start"] = CalendarContext.Json("""{"type":"string","description":"When it starts: a date-time like 2026-11-10T14:00, or a date like 2026-11-10 for an all-day event, in the user's local time."}"""),
+            ["end"] = CalendarContext.Json("""{"type":"string","description":"Optional: when it ends (a date-time), or the last day of an all-day event (a date)."}"""),
+            ["all_day"] = CalendarContext.Json("""{"type":"boolean","description":"Optional: true for an all-day event. A start given as a date alone already means all day."}"""),
+            ["location"] = CalendarContext.Json("""{"type":"string","description":"Optional: where it is."}"""),
+            ["description"] = CalendarContext.Json("""{"type":"string","description":"Optional: notes for the event."}"""),
+            ["calendar"] = CalendarContext.Json("""{"type":"string","description":"Optional: the name of the calendar to add it to. Defaults to the user's own default calendar."}"""),
         },
-    };
+        "title", "start");
 
     public async Task<string> RunAsync(IReadOnlyDictionary<string, JsonElement> input, CancellationToken ct)
     {
@@ -273,29 +260,23 @@ public sealed class CalendarChangeTool : IAgentTool
     public string Name => ToolName;
     public string Status => "changing your calendar…";
 
-    public BetaToolUnion Definition => new BetaTool
-    {
-        Name = ToolName,
-        Description =
-            "Changes an event in the user's Nextcloud calendar. Use it only when the user asked for that change, and only after " +
-            "reading the calendar to find the event and its id; if it isn't clear which event they mean, ask instead. Give only " +
-            "what changes: moving the start keeps the event's length unless an end is given. Repeating events can't be changed. " +
-            "Returns the event as it is now.",
-        InputSchema = new InputSchema
+    public ToolSpec Definition => ToolSpec.Object(
+        ToolName,
+        "Changes an event in the user's Nextcloud calendar. Use it only when the user asked for that change, and only after " +
+        "reading the calendar to find the event and its id; if it isn't clear which event they mean, ask instead. Give only " +
+        "what changes: moving the start keeps the event's length unless an end is given. Repeating events can't be changed. " +
+        "Returns the event as it is now.",
+        new Dictionary<string, JsonElement>
         {
-            Properties = new Dictionary<string, JsonElement>
-            {
-                ["id"] = CalendarContext.Json("""{"type":"string","description":"The event's id, as reading the calendar shows it ({id: …})."}"""),
-                ["title"] = CalendarContext.Json("""{"type":"string","description":"Optional: a new title."}"""),
-                ["start"] = CalendarContext.Json("""{"type":"string","description":"Optional: a new start, a date-time like 2026-11-10T14:00 or a date for an all-day event, in the user's local time."}"""),
-                ["end"] = CalendarContext.Json("""{"type":"string","description":"Optional: a new end (a date-time), or the last day of an all-day event (a date)."}"""),
-                ["all_day"] = CalendarContext.Json("""{"type":"boolean","description":"Optional: make it all-day (true) or timed (false; then give a start time)."}"""),
-                ["location"] = CalendarContext.Json("""{"type":"string","description":"Optional: a new location; an empty string removes it."}"""),
-                ["description"] = CalendarContext.Json("""{"type":"string","description":"Optional: new notes; an empty string removes them."}"""),
-            },
-            Required = new List<string> { "id" },
+            ["id"] = CalendarContext.Json("""{"type":"string","description":"The event's id, as reading the calendar shows it ({id: …})."}"""),
+            ["title"] = CalendarContext.Json("""{"type":"string","description":"Optional: a new title."}"""),
+            ["start"] = CalendarContext.Json("""{"type":"string","description":"Optional: a new start, a date-time like 2026-11-10T14:00 or a date for an all-day event, in the user's local time."}"""),
+            ["end"] = CalendarContext.Json("""{"type":"string","description":"Optional: a new end (a date-time), or the last day of an all-day event (a date)."}"""),
+            ["all_day"] = CalendarContext.Json("""{"type":"boolean","description":"Optional: make it all-day (true) or timed (false; then give a start time)."}"""),
+            ["location"] = CalendarContext.Json("""{"type":"string","description":"Optional: a new location; an empty string removes it."}"""),
+            ["description"] = CalendarContext.Json("""{"type":"string","description":"Optional: new notes; an empty string removes them."}"""),
         },
-    };
+        "id");
 
     public async Task<string> RunAsync(IReadOnlyDictionary<string, JsonElement> input, CancellationToken ct)
     {
@@ -327,22 +308,16 @@ public sealed class CalendarDeleteTool : IAgentTool
     public string Name => ToolName;
     public string Status => "removing it from your calendar…";
 
-    public BetaToolUnion Definition => new BetaTool
-    {
-        Name = ToolName,
-        Description =
-            "Deletes an event from the user's Nextcloud calendar. Use it only when the user clearly asked for that event to be " +
-            "removed or cancelled, and only after reading the calendar to find it and its id; if it isn't clear which event they " +
-            "mean, ask instead. Repeating events can't be deleted. Returns what was deleted, so the reply can say so.",
-        InputSchema = new InputSchema
+    public ToolSpec Definition => ToolSpec.Object(
+        ToolName,
+        "Deletes an event from the user's Nextcloud calendar. Use it only when the user clearly asked for that event to be " +
+        "removed or cancelled, and only after reading the calendar to find it and its id; if it isn't clear which event they " +
+        "mean, ask instead. Repeating events can't be deleted. Returns what was deleted, so the reply can say so.",
+        new Dictionary<string, JsonElement>
         {
-            Properties = new Dictionary<string, JsonElement>
-            {
-                ["id"] = CalendarContext.Json("""{"type":"string","description":"The event's id, as reading the calendar shows it ({id: …})."}"""),
-            },
-            Required = new List<string> { "id" },
+            ["id"] = CalendarContext.Json("""{"type":"string","description":"The event's id, as reading the calendar shows it ({id: …})."}"""),
         },
-    };
+        "id");
 
     public async Task<string> RunAsync(IReadOnlyDictionary<string, JsonElement> input, CancellationToken ct)
     {
