@@ -14,7 +14,7 @@ const inkCtx = inkCanvas.getContext('2d');
 
 const strokes = new Map();   // id -> { id, pts: [[x, y], ...] }, in page coordinates
 const notes = new Map();     // id -> { id, y, hint, text, lines, drawLines, el, tick, drawings: Map }
-let maxId = 0, sheetWidth = 800, erasing = false, touchWrite = false, socket = null, state = { busy: false, canAsk: false, counting: false };
+let maxId = 0, sheetWidth = 800, erasing = false, touchWrite = false, socket = null, state = { busy: false, canAsk: false };
 
 const dark = () => matchMedia('(prefers-color-scheme: dark)').matches;
 const inkColor = () => (dark() ? '#E6E8EC' : '#22262C');
@@ -172,7 +172,6 @@ inkCanvas.addEventListener('pointerdown', e => {
     eraseAt(p[0], p[1], active.erased);
     redraw();
   } else {
-    send({ t: 'strokeStarted' });
     active = { id: e.pointerId, mode: 'draw', pts: [p] };
     viewTransform();
     paintStroke(inkCtx, [p], inkColor());
@@ -393,13 +392,8 @@ const handlers = {
     state = m;
     $('askLabel').textContent = m.busy ? 'Stop' : 'Ask';
     $('spinner').hidden = !m.busy;
-    $('askIcon').style.display = m.busy || m.counting ? 'none' : '';
+    $('askIcon').style.display = m.busy ? 'none' : '';
     $('ask').disabled = !m.canAsk;
-  },
-  idle(m) {
-    const bar = $('countdown');
-    bar.style.display = m.progress === null ? 'none' : 'block';
-    if (m.progress !== null) bar.style.transform = `scaleX(${Math.min(1, m.progress)})`;
   },
   visible(m) {
     const limit = scroller.scrollTop + scroller.clientHeight - 90;
@@ -557,8 +551,6 @@ $('ask').onclick = () => send({ t: 'ask' });
 
 // ---------- typing ----------
 
-let typingNoted = false;
-
 function showTypeBar(on) {
   $('typebar').hidden = !on;
   document.body.classList.toggle('typing', on);
@@ -571,7 +563,6 @@ function sendTyped() {
   if (!text) return;
   send({ t: 'type', text });
   box.value = '';
-  typingNoted = false;
 }
 
 $('keyboard').onclick = () => showTypeBar($('typebar').hidden);
@@ -580,11 +571,6 @@ $('typeInput').addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendTyped(); }
   else if (e.key === 'Escape') showTypeBar(false);
 });
-// Typing is writing: it holds off the pause that would otherwise ask by itself while you are still composing.
-$('typeInput').addEventListener('input', () => {
-  if (!typingNoted) { typingNoted = true; send({ t: 'strokeStarted' }); }
-});
-$('typeInput').addEventListener('blur', () => { typingNoted = false; });
 document.addEventListener('keydown', e => {
   if (e.target.closest && e.target.closest('dialog, input, textarea')) return;
   if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); send({ t: 'undo' }); }
@@ -693,7 +679,7 @@ $('settingsSave').onclick = async () => {
     const model = $('modelSelect').value;
     if (model && model !== conversationState?.model) send({ t: 'model', id: model });
     $('settings').close();
-    if (key) { toast('API key saved.'); send({ t: 'keyChanged' }); }
+    if (key) toast('API key saved.');
   } catch (e) { toast(e.message); }
 };
 

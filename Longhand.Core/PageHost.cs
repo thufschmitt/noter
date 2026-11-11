@@ -50,8 +50,6 @@ public interface IPageView
     /// <summary>A typed note couldn't be sent, so the words go back where they were typed.</summary>
     void RestoreTyped(string text);
     void StateChanged(PageState state);
-    /// <summary>How far the pause before asking has got (0 to 1), or null when it isn't running.</summary>
-    void IdleProgress(double? progress);
 }
 
 /// <summary>What one Ask needs, gathered fresh each time so changes to settings and connected apps take effect at once.</summary>

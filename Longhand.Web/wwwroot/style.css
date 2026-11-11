@@ -40,7 +40,6 @@ button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke
 .tool.on { background: var(--trayline); }
 button.accent { background: var(--accent); color: var(--onaccent); border-color: transparent; font-weight: 600; display: flex; align-items: center; gap: 8px; position: relative; }
 button.accent:hover:not(:disabled) { background: var(--accent); filter: brightness(1.1); }
-#countdown { position: absolute; left: 8px; right: 8px; bottom: 3px; height: 3px; border-radius: 2px; background: var(--onaccent); opacity: .8; transform-origin: left; transform: scaleX(0); display: none; }
 #spinner { width: 16px; height: 16px; border: 2px solid var(--onaccent); border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 

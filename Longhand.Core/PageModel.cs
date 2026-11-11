@@ -12,9 +12,8 @@ public static class PageLayout
     public const double TextNudge = 3;
     /// <summary>The longest note that can be typed.</summary>
     public const int MaxTyped = 4000;
-    public static readonly TimeSpan PauseBeforeAsking = TimeSpan.FromMilliseconds(2200);
 
-    public const string HintText = "Write anything with your pen: a question, a sum, a sketch. Pause for a moment or tap Ask, and I'll reply right here on the page.";
+    public const string HintText = "Write anything with your pen: a question, a sum, a sketch. Then tap Ask, and I'll reply right here on the page.";
 
     /// <summary>The first ruled line at or below <paramref name="y"/>.</summary>
     public static double RuleAtOrBelow(double y) => Top + Math.Max(0, Math.Ceiling((y - Top) / LineHeight)) * LineHeight;
@@ -80,4 +79,4 @@ public sealed class NoteModel
 public sealed record SnapshotContext(IReadOnlyList<uint> EarlierInk, IReadOnlyList<NoteModel> Replies);
 
 /// <summary>What the Ask button needs to know.</summary>
-public readonly record struct PageState(bool Busy, bool CanAsk, bool Counting);
+public readonly record struct PageState(bool Busy, bool CanAsk);

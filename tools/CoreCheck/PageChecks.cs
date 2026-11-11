@@ -11,7 +11,6 @@ sealed class FakeView : IPageView
     uint _next = 1;
     public readonly List<string> Toasts = new();
     public PageState State;
-    public double? Idle;
     public int Snapshots, Shown;
     public double CharsPerLine = 30;
     public SnapshotContext? LastContext;
@@ -66,7 +65,6 @@ sealed class FakeView : IPageView
     public readonly List<string> Restored = new();
     public void RestoreTyped(string text) => Restored.Add(text);
     public void StateChanged(PageState state) => State = state;
-    public void IdleProgress(double? progress) => Idle = progress;
 }
 
 /// <summary>Conversations kept in memory, with the ink of each saved alongside its notes.</summary>
@@ -134,9 +132,9 @@ static class PageChecks
         // ----- writing and asking -----
         var first = view.Draw(160, 200);
         session.StrokesCollected(new[] { first });
-        check("writing makes the page askable and starts the pause", view.State.CanAsk && session.PendingCount == 1 && view.Idle is not null && view.State.Counting);
-        session.StrokeStarted();
-        check("putting the pen down again stops the pause", view.Idle is null && !view.State.Counting);
+        check("writing makes the page askable", view.State.CanAsk && session.PendingCount == 1);
+        await Task.Delay(2600);
+        check("but nothing is asked until Ask is tapped, however long the pen rests", api.Requests.Count(r => r.Path.EndsWith("/messages")) == 0 && session.Notes.All(n => n.IsHint) && session.PendingCount == 1);
 
         await session.AskAsync();
         var reply = session.Notes.Single(n => !n.IsHint);
@@ -188,10 +186,9 @@ static class PageChecks
         check("a rejected key says so and leaves no half answer", view.Toasts.Any(t => t.Contains("rejected")) && session.Notes.Count == notesBefore && !view.State.Busy);
         check("the writing can be asked again", session.PendingCount == 1 && view.State.CanAsk);
 
-        // ----- pause-to-ask -----
         view.Toasts.Clear();
-        session.ScheduleIdle();
-        check("the pause counts down and then asks by itself", await Until(() => session.Notes.Count == notesBefore + 1 && !session.Busy, 6000) && session.PendingCount == 0 && session.Notes.All(n => n.Done));
+        await session.AskAsync();
+        check("asking again answers it", await Until(() => session.Notes.Count == notesBefore + 1 && !session.Busy, 6000) && session.PendingCount == 0 && session.Notes.All(n => n.Done));
 
         // ----- conversations -----
         var firstId = session.CurrentId;
@@ -288,7 +285,6 @@ static class PageChecks
         data.ApiKey = null;
         var late = view.Draw(2000, 2040);
         session.StrokesCollected(new[] { late });
-        check("without a key there is no pause to wait for", view.Idle is null);
         view.Toasts.Clear();
         await session.AskAsync();
         check("asking without a key says what to do", view.Toasts.Any(t => t.Contains("API key")) && session.PendingCount == 1);

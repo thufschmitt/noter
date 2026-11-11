@@ -41,7 +41,7 @@ public sealed class PageSession
     readonly HashSet<uint> _pending = new();       // strokes written since Claude last answered
     readonly Stack<UndoStep> _undo = new();
     readonly SemaphoreSlim _saveLock = new(1, 1);
-    CancellationTokenSource? _askCts, _idleCts, _saveCts;
+    CancellationTokenSource? _askCts, _saveCts;
     bool _busy, _loaded, _dirty, _switching, _discardOnCancel;
     ConversationIndex _index = new();
     string _currentId = "";
@@ -80,7 +80,7 @@ public sealed class PageSession
         return bottom;
     }
 
-    void UpdateState() => _view.StateChanged(new PageState(_busy, _busy || _pending.Count > 0, _idleCts is not null));
+    void UpdateState() => _view.StateChanged(new PageState(_busy, _busy || _pending.Count > 0));
 
     /// <summary>The page was resized, so every note is measured again at the new width.</summary>
     public async Task RelayoutAsync()
@@ -95,8 +95,6 @@ public sealed class PageSession
 
     // ---------- ink events ----------
 
-    public void StrokeStarted() => CancelIdle();
-
     public void StrokesCollected(IEnumerable<uint> ids)
     {
         foreach (var id in ids)
@@ -106,7 +104,6 @@ public sealed class PageSession
         }
         _view.ContentChanged();
         UpdateState();
-        ScheduleIdle();
         ScheduleSave();
     }
 
@@ -121,7 +118,6 @@ public sealed class PageSession
         }
         if (any) _undo.Push(new ErasedStrokes(restore));
         UpdateState();
-        ScheduleIdle();
         ScheduleSave();
     }
 
@@ -140,51 +136,6 @@ public sealed class PageSession
         }
         UpdateState();
         ScheduleSave();
-    }
-
-    // ---------- pause-to-ask ----------
-
-    public void ScheduleIdle()
-    {
-        CancelIdle();
-        if (_pending.Count == 0 || _busy || _data.ApiKey is null) return;
-        var cts = _idleCts = new CancellationTokenSource();
-        _view.IdleProgress(0);
-        UpdateState();
-        _ = RunIdleAsync(cts);
-    }
-
-    public void CancelIdle()
-    {
-        var cts = _idleCts;
-        _idleCts = null;
-        if (cts is null) return;
-        cts.Cancel();
-        cts.Dispose();
-        _view.IdleProgress(null);
-        UpdateState();
-    }
-
-    async Task RunIdleAsync(CancellationTokenSource cts)
-    {
-        var start = DateTime.UtcNow;
-        try
-        {
-            while (true)
-            {
-                await Task.Delay(40, cts.Token);
-                double progress = (DateTime.UtcNow - start).TotalMilliseconds / PauseBeforeAsking.TotalMilliseconds;
-                if (progress >= 1) break;
-                _view.IdleProgress(progress);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            return;
-        }
-        if (_idleCts != cts) return;
-        CancelIdle();
-        await AskAsync();
     }
 
     // ---------- asking Claude ----------
@@ -220,7 +171,6 @@ public sealed class PageSession
 
     async Task AskCoreAsync(string? typed)
     {
-        CancelIdle();
         if (_busy || (_pending.Count == 0 && typed is null)) return;
 
         var conversation = _currentId;
@@ -370,8 +320,6 @@ public sealed class PageSession
             _askCts = null;
             UpdateState();
             ScheduleSave();
-            // Only re-arm the pause timer after a good answer, so a failing request is never retried in a loop.
-            if (answered && _pending.Count > 0) ScheduleIdle();
         }
         if (answered && prepared is not null) _ = CompactAsync(prepared.Claude);
     }
@@ -598,7 +546,6 @@ public sealed class PageSession
     /// <summary>Empties the page. What was on it must have been saved already.</summary>
     void ResetPage()
     {
-        CancelIdle();
         _view.ClearStrokes();
         foreach (var n in _notes.ToList()) RemoveNote(n);
         _pending.Clear();
@@ -652,7 +599,6 @@ public sealed class PageSession
                 _askCts?.Cancel();
                 while (_busy) await Task.Delay(20);
             }
-            CancelIdle();
             CancelSave();
             await SaveAsync();
             await change();

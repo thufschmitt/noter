@@ -1,6 +1,6 @@
 # Longhand for Windows
 
-A native Windows prototype of Longhand: one endless ruled notebook page. Write with a pen. When you pause for about two seconds, or tap **Ask**, Claude writes its answer in blue handwriting on the lines just below your ink, and anything further down moves to make room.
+A native Windows prototype of Longhand: one endless ruled notebook page. Write with a pen. When you tap **Ask** (or press Ctrl+Enter), Claude writes its answer in blue handwriting on the lines just below your ink, and anything further down moves to make room.
 
 It uses Windows Ink (`InkCanvas`), so pen strokes are drawn by the system on its low-latency path, with pressure, palm rejection and the pen's eraser end built in.
 
@@ -42,8 +42,7 @@ After that, starting the app from the Start menu or a tile checks for a newer ve
 |---|---|
 | Pen or mouse | Writes |
 | Touch | Scrolls (the hand button switches fingers to writing) |
-| Pause about 2 s | Claude answers. The small bar in the Ask button fills while it waits. |
-| Ask / Ctrl+Enter | Answers right away. While an answer is coming, the button reads Stop. |
+| Ask / Ctrl+Enter | Claude answers what you wrote since its last answer. Nothing is sent until you ask. While an answer is coming, the button reads Stop. |
 | Eraser button or the pen's eraser end | Erases whole strokes |
 | Ctrl+Z | Undoes the last stroke or erase |
 | Conversations button | Opens the list of conversations: start a new one, switch, rename, or delete (tap twice). Ctrl+N starts a new one. |
@@ -82,8 +81,8 @@ dotnet run --project Longhand.Web           # then open http://127.0.0.1:5080
 - Development: `nix run .#dev` (or `dotnet watch --project Longhand.Web --no-hot-reload run -- --www $PWD/Longhand.Web/wwwroot`, with an absolute path because `dotnet watch` runs the server from the project folder) serves the page from the folder instead of from inside the program, so editing `wwwroot` needs no rebuild; open tabs reload themselves when a file changes, and again when the server comes back after a restart (C# edits restart it under `dotnet watch`). Without `--www` (or `LONGHAND_WWW`) none of this is on.
 - Use one tab at a time: each open tab runs its own copy of the page and saves it, so two tabs on the same conversation overwrite each other.
 - **There is no sign-in.** It listens on loopback by default and refuses requests addressed to another name (DNS rebinding) and writes from another site. To use it from another device, tunnel to it (`ssh -L 5080:127.0.0.1:5080 host`) rather than exposing it.
-- Typing: the keyboard button opens a box above the toolbar. Enter sends (Shift+Enter starts a new line); the note goes on the page in your ink colour, below anything you have written, and Claude answers beneath it. Writing that is waiting to be answered is sent along with it, and typing holds off the pause-to-ask. If the answer fails, the words go back into the box. Up to 4000 characters. The Windows app has the same box (keyboard button in the toolbar); both use the shared `PageSession.TypeAsync`.
-- Write with a pen or mouse; fingers scroll unless you turn on the hand button. The pen's eraser end works, as does the eraser button. Replies, drawings, annotation of earlier replies, undo, conversations and symbols work as in the Windows app, and the pause-to-ask is the same.
+- Typing: the keyboard button opens a box above the toolbar. Enter sends (Shift+Enter starts a new line); the note goes on the page in your ink colour, below anything you have written, and Claude answers beneath it. Writing that is waiting to be answered is sent along with it. If the answer fails, the words go back into the box. Up to 4000 characters. The Windows app has the same box (keyboard button in the toolbar); both use the shared `PageSession.TypeAsync`.
+- Write with a pen or mouse; fingers scroll unless you turn on the hand button. The pen's eraser end works, as does the eraser button. Replies, drawings, annotation of earlier replies, undo, conversations and symbols work as in the Windows app, and asking is the same (Ask or Ctrl+Enter; nothing is sent by itself).
 - Connected apps work as in the Windows app (the link button): MCP servers from the registry search or by address, with a browser sign-in, a pasted token or nothing, and the Nextcloud calendar. The server does the OAuth itself and keeps tokens in `secrets.json` in the data folder (readable only by you); the sign-in returns to `<this server>/oauth/callback`, so open the page at the address you sign in from (`http://127.0.0.1:5080`, or whatever your tunnel exposes). Anthropic's servers call the MCP servers, so they must be reachable from the internet; addresses on private networks are refused. The calendar and "now" in the prompt follow the browser's time zone. For testing only: `LONGHAND_REGISTRY_URL` and `LONGHAND_ALLOW_PRIVATE_APPS=1`.
 - The code is shared like this: `PageSession` (in `Longhand.Core`) is the page: strokes waiting to be answered, notes, asking, undo, saving, conversations. It talks to its screen through `IPageView` and to storage through `IPageData`. The Windows `MainPage` is one implementation (XAML and Windows Ink), `WebConnection` the other (JSON over a WebSocket to `wwwroot/app.js`). A conversation saved by one isn't read by the other: the web version keeps ink as JSON points rather than ISF.
 - Checks: `dotnet run --project tools/WebCheck/WebCheck.csproj` plays a browser over a real WebSocket against a fake API; `tools/BrowserCheck/run.sh` drives headless Chrome over the DevTools protocol (needs node 22).

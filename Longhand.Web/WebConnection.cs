@@ -84,7 +84,6 @@ public sealed class WebConnection : IPageView, IPageData
                 try
                 {
                     if (!_started) return;
-                    _session.CancelIdle();
                     if (_session.Busy)
                     {
                         await _session.AskOrStopAsync();
@@ -215,9 +214,6 @@ public sealed class WebConnection : IPageView, IPageData
             case "width":
                 if (SetWidth(m) && _started) await _session.RelayoutAsync();
                 break;
-            case "strokeStarted":
-                _session.StrokeStarted();
-                break;
             case "stroke":
                 if (!_started || !m.TryGetProperty("stroke", out var raw)) break;
                 var stroke = raw.Deserialize<WebStroke>(Json);
@@ -242,9 +238,6 @@ public sealed class WebConnection : IPageView, IPageData
                 break;
             case "ask":
                 if (_started) await _session.AskOrStopAsync();
-                break;
-            case "keyChanged":
-                _session.ScheduleIdle();
                 break;
             case "new":
                 await _session.NewConversationAsync();
@@ -384,8 +377,7 @@ public sealed class WebConnection : IPageView, IPageData
 
     public void RestoreTyped(string text) => Send("typed", ("text", text));
     public void Toast(string message, double seconds = 3.5) => Send("toast", ("message", message), ("seconds", seconds));
-    public void StateChanged(PageState state) => Send("state", ("busy", state.Busy), ("canAsk", state.CanAsk), ("counting", state.Counting));
-    public void IdleProgress(double? progress) => Send("idle", ("progress", progress));
+    public void StateChanged(PageState state) => Send("state", ("busy", state.Busy), ("canAsk", state.CanAsk));
 
     // ---------- IPageData ----------
 

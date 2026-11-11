@@ -63,7 +63,6 @@ public sealed partial class MainPage : Page, IPageView
         presenter.InputDeviceTypes = CoreInputDeviceTypes.Pen | CoreInputDeviceTypes.Mouse;
         presenter.StrokesCollected += OnStrokesCollected;
         presenter.StrokesErased += OnStrokesErased;
-        presenter.StrokeInput.StrokeStarted += (_, _) => _session.StrokeStarted();
 
         _toastTimer.Tick += (_, _) => { _toastTimer.Stop(); ToastBox.Visibility = Visibility.Collapsed; };
         _reflowTimer.Tick += (_, _) => { _reflowTimer.Stop(); RefreshDrawings(); };
@@ -262,8 +261,6 @@ public sealed partial class MainPage : Page, IPageView
 
     // ---------- typing ----------
 
-    bool _typingNoted;
-
     void ShowTypeBar(bool on)
     {
         TypeBar.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
@@ -278,7 +275,6 @@ public sealed partial class MainPage : Page, IPageView
         var text = TypeBox.Text.Trim();
         if (text.Length == 0) return;
         TypeBox.Text = "";
-        _typingNoted = false;
         await _session.TypeAsync(text);
     }
 
@@ -297,14 +293,6 @@ public sealed partial class MainPage : Page, IPageView
         if (shift) return; // a new line
         e.Handled = true;
         await SendTypedAsync();
-    }
-
-    /// <summary>Typing is writing: it holds off the pause that would otherwise ask by itself while you are still composing.</summary>
-    void TypeBox_TextChanged(object sender, TextChangedEventArgs e)
-    {
-        if (TypeBox.Text.Length == 0 || _typingNoted) return;
-        _typingNoted = true;
-        _session.StrokeStarted();
     }
 
     // ---------- toolbar ----------
@@ -661,19 +649,8 @@ public sealed partial class MainPage : Page, IPageView
     {
         AskLabel.Text = state.Busy ? "Stop" : "Ask";
         BusyRing.IsActive = state.Busy;
-        AskIcon.Visibility = state.Busy || state.Counting ? Visibility.Collapsed : Visibility.Visible;
+        AskIcon.Visibility = state.Busy ? Visibility.Collapsed : Visibility.Visible;
         AskButton.IsEnabled = state.CanAsk;
-    }
-
-    void IPageView.IdleProgress(double? progress)
-    {
-        if (progress is null)
-        {
-            Countdown.Visibility = Visibility.Collapsed;
-            return;
-        }
-        Countdown.Value = Math.Min(1, progress.Value);
-        Countdown.Visibility = Visibility.Visible;
     }
 
     // ---------- connected apps ----------
@@ -1383,7 +1360,6 @@ public sealed partial class MainPage : Page, IPageView
             var key = box.Password.Trim();
             ApiKeyStore.Save(key);
             ShowToast("API key saved.");
-            _session.ScheduleIdle();
             return key;
         }
         if (choice == ContentDialogResult.Secondary)

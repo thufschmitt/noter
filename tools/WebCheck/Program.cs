@@ -73,12 +73,14 @@ try
         Check("one conversation, open", b.Last("conversations")!.Value.GetProperty("items").GetArrayLength() == 1 && conversation.Length > 0);
 
         // ----- writing -----
-        await b.SendAsync(new { t = "strokeStarted" });
         await b.SendAsync(new { t = "stroke", stroke = new { id = 1, pts = new[] { new[] { 100.0, 160.0 }, new[] { 140.0, 190.0 }, new[] { 180.0, 160.0 } } } });
-        Check("writing makes the page askable and starts the pause", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "state" && m.GetProperty("canAsk").GetBoolean()) && l.Any(m => m.GetProperty("t").GetString() == "idle" && m.GetProperty("progress").ValueKind == JsonValueKind.Number)));
+        Check("writing makes the page askable", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "state" && m.GetProperty("canAsk").GetBoolean())));
+        await Task.Delay(2600);
+        Check("nothing is asked by itself", b.Snapshots == 0 && !api.Requests.Any(r => r.Path.EndsWith("/messages")));
 
-        // ----- asking (the pause does it by itself) -----
-        Check("the pause ends in a reply", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "place" && m.GetProperty("y").GetDouble() == 200), 8000));
+        // ----- asking -----
+        await b.SendAsync(new { t = "ask" });
+        Check("Ask gets a reply", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "place" && m.GetProperty("y").GetDouble() == 200), 8000));
         Check("the browser was asked for a picture of the ink", await b.UntilAsync(_ => b.Snapshots == 1) && b.LastSnapshotRequest.GetProperty("ids").EnumerateArray().Select(e => e.GetInt32()).SequenceEqual(new[] { 1 }));
         Check("the reply text was sent as it arrived", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "text" && m.GetProperty("text").GetString() == "You have a standup at 9.")));
         Check("the request carried the picture the browser drew", api.Requests.Any(r => r.Path.EndsWith("/messages") && r.Body.Contains(FakeBrowser.Png[..40])));
