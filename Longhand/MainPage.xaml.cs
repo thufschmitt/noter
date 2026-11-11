@@ -1348,7 +1348,7 @@ public sealed partial class MainPage : Page, IPageView
         bool hasKey = ApiKeyStore.Load() is not null;
         var box = new PasswordBox { PlaceholderText = hasKey ? "A key is saved. Paste a new one to replace it." : "sk-ant-…", Width = 380 };
         var models = new ComboBox { Width = 380, ItemsSource = ModelChoice.All.Select(o => o.Label).ToList() };
-        models.SelectedIndex = ModelChoice.All.ToList().FindIndex(o => o.Id == ModelStore.Load());
+        models.SelectedIndex = ModelChoice.All.ToList().FindIndex(o => o.Id == _session.CurrentModel);
         var panel = new StackPanel { Spacing = 12 };
         panel.Children.Add(new TextBlock
         {
@@ -1357,8 +1357,9 @@ public sealed partial class MainPage : Page, IPageView
             MaxWidth = 380,
         });
         panel.Children.Add(box);
-        panel.Children.Add(new TextBlock { Text = "Model", Margin = new Thickness(0, 4, 0, -6) });
+        panel.Children.Add(new TextBlock { Text = "Model for this conversation", Margin = new Thickness(0, 4, 0, -6) });
         panel.Children.Add(models);
+        panel.Children.Add(new TextBlock { Text = "Each conversation keeps its own model. New ones start with the one you chose last.", FontSize = 12, Opacity = 0.75, TextWrapping = TextWrapping.Wrap, MaxWidth = 380 });
         var v = Windows.ApplicationModel.Package.Current.Id.Version;
         panel.Children.Add(new TextBlock { Text = $"Longhand version {v.Major}.{v.Minor}.{v.Build}.{v.Revision}", FontSize = 12, Opacity = 0.75, Margin = new Thickness(0, 6, 0, 0) });
         panel.Children.Add(new TextBlock { Text = "Symbols", FontWeight = Windows.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 10, 0, -6) });
@@ -1375,7 +1376,8 @@ public sealed partial class MainPage : Page, IPageView
         if (hasKey) dialog.SecondaryButtonText = "Remove key";
 
         var choice = await dialog.ShowAsync();
-        if (choice != ContentDialogResult.None && models.SelectedIndex >= 0) ModelStore.Save(ModelChoice.All[models.SelectedIndex].Id);
+        if (choice != ContentDialogResult.None && models.SelectedIndex >= 0 && ModelChoice.All[models.SelectedIndex].Id != _session.CurrentModel)
+            await _session.SetModelAsync(ModelChoice.All[models.SelectedIndex].Id);
         if (choice == ContentDialogResult.Primary && !string.IsNullOrWhiteSpace(box.Password))
         {
             var key = box.Password.Trim();

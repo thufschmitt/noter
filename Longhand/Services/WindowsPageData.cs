@@ -23,6 +23,12 @@ public sealed class WindowsPageData : IPageData
 
     public string? ApiKey => ApiKeyStore.Load();
 
+    public string DefaultModel
+    {
+        get => ModelStore.Load();
+        set => ModelStore.Save(value);
+    }
+
     public Task<ConversationIndex> LoadIndexAsync() => ConversationStore.LoadAsync();
     public Task SaveIndexAsync(ConversationIndex index) => ConversationStore.SaveAsync(index);
 
@@ -35,11 +41,11 @@ public sealed class WindowsPageData : IPageData
     public Task DeletePageAsync(string id) => ConversationStore.DeleteAsync(id);
 
     /// <summary>Connected apps whose sign-in can't be renewed are left out and named, since Claude won't have them. The calendar is offered only while a Nextcloud account is connected.</summary>
-    public async Task<PreparedAsk> PrepareAskAsync(string apiKey, CancellationToken ct)
+    public async Task<PreparedAsk> PrepareAskAsync(string apiKey, string model, CancellationToken ct)
     {
         var (connectors, expired) = await ConnectorStore.ActiveAsync(_oauth, ct);
         IReadOnlyList<IAgentTool> tools = NextcloudStore.Load() is { } account ? new IAgentTool[] { new CalendarTool(_nextcloud, account) } : Array.Empty<IAgentTool>();
         var legend = await SymbolStore.LegendAsync();
-        return new PreparedAsk(new ClaudeService(apiKey, connectors, ModelStore.Load(), agentTools: tools), legend, expired);
+        return new PreparedAsk(new ClaudeService(apiKey, connectors, model, agentTools: tools), legend, expired);
     }
 }

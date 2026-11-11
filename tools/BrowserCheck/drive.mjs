@@ -109,8 +109,11 @@ await evaluate(`document.getElementById('settingsButton').click()`);
 
 
 check('the settings dialog opens with the models', await until(`document.getElementById('settings').open && document.getElementById('modelSelect').options.length === 3`));
+check('the picker shows this conversation\'s model', await evaluate(`document.getElementById('modelSelect').value === conversationState.model`));
 await sleep(300);
 await shot('7-settings');
+await evaluate(`(() => { document.getElementById('modelSelect').value = 'claude-sonnet-5-5'; document.getElementById('settingsSave').click(); })()`);
+check('choosing a model there changes this conversation\'s', await until(`!document.getElementById('settings').open && conversationState.model === 'claude-sonnet-5-5'`));
 console.log('console:', JSON.stringify(logs.slice(0, 10)));
 check('no script errors', !logs.some(l => l.startsWith('EXCEPTION')));
 ws.close();

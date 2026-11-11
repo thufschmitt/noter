@@ -61,11 +61,14 @@ public sealed record PreparedAsk(ClaudeService Claude, IReadOnlyList<LegendEntry
 public interface IPageData
 {
     string? ApiKey { get; }
+    /// <summary>The model a new conversation starts with: the one last chosen.</summary>
+    string DefaultModel { get; set; }
     Task<ConversationIndex> LoadIndexAsync();
     Task SaveIndexAsync(ConversationIndex index);
     /// <summary>Loads a conversation's notes, and puts its ink on the page (the platform keeps the ink). Null when nothing is saved yet.</summary>
     Task<List<SavedNote>?> LoadPageAsync(string id);
     Task SavePageAsync(string id, IReadOnlyList<SavedNote> notes);
     Task DeletePageAsync(string id);
-    Task<PreparedAsk> PrepareAskAsync(string apiKey, CancellationToken ct);
+    /// <param name="model">The model the open conversation is answered by.</param>
+    Task<PreparedAsk> PrepareAskAsync(string apiKey, string model, CancellationToken ct);
 }

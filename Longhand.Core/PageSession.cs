@@ -63,7 +63,7 @@ public sealed class PageSession
     public async Task StartAsync()
     {
         _index = await _data.LoadIndexAsync();
-        var start = _index.Find(_index.CurrentId) ?? _index.Newest().FirstOrDefault() ?? _index.Create(DateTimeOffset.UtcNow);
+        var start = _index.Find(_index.CurrentId) ?? _index.Newest().FirstOrDefault() ?? _index.Create(DateTimeOffset.UtcNow, _data.DefaultModel);
         await ShowConversationAsync(start.Id);
         await _data.SaveIndexAsync(_index);
         _loaded = true;
@@ -303,7 +303,7 @@ public sealed class PageSession
         try
         {
             // Connected apps whose sign-in can't be renewed are skipped; say so, since Claude won't have them.
-            prepared = await _data.PrepareAskAsync(key, ct);
+            prepared = await _data.PrepareAskAsync(key, CurrentModel, ct);
             if (prepared.ExpiredApps.Count > 0) _view.Toast("Sign in again to " + string.Join(", ", prepared.ExpiredApps) + " (apps button).", 6);
 
             var (summary, after) = Conversation(prepared.Claude.Model);
@@ -611,6 +611,8 @@ public sealed class PageSession
         ResetPage();
         _currentId = id;
         _index.CurrentId = id;
+        // A conversation from before each had its own model keeps the one it is opened with, whatever is chosen elsewhere later.
+        if (_index.Find(id) is { Model: null }) _index.SetModel(id, _data.DefaultModel);
 
         var saved = await _data.LoadPageAsync(id);
         if (saved is { Count: > 0 })
@@ -666,6 +668,22 @@ public sealed class PageSession
         }
     }
 
+    /// <summary>The model the open conversation is answered by.</summary>
+    public string CurrentModel => ModelChoice.Resolve(_index.Find(_currentId)?.Model ?? _data.DefaultModel);
+
+    /// <summary>
+    /// Changes the model the open conversation is answered by. It also becomes the one new conversations start with, so the
+    /// last choice carries on.
+    /// </summary>
+    public async Task SetModelAsync(string model)
+    {
+        model = ModelChoice.Resolve(model);
+        _data.DefaultModel = model;
+        if (_currentId.Length == 0 || _index.Find(_currentId) is null) return;
+        _index.SetModel(_currentId, model);
+        await SaveIndexAsync();
+    }
+
     public async Task NewConversationAsync()
     {
         // An empty page already is a fresh conversation.
@@ -673,7 +691,7 @@ public sealed class PageSession
         await SwitchAsync(async () =>
         {
             await DropBlankAsync(keepId: null);
-            var created = _index.Create(DateTimeOffset.UtcNow);
+            var created = _index.Create(DateTimeOffset.UtcNow, _data.DefaultModel);
             await ShowConversationAsync(created.Id);
             await SaveIndexAsync();
         });
@@ -705,7 +723,7 @@ public sealed class PageSession
             await _data.DeletePageAsync(id);
             _dirty = false; // what was just deleted must not be saved again
             _currentId = "";
-            await ShowConversationAsync(next ?? _index.Create(DateTimeOffset.UtcNow).Id);
+            await ShowConversationAsync(next ?? _index.Create(DateTimeOffset.UtcNow, _data.DefaultModel).Id);
             await SaveIndexAsync();
         });
     }

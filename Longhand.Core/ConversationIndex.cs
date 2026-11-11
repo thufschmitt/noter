@@ -7,8 +7,11 @@ using System.Text.RegularExpressions;
 
 namespace Longhand.Services;
 
-/// <summary>One conversation in the list. <c>AutoTitle</c> comes from the first exchange; a name the user gave wins over it.</summary>
-public sealed record Conversation(string Id, string AutoTitle, string CustomTitle, DateTimeOffset Updated, bool Blank)
+/// <summary>
+/// One conversation in the list. <c>AutoTitle</c> comes from the first exchange; a name the user gave wins over it.
+/// <c>Model</c> is the Claude model this conversation is answered by (null for one saved before each had its own).
+/// </summary>
+public sealed record Conversation(string Id, string AutoTitle, string CustomTitle, DateTimeOffset Updated, bool Blank, string? Model = null)
 {
     [JsonIgnore]
     public string Title => CustomTitle.Length > 0 ? CustomTitle : AutoTitle.Length > 0 ? AutoTitle : "New conversation";
@@ -47,10 +50,10 @@ public sealed class ConversationIndex
 
     public IEnumerable<Conversation> Newest() => Items.OrderByDescending(c => c.Updated);
 
-    /// <summary>Adds an empty conversation and makes it the open one.</summary>
-    public Conversation Create(DateTimeOffset now)
+    /// <summary>Adds an empty conversation, answered by <paramref name="model"/>, and makes it the open one.</summary>
+    public Conversation Create(DateTimeOffset now, string? model = null)
     {
-        var created = new Conversation(Guid.NewGuid().ToString("N"), "", "", now, Blank: true);
+        var created = new Conversation(Guid.NewGuid().ToString("N"), "", "", now, Blank: true, model);
         Items.Add(created);
         CurrentId = created.Id;
         return created;
@@ -71,6 +74,9 @@ public sealed class ConversationIndex
         var title = TitleFrom(heard);
         if (title.Length > 0) Change(id, c => c.AutoTitle.Length > 0 ? c : c with { AutoTitle = title });
     }
+
+    /// <summary>Sets the model the conversation is answered by.</summary>
+    public void SetModel(string id, string model) => Change(id, c => c with { Model = ModelChoice.Resolve(model) });
 
     /// <summary>An empty name goes back to the automatic title.</summary>
     public void Rename(string id, string name) => Change(id, c => c with { CustomTitle = Collapse(name) });

@@ -77,6 +77,9 @@ sealed class FakeData : IPageData
     string _indexJson = "";
     public readonly Dictionary<string, (List<SavedNote> Notes, List<StrokeSpan> Ink)> Pages = new();
     public string? ApiKey { get; set; } = "sk-ant-test";
+    public string DefaultModel { get; set; } = "claude-haiku-5-5";
+    /// <summary>The model each Ask was prepared with.</summary>
+    public readonly List<string> AskedModels = new();
 
     public FakeData(FakeView view, string baseUrl)
     {
@@ -95,8 +98,11 @@ sealed class FakeData : IPageData
     }
     public Task SavePageAsync(string id, IReadOnlyList<SavedNote> notes) { Pages[id] = (notes.ToList(), _view.Ink.ToList()); return Task.CompletedTask; }
     public Task DeletePageAsync(string id) { Pages.Remove(id); return Task.CompletedTask; }
-    public Task<PreparedAsk> PrepareAskAsync(string apiKey, System.Threading.CancellationToken ct) =>
-        Task.FromResult(new PreparedAsk(new ClaudeService(apiKey, model: "claude-haiku-5-5", baseUrl: _baseUrl), Array.Empty<LegendEntry>(), Array.Empty<string>()));
+    public Task<PreparedAsk> PrepareAskAsync(string apiKey, string model, System.Threading.CancellationToken ct)
+    {
+        AskedModels.Add(model);
+        return Task.FromResult(new PreparedAsk(new ClaudeService(apiKey, model: model, baseUrl: _baseUrl), Array.Empty<LegendEntry>(), Array.Empty<string>()));
+    }
 }
 
 /// <summary>Checks for the page itself: asking, annotating, undo, conversations and saving, run against a fake screen and a fake API.</summary>

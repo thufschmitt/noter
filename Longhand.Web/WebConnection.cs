@@ -255,6 +255,10 @@ public sealed class WebConnection : IPageView, IPageData
             case "delete":
                 if (Str(m, "id") is { } delete && _session.Index.Find(delete) is not null) await _session.DeleteConversationAsync(delete);
                 break;
+            case "model":
+                // The model of the open conversation (and so of new ones after it).
+                if (_started && Str(m, "id") is { } model) await _session.SetModelAsync(model);
+                break;
             case "rename":
                 if (Str(m, "id") is { } rename && _session.Index.Find(rename) is not null) await _session.RenameConversationAsync(rename, Str(m, "name") ?? "");
                 break;
@@ -387,6 +391,12 @@ public sealed class WebConnection : IPageView, IPageData
 
     public string? ApiKey => _store.ApiKey;
 
+    public string DefaultModel
+    {
+        get => _store.Model;
+        set => _store.Model = value;
+    }
+
     public Task<ConversationIndex> LoadIndexAsync() => _store.LoadIndexAsync();
 
     public async Task SaveIndexAsync(ConversationIndex index)
@@ -394,6 +404,7 @@ public sealed class WebConnection : IPageView, IPageData
         await _store.SaveIndexAsync(index);
         Send("conversations",
             ("current", index.CurrentId),
+            ("model", ModelChoice.Resolve(index.Find(index.CurrentId)?.Model ?? _store.Model)),
             ("items", index.Newest().Select(c => new { id = c.Id, title = c.Title, updated = c.Updated })));
     }
 
@@ -409,10 +420,10 @@ public sealed class WebConnection : IPageView, IPageData
     public Task DeletePageAsync(string id) => _store.DeletePageAsync(id);
 
     /// <summary>Connected apps whose sign-in can't be renewed are left out and named, since Claude won't have them. The calendar is offered only while a Nextcloud account is connected.</summary>
-    public async Task<PreparedAsk> PrepareAskAsync(string apiKey, CancellationToken ct)
+    public async Task<PreparedAsk> PrepareAskAsync(string apiKey, string model, CancellationToken ct)
     {
         var (connectors, expired) = await _apps.ActiveAsync(ct);
         IReadOnlyList<IAgentTool> tools = _store.Nextcloud.Load() is { } account ? new IAgentTool[] { new CalendarTool(_apps.NextcloudClient, account, _zone) } : Array.Empty<IAgentTool>();
-        return new PreparedAsk(new ClaudeService(apiKey, connectors, _store.Model, _store.AnthropicBaseUrl, tools, _zone), _store.Legend(), expired);
+        return new PreparedAsk(new ClaudeService(apiKey, connectors, model, _store.AnthropicBaseUrl, tools, _zone), _store.Legend(), expired);
     }
 }

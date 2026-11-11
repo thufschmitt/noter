@@ -675,7 +675,9 @@ async function openSettings(needKey) {
   $('version').textContent = 'Longhand version ' + s.version;
   const select = $('modelSelect');
   select.textContent = '';
-  for (const m of s.models) select.append(new Option(m.label, m.id, false, m.id === s.model));
+  // The model belongs to the open conversation; the server says which it is with the conversation list.
+  const current = conversationState?.model || s.model;
+  for (const m of s.models) select.append(new Option(m.label, m.id, false, m.id === current));
   resetSymbolForm();
   await loadSymbols();
   if (!$('settings').open) $('settings').showModal();
@@ -687,7 +689,9 @@ $('removeKey').onclick = async () => { await api('PUT', '/api/settings', { remov
 $('settingsSave').onclick = async () => {
   const key = $('keyInput').value.trim();
   try {
-    await api('PUT', '/api/settings', { model: $('modelSelect').value, apiKey: key || undefined });
+    if (key) await api('PUT', '/api/settings', { apiKey: key });
+    const model = $('modelSelect').value;
+    if (model && model !== conversationState?.model) send({ t: 'model', id: model });
     $('settings').close();
     if (key) { toast('API key saved.'); send({ t: 'keyChanged' }); }
   } catch (e) { toast(e.message); }
