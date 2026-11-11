@@ -137,6 +137,12 @@ jobs:
         run: |
           mkdir upload
           find dist -name '*.msix' -exec cp {} upload/ \;
+          # The framework packages each build depends on (WinUI 2), named by architecture since they share a file name.
+          for arch in x64 arm64; do
+            find dist -ipath "*/Dependencies/$arch/*.appx" | while read -r dep; do
+              cp "$dep" "upload/$(basename "${dep%.appx}")_$arch.appx"
+            done
+          done
           cp "$(find dist -name Longhand.cer | head -1)" upload/Longhand.cer
           ls -l upload
           gh release create "v$VERSION" upload/* \
