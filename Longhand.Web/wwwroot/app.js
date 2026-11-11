@@ -914,7 +914,7 @@ function renderNextcloud() {
       button('Check', 'Check', async () => {
         try {
           const { calendars } = await api('POST', '/api/nextcloud/check');
-          appsSay(calendars.length === 0 ? 'No calendars found.' : 'Claude can read: ' + calendars.join(', ') + '.');
+          appsSay(calendars.length === 0 ? 'No calendars found.' : 'Claude can use: ' + calendars.join(', ') + '.');
         } catch (e) { appsSay(e.message); }
       }),
       button('Disconnect', 'Disconnect', async () => { await api('POST', '/api/nextcloud/disconnect'); appsSay('Disconnected from Nextcloud.'); loadApps(); }),
@@ -924,7 +924,7 @@ function renderNextcloud() {
   }
   const intro = document.createElement('p');
   intro.className = 'note-text';
-  intro.textContent = "Lets Claude read your calendar (it can't change anything). You approve the connection in your browser; no password is typed here.";
+  intro.textContent = "Lets Claude read your calendar, and add, change or delete events when you ask it to. You approve the connection in your browser; no password is typed here.";
   const server = document.createElement('input');
   server.placeholder = 'Your Nextcloud, like cloud.example.com';
   const connect = button(n.pending ? 'Waiting for you to approve…' : 'Connect', 'Connect', async () => {
@@ -939,7 +939,7 @@ function renderNextcloud() {
       const d = appsData.nextcloud;
       if (d.connected) {
         const { calendars } = await api('POST', '/api/nextcloud/check');
-        appsSay(calendars.length === 0 ? 'Connected, but no calendars were found.' : 'Connected. Claude can read: ' + calendars.join(', ') + '.');
+        appsSay(calendars.length === 0 ? 'Connected, but no calendars were found.' : 'Connected. Claude can use: ' + calendars.join(', ') + '.');
       } else if (d.error) appsSay("Couldn't connect to Nextcloud: " + d.error);
     } catch (e) {
       if (win) win.close();

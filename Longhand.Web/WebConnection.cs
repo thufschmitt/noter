@@ -423,7 +423,7 @@ public sealed class WebConnection : IPageView, IPageData
     public async Task<PreparedAsk> PrepareAskAsync(string apiKey, string model, CancellationToken ct)
     {
         var (connectors, expired) = await _apps.ActiveAsync(ct);
-        IReadOnlyList<IAgentTool> tools = _store.Nextcloud.Load() is { } account ? new IAgentTool[] { new CalendarTool(_apps.NextcloudClient, account, _zone) } : Array.Empty<IAgentTool>();
+        IReadOnlyList<IAgentTool> tools = _store.Nextcloud.Load() is { } account ? CalendarTools.For(_apps.NextcloudClient, account, _zone) : Array.Empty<IAgentTool>();
         return new PreparedAsk(new ClaudeService(apiKey, connectors, model, _store.AnthropicBaseUrl, tools, _zone), _store.Legend(), expired);
     }
 }

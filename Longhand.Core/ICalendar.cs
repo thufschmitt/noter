@@ -1,15 +1,26 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 
 namespace Longhand.Services;
 
-/// <summary>One occurrence of an event. <c>Start</c> and <c>End</c> are instants for timed events; all-day events use whole dates.</summary>
-public sealed record CalendarEvent(string Calendar, string Title, DateTimeOffset Start, DateTimeOffset End, bool AllDay, string Location, string Description);
+/// <summary>
+/// One occurrence of an event. <c>Start</c> and <c>End</c> are instants for timed events; all-day events use whole dates (midnight
+/// UTC, end exclusive). <c>Id</c> names the event on the server (empty when it isn't known); <c>Repeats</c> is true for an
+/// occurrence of a repeating event.
+/// </summary>
+public sealed record CalendarEvent(string Calendar, string Title, DateTimeOffset Start, DateTimeOffset End, bool AllDay, string Location, string Description, string Id = "", bool Repeats = false);
 
-/// <summary>Reads the few iCalendar (RFC 5545) properties needed to list events.</summary>
+/// <summary>When an event is: instants for a timed one; for an all-day one, the dates of <c>Start</c> and <c>End</c> (end exclusive).</summary>
+public sealed record EventWhen(DateTimeOffset Start, DateTimeOffset End, bool AllDay);
+
+/// <summary>What to change in an event. Null leaves that part as it is; an empty location or description removes it.</summary>
+public sealed record EventChange(string? Title = null, EventWhen? When = null, string? Location = null, string? Description = null);
+
+/// <summary>Reads the few iCalendar (RFC 5545) properties needed to list events, and writes the events Longhand makes or changes.</summary>
 public static class ICalendar
 {
     /// <param name="floatingZone">The zone for times written without one (floating times).</param>
@@ -60,7 +71,8 @@ public static class ICalendar
 
         string Text(string key) => p.TryGetValue(key, out var v) ? Unescape(v.Value) : "";
         var title = Text("SUMMARY");
-        return new CalendarEvent(calendar, title.Length > 0 ? title : "(no title)", from.Value, to, allDay, Text("LOCATION"), Text("DESCRIPTION"));
+        bool repeats = p.ContainsKey("RRULE") || p.ContainsKey("RDATE") || p.ContainsKey("RECURRENCE-ID");
+        return new CalendarEvent(calendar, title.Length > 0 ? title : "(no title)", from.Value, to, allDay, Text("LOCATION"), Text("DESCRIPTION"), Repeats: repeats);
     }
 
     /// <summary>Handles UTC ("...Z"), zoned (TZID=...), floating and date-only (VALUE=DATE) values.</summary>
@@ -135,6 +147,113 @@ public static class ICalendar
             if (eq > 0) parameters[head[i][..eq]] = head[i][(eq + 1)..];
         }
         return (head[0].ToUpperInvariant(), parameters, line[(colon + 1)..]);
+    }
+
+    // ---------- writing ----------
+
+    /// <summary>A calendar holding one new event.</summary>
+    public static string NewEvent(string uid, string title, EventWhen when, string? location, string? description, DateTimeOffset now)
+    {
+        var lines = new List<string> { "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Longhand//Longhand//EN", "BEGIN:VEVENT", "UID:" + uid, "DTSTAMP:" + Utc(now), "CREATED:" + Utc(now) };
+        lines.AddRange(Times(when));
+        lines.Add("SUMMARY:" + Escape(title));
+        if (!string.IsNullOrWhiteSpace(location)) lines.Add("LOCATION:" + Escape(location));
+        if (!string.IsNullOrWhiteSpace(description)) lines.Add("DESCRIPTION:" + Escape(description));
+        lines.AddRange(new[] { "END:VEVENT", "END:VCALENDAR" });
+        return Join(lines);
+    }
+
+    /// <summary>
+    /// The calendar with its one event changed, everything else in it kept as it was (alarms, attendees, categories…). Null,
+    /// with the reason, for a repeating event or anything else that isn't one plain event.
+    /// </summary>
+    public static string? Change(string ics, EventChange change, DateTimeOffset now, out string? problem)
+    {
+        problem = null;
+        var lines = Unfold(ics).ToList();
+        var events = lines.Count(l => SplitLine(l) is ("BEGIN", _, var v) && v.Equals("VEVENT", StringComparison.OrdinalIgnoreCase));
+        if (events != 1)
+        {
+            problem = events == 0 ? "That isn't an event." : "That is a repeating event; Longhand can't change repeating events.";
+            return null;
+        }
+
+        var replaced = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "DTSTAMP", "LAST-MODIFIED", "SEQUENCE" };
+        if (change.Title is not null) replaced.Add("SUMMARY");
+        if (change.Location is not null) replaced.Add("LOCATION");
+        if (change.Description is not null) replaced.Add("DESCRIPTION");
+        if (change.When is not null) replaced.UnionWith(new[] { "DTSTART", "DTEND", "DURATION" });
+
+        var result = new List<string>();
+        int sequence = 0, depth = 0;
+        bool inEvent = false;
+        foreach (var line in lines)
+        {
+            var (name, _, value) = SplitLine(line);
+            if (name == "BEGIN" && value.Equals("VEVENT", StringComparison.OrdinalIgnoreCase)) { inEvent = true; result.Add(line); continue; }
+            if (inEvent && name == "BEGIN") depth++;
+            if (inEvent && depth == 0)
+            {
+                if (name is "RRULE" or "RDATE" or "RECURRENCE-ID")
+                {
+                    problem = "That is a repeating event; Longhand can't change repeating events.";
+                    return null;
+                }
+                if (name == "SEQUENCE" && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n)) sequence = n;
+                if (name == "END" && value.Equals("VEVENT", StringComparison.OrdinalIgnoreCase))
+                {
+                    result.Add("DTSTAMP:" + Utc(now));
+                    result.Add("LAST-MODIFIED:" + Utc(now));
+                    result.Add("SEQUENCE:" + (sequence + 1).ToString(CultureInfo.InvariantCulture));
+                    if (change.When is { } when) result.AddRange(Times(when));
+                    if (change.Title is not null) result.Add("SUMMARY:" + Escape(change.Title));
+                    if (!string.IsNullOrWhiteSpace(change.Location)) result.Add("LOCATION:" + Escape(change.Location));
+                    if (!string.IsNullOrWhiteSpace(change.Description)) result.Add("DESCRIPTION:" + Escape(change.Description));
+                    result.Add(line);
+                    inEvent = false;
+                    continue;
+                }
+                if (replaced.Contains(name)) continue;
+            }
+            if (inEvent && name == "END" && depth > 0) depth--;
+            result.Add(line);
+        }
+        return Join(result);
+    }
+
+    static IEnumerable<string> Times(EventWhen when) => when.AllDay
+        ? new[] { "DTSTART;VALUE=DATE:" + Date(when.Start), "DTEND;VALUE=DATE:" + Date(when.End) }
+        : new[] { "DTSTART:" + Utc(when.Start), "DTEND:" + Utc(when.End) };
+
+    static string Utc(DateTimeOffset t) => t.UtcDateTime.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
+    static string Date(DateTimeOffset t) => t.DateTime.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
+
+    static string Escape(string text) =>
+        text.Replace("\\", "\\\\").Replace(";", "\\;").Replace(",", "\\,").Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\\n");
+
+    /// <summary>CRLF line ends, and lines longer than 75 bytes folded, as RFC 5545 asks.</summary>
+    static string Join(IEnumerable<string> lines)
+    {
+        var text = new StringBuilder();
+        foreach (var line in lines)
+        {
+            int bytes = 0;
+            var e = StringInfo.GetTextElementEnumerator(line);
+            while (e.MoveNext())
+            {
+                var piece = e.GetTextElement();
+                int size = Encoding.UTF8.GetByteCount(piece);
+                if (bytes + size > 75)
+                {
+                    text.Append("\r\n ");
+                    bytes = 1;
+                }
+                text.Append(piece);
+                bytes += size;
+            }
+            text.Append("\r\n");
+        }
+        return text.ToString();
     }
 
     static string Unescape(string value) =>

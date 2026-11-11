@@ -93,7 +93,7 @@ static class AgentChecks
             check("polling waits until approved, then returns the app password", account.User == FakeNextcloud.User && account.Password == FakeNextcloud.Password && account.Server == server.BaseUrl);
 
             var calendars = await nc.ListCalendarsAsync(account, default);
-            check("only event calendars are listed", calendars.Count == 1 && calendars[0].Name == "Personal");
+            check("only event calendars are listed, with which ones may be written", calendars.Select(c => c.Name).SequenceEqual(new[] { "Personal", "Team" }) && calendars[0].Writable && !calendars[1].Writable);
 
             server.Ics = Ics.Replace("\r\n", "\n").Replace("\n", "\r\n");
             var tool = new CalendarTool(nc, account, Plus1, () => from);

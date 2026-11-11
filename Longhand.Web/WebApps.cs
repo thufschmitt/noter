@@ -223,7 +223,7 @@ public sealed class WebApps
         app.MapPost("/api/nextcloud/check", async (HttpContext ctx) =>
         {
             if (_store.Nextcloud.Load() is not { } account) return Results.BadRequest(new { error = "Nextcloud isn't connected." });
-            try { return Results.Ok(new { calendars = (await _nextcloud.ListCalendarsAsync(account, ctx.RequestAborted)).Select(c => c.Name) }); }
+            try { return Results.Ok(new { calendars = (await _nextcloud.ListCalendarsAsync(account, ctx.RequestAborted)).Select(c => c.Label) }); }
             catch (OperationCanceledException) { return Results.StatusCode(499); }
             catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
         });

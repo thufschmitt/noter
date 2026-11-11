@@ -7,6 +7,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
@@ -18,11 +19,19 @@ public sealed record NextcloudAccount(string Server, string User, string Passwor
 
 public sealed record NextcloudLoginStart(Uri LoginUrl, Uri PollEndpoint, string PollToken);
 
-public sealed record CalendarInfo(string Name, string Href);
+/// <summary>A calendar: its name, its address on the server, and whether this account may add and change events in it.</summary>
+public sealed record CalendarInfo(string Name, string Href, bool Writable = true)
+{
+    /// <summary>The last part of its address ("personal"), which with an event's file name makes the event's id.</summary>
+    public string Segment => Href.TrimEnd('/').Split('/').Last();
+
+    /// <summary>Its name as the connected-apps dialog lists it: one Claude may only read says so.</summary>
+    public string Label => Writable ? Name : Name + " (read only)";
+}
 
 /// <summary>
 /// Talks to a Nextcloud server: signing in through its browser login (Login Flow v2, which hands back an app password so
-/// nothing has to be typed or pasted) and reading calendars over CalDAV. Read-only.
+/// nothing has to be typed or pasted) and reading and writing calendar events over CalDAV.
 /// </summary>
 public sealed class Nextcloud
 {
@@ -156,7 +165,7 @@ public sealed class Nextcloud
     {
         const string body = """
             <d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
-              <d:prop><d:displayname/><d:resourcetype/><c:supported-calendar-component-set/></d:prop>
+              <d:prop><d:displayname/><d:resourcetype/><c:supported-calendar-component-set/><d:current-user-privilege-set/></d:prop>
             </d:propfind>
             """;
         var home = Under(account.Server, "/remote.php/dav/calendars/" + Uri.EscapeDataString(account.User) + "/");
@@ -172,7 +181,10 @@ public sealed class Nextcloud
             var href = (string?)response.Element(D + "href");
             if (href is null) continue;
             var name = (string?)props.Element(D + "displayname");
-            calendars.Add(new CalendarInfo(string.IsNullOrWhiteSpace(name) ? href.TrimEnd('/').Split('/').Last() : name, href));
+            // A calendar shared with this account read-only says so in its privileges; a server that doesn't say is trusted to refuse.
+            var privileges = props.Element(D + "current-user-privilege-set")?.Descendants(D + "privilege").SelectMany(p => p.Elements()).Select(e => e.Name).ToList();
+            bool writable = privileges is null || privileges.Count == 0 || privileges.Any(n => n == D + "all" || n == D + "write" || n == D + "write-content" || n == D + "bind");
+            calendars.Add(new CalendarInfo(string.IsNullOrWhiteSpace(name) ? href.TrimEnd('/').Split('/').Last() : name, href, writable));
         }
         return calendars;
     }
@@ -192,9 +204,87 @@ public sealed class Nextcloud
         foreach (var calendar in await ListCalendarsAsync(account, ct))
         {
             var doc = await DavAsync(account, "REPORT", new Uri(new Uri(account.Server.TrimEnd('/') + "/"), calendar.Href), "1", body, ct);
-            foreach (var data in doc.Descendants(C + "calendar-data"))
-                events.AddRange(ICalendar.ParseEvents(data.Value, calendar.Name, floatingZone));
+            foreach (var response in doc.Descendants(D + "response"))
+            {
+                var data = response.Descendants(C + "calendar-data").FirstOrDefault();
+                if (data is null) continue;
+                // The event's id is its calendar and file name ("personal/abc.ics"), as the server spells them.
+                var href = ((string?)response.Element(D + "href") ?? "").TrimEnd('/');
+                var id = calendar.Segment + "/" + href.Split('/').Last();
+                foreach (var e in ICalendar.ParseEvents(data.Value, calendar.Name, floatingZone))
+                    events.Add(e with { Id = IsEventId(id) ? id : "" });
+            }
         }
         return events;
+    }
+
+    // ---------- single events ----------
+
+    static readonly Regex EventId = new(@"^[A-Za-z0-9._~%@+=:,!$&'()*-]+/[A-Za-z0-9._~%@+=:,!$&'()*-]+\.ics$", RegexOptions.Compiled);
+
+    /// <summary>Whether this is an event id as <see cref="EventsAsync"/> gives them: a calendar and a file name, nothing that climbs out.</summary>
+    public static bool IsEventId(string? id) => id is not null && EventId.IsMatch(id) && !id.Split('/').Any(part => part is "." or "..");
+
+    Uri EventUri(NextcloudAccount account, string id)
+    {
+        if (!IsEventId(id)) throw new InvalidOperationException("That isn't an event id from the calendar. Read the calendar to find the event first.");
+        // The id is already spelled as the server's address spells it, so it is used as is.
+        return new Uri(account.Server.TrimEnd('/') + "/remote.php/dav/calendars/" + Uri.EscapeDataString(account.User) + "/" + id);
+    }
+
+    async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        var response = await _http.SendAsync(request, ct);
+        switch (response.StatusCode)
+        {
+            case HttpStatusCode.Unauthorized:
+                response.Dispose();
+                throw new InvalidOperationException("Nextcloud no longer accepts the saved sign-in. Connect to Nextcloud again in the connected apps.");
+            case HttpStatusCode.Forbidden:
+                response.Dispose();
+                throw new InvalidOperationException("Nextcloud doesn't allow changing that calendar (it may be shared with the user read-only).");
+            case HttpStatusCode.NotFound:
+                response.Dispose();
+                throw new InvalidOperationException("There is no such event in the calendar any more. Read the calendar again.");
+            case HttpStatusCode.PreconditionFailed:
+                response.Dispose();
+                throw new InvalidOperationException("The event changed in the calendar since it was read, so nothing was changed. Read the calendar again.");
+        }
+        if (!response.IsSuccessStatusCode)
+        {
+            var status = (int)response.StatusCode;
+            response.Dispose();
+            throw new InvalidOperationException($"Nextcloud's calendar answered {status}.");
+        }
+        return response;
+    }
+
+    /// <summary>The event's calendar data and its version tag (ETag), which a change or deletion must name.</summary>
+    public async Task<(string Ics, string? ETag)> GetEventAsync(NextcloudAccount account, string id, CancellationToken ct)
+    {
+        using var request = Authorized(HttpMethod.Get, EventUri(account, id), account);
+        using var response = await SendAsync(request, ct);
+        return (await response.Content.ReadAsStringAsync(ct), response.Headers.ETag?.ToString());
+    }
+
+    /// <summary>
+    /// Writes an event. With an ETag, only over that very version of it; without one, only where no event is yet, so nothing
+    /// is ever overwritten unseen.
+    /// </summary>
+    public async Task PutEventAsync(NextcloudAccount account, string id, string ics, string? etag, CancellationToken ct)
+    {
+        using var request = Authorized(HttpMethod.Put, EventUri(account, id), account);
+        request.Content = new StringContent(ics, Encoding.UTF8, "text/calendar");
+        if (etag is null) request.Headers.TryAddWithoutValidation("If-None-Match", "*");
+        else request.Headers.TryAddWithoutValidation("If-Match", etag);
+        using var response = await SendAsync(request, ct);
+    }
+
+    /// <summary>Deletes an event, only if it is still the version that was read.</summary>
+    public async Task DeleteEventAsync(NextcloudAccount account, string id, string? etag, CancellationToken ct)
+    {
+        using var request = Authorized(HttpMethod.Delete, EventUri(account, id), account);
+        if (etag is not null) request.Headers.TryAddWithoutValidation("If-Match", etag);
+        using var response = await SendAsync(request, ct);
     }
 }

@@ -44,7 +44,7 @@ public sealed class WindowsPageData : IPageData
     public async Task<PreparedAsk> PrepareAskAsync(string apiKey, string model, CancellationToken ct)
     {
         var (connectors, expired) = await ConnectorStore.ActiveAsync(_oauth, ct);
-        IReadOnlyList<IAgentTool> tools = NextcloudStore.Load() is { } account ? new IAgentTool[] { new CalendarTool(_nextcloud, account) } : Array.Empty<IAgentTool>();
+        IReadOnlyList<IAgentTool> tools = NextcloudStore.Load() is { } account ? CalendarTools.For(_nextcloud, account) : Array.Empty<IAgentTool>();
         var legend = await SymbolStore.LegendAsync();
         return new PreparedAsk(new ClaudeService(apiKey, connectors, model, agentTools: tools), legend, expired);
     }

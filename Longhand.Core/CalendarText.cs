@@ -40,6 +40,9 @@ public static class CalendarText
             text.Append(" [").Append(e.Calendar).Append(']');
             if (e.Location.Length > 0) text.Append(" @ ").Append(OneLine(e.Location, MaxDescription));
             if (e.Description.Length > 0) text.Append(" — ").Append(OneLine(e.Description, MaxDescription));
+            // What changing or deleting it needs; a repeating event can't be changed from here.
+            if (e.Repeats) text.Append(" (repeats)");
+            if (e.Id.Length > 0) text.Append(" {id: ").Append(e.Id).Append('}');
             text.AppendLine();
         }
         if (shown.Count > MaxEvents) text.AppendLine().Append(culture, $"({shown.Count - MaxEvents} more events not shown; ask for a shorter range.)");

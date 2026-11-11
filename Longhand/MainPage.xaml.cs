@@ -991,7 +991,7 @@ public sealed partial class MainPage : Page, IPageView
             {
                 nextcloud.Children.Add(new TextBlock
                 {
-                    Text = "Lets Claude read your calendar (it can't change anything). You approve the connection in your browser; no password is typed here.",
+                    Text = "Lets Claude read your calendar, and add, change or delete events when you ask it to. You approve the connection in your browser; no password is typed here.",
                     TextWrapping = TextWrapping.Wrap,
                     FontSize = 12,
                     Opacity = 0.75,
@@ -1013,7 +1013,7 @@ public sealed partial class MainPage : Page, IPageView
                         var calendars = await _nextcloud.ListCalendarsAsync(connected, cts.Token);
                         message.Text = calendars.Count == 0
                             ? "Connected, but no calendars were found."
-                            : "Connected. Claude can read: " + string.Join(", ", calendars.Select(c => c.Name)) + ".";
+                            : "Connected. Claude can use: " + string.Join(", ", calendars.Select(c => c.Label)) + ".";
                     }
                     catch (OperationCanceledException)
                     {
@@ -1038,7 +1038,7 @@ public sealed partial class MainPage : Page, IPageView
                     try
                     {
                         var calendars = await _nextcloud.ListCalendarsAsync(account, cts.Token);
-                        message.Text = calendars.Count == 0 ? "No calendars found." : "Claude can read: " + string.Join(", ", calendars.Select(c => c.Name)) + ".";
+                        message.Text = calendars.Count == 0 ? "No calendars found." : "Claude can use: " + string.Join(", ", calendars.Select(c => c.Label)) + ".";
                     }
                     catch (OperationCanceledException)
                     {

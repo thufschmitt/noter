@@ -74,6 +74,9 @@ sealed class FakeNextcloud : FakeServer
     int _polls;
 
     public string Ics { get; set; } = "";
+    /// <summary>Single events, by their path under the user's calendars ("personal/x.ics"): their data and version tag.</summary>
+    public Dictionary<string, (string Ics, string ETag)> Events { get; } = new();
+    int _versions;
 
     protected override async Task Handle(Request r, HttpListenerResponse response)
     {
@@ -99,7 +102,11 @@ sealed class FakeNextcloud : FakeServer
                   <d:response><d:href>/remote.php/dav/calendars/alice/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop></d:propstat></d:response>
                   <d:response><d:href>/remote.php/dav/calendars/alice/personal/</d:href><d:propstat><d:prop><d:displayname>Personal</d:displayname>
                     <d:resourcetype><d:collection/><c:calendar/></d:resourcetype>
-                    <c:supported-calendar-component-set><c:comp name="VEVENT"/><c:comp name="VTODO"/></c:supported-calendar-component-set></d:prop></d:propstat></d:response>
+                    <c:supported-calendar-component-set><c:comp name="VEVENT"/><c:comp name="VTODO"/></c:supported-calendar-component-set>
+                    <d:current-user-privilege-set><d:privilege><d:read/></d:privilege><d:privilege><d:write/></d:privilege></d:current-user-privilege-set></d:prop></d:propstat></d:response>
+                  <d:response><d:href>/remote.php/dav/calendars/alice/team_shared_by_bob/</d:href><d:propstat><d:prop><d:displayname>Team</d:displayname>
+                    <d:resourcetype><d:collection/><c:calendar/></d:resourcetype>
+                    <d:current-user-privilege-set><d:privilege><d:read/></d:privilege></d:current-user-privilege-set></d:prop></d:propstat></d:response>
                   <d:response><d:href>/remote.php/dav/calendars/alice/tasks/</d:href><d:propstat><d:prop><d:displayname>Tasks</d:displayname>
                     <d:resourcetype><d:collection/><c:calendar/></d:resourcetype>
                     <c:supported-calendar-component-set><c:comp name="VTODO"/></c:supported-calendar-component-set></d:prop></d:propstat></d:response>
@@ -115,8 +122,41 @@ sealed class FakeNextcloud : FakeServer
                     <c:calendar-data>{System.Security.SecurityElement.Escape(Ics)}</c:calendar-data></d:prop></d:propstat></d:response>
                 </d:multistatus>
                 """);
+        else if (r.Method == "REPORT" && r.Path == $"/remote.php/dav/calendars/{User}/team_shared_by_bob/")
+            await Write(response, 207, "application/xml", """<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"/>""");
+        else if (r.Path.StartsWith($"/remote.php/dav/calendars/{User}/") && r.Path.EndsWith(".ics"))
+            await Event(r, response);
         else
             await Write(response, 404, "text/plain", "nope");
+    }
+
+    /// <summary>GET, PUT and DELETE of one event, honouring If-Match and If-None-Match as a CalDAV server does.</summary>
+    async Task Event(Request r, HttpListenerResponse response)
+    {
+        var key = r.Path[$"/remote.php/dav/calendars/{User}/".Length..];
+        bool exists = Events.TryGetValue(key, out var current);
+        if (key.StartsWith("team_shared_by_bob/") && r.Method != "GET") { await Write(response, 403, "text/plain", "read-only"); return; }
+        if (r.Headers.TryGetValue("If-Match", out var match) && (!exists || match != current.ETag)) { await Write(response, 412, "text/plain", "changed"); return; }
+        if (r.Headers.TryGetValue("If-None-Match", out var none) && none == "*" && exists) { await Write(response, 412, "text/plain", "exists"); return; }
+        switch (r.Method)
+        {
+            case "GET" when exists:
+                response.Headers["ETag"] = current.ETag;
+                await Write(response, 200, "text/calendar", current.Ics);
+                break;
+            case "PUT":
+                Events[key] = (r.Body, $"\"v{++_versions}\"");
+                response.Headers["ETag"] = Events[key].ETag;
+                await Write(response, exists ? 204 : 201, "text/plain", "");
+                break;
+            case "DELETE" when exists:
+                Events.Remove(key);
+                await Write(response, 204, "text/plain", "");
+                break;
+            default:
+                await Write(response, 404, "text/plain", "no such event");
+                break;
+        }
     }
 }
 

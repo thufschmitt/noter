@@ -238,7 +238,7 @@ try
     Check("once approved there the account shows as connected, without a password in sight", status.GetProperty("connected").GetBoolean() && status.GetProperty("user").GetString() == FakeNextcloud.User && !status.ToString().Contains(FakeNextcloud.Password));
     Check("the app password is kept with the other secrets only", File.ReadAllText(Path.Combine(data, "secrets.json")).Contains(FakeNextcloud.Password) && !File.ReadAllText(Path.Combine(data, "settings.json")).Contains(FakeNextcloud.Password));
     var calendars = await Json(await http.SendAsync(ApiReq(HttpMethod.Post, "/api/nextcloud/check")));
-    Check("checking lists the calendars Claude can read", calendars.GetProperty("calendars").EnumerateArray().Select(c => c.GetString()).SequenceEqual(new[] { "Personal" }));
+    Check("checking lists the calendars Claude can use, marking those it may only read", calendars.GetProperty("calendars").EnumerateArray().Select(c => c.GetString()).SequenceEqual(new[] { "Personal", "Team (read only)" }));
     await using (var tab = await FakeBrowser.ConnectAsync(url))
     {
         await tab.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "page"));
