@@ -11,6 +11,7 @@ using Windows.Storage.Streams;
 using Windows.UI;
 using Windows.UI.Core;
 using Windows.UI.Input.Inking;
+using Windows.UI.Text;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
 using Windows.UI.Xaml.Media;
@@ -33,7 +34,9 @@ public sealed partial class MainPage : Page, IPageView
     }
 
     static NoteVisual Visual(NoteModel note) => (NoteVisual)note.View!;
-    static Image PictureOf(DrawingModel drawing) => (Image)drawing.View!;
+    /// <summary>A drawing on the page: its picture, with its text laid over it (see <see cref="TextOverlay"/>).</summary>
+    static Grid PictureOf(DrawingModel drawing) => (Grid)drawing.View!;
+    static Image ImageOf(DrawingModel drawing) => (Image)PictureOf(drawing).Children[0];
 
     /// <summary>The page itself: what is on it, asking, saving, conversations. This class is its screen.</summary>
     readonly PageSession _session;
@@ -335,12 +338,95 @@ public sealed partial class MainPage : Page, IPageView
             }
             stream.Seek(0);
             var status = await source.SetSourceAsync(stream);
-            if (status == SvgImageSourceLoadStatus.Success) PictureOf(d).Source = source;
+            if (status == SvgImageSourceLoadStatus.Success) ImageOf(d).Source = source;
             else ShowToast("A drawing couldn't be shown.");
         }
         catch (Exception)
         {
             ShowToast("A drawing couldn't be shown.");
+        }
+    }
+
+    /// <summary>
+    /// The drawing's text, laid over its picture. Windows draws SVG with Direct2D, which leaves out &lt;text&gt; altogether, so
+    /// each label is a TextBlock placed where the SVG puts it: on a canvas in the drawing's own units, scaled with a Viewbox
+    /// exactly as the picture is (both fit the same box, keeping their shape). Null when the drawing has no text.
+    /// </summary>
+    FrameworkElement? TextOverlay(string svg)
+    {
+        var layer = Svg.Labels(svg);
+        if (layer.Labels.Count == 0) return null;
+        var canvas = new Canvas
+        {
+            Width = layer.Width,
+            Height = layer.Height,
+            // Like the SVG itself, nothing shows outside the drawing's box.
+            Clip = new RectangleGeometry { Rect = new Rect(0, 0, layer.Width, layer.Height) },
+        };
+        foreach (var label in layer.Labels)
+        {
+            var block = new TextBlock
+            {
+                Text = label.Text,
+                FontSize = Math.Max(1, label.Size),
+                FontFamily = label.Family is null ? _handFont : FontFrom(label.Family),
+                FontWeight = label.Bold ? FontWeights.Bold : FontWeights.Normal,
+                FontStyle = label.Italic ? FontStyle.Italic : FontStyle.Normal,
+                Foreground = BrushFor(label.Fill),
+                Opacity = label.Opacity,
+                TextWrapping = TextWrapping.NoWrap,
+                // The block ends at the baseline, so its height says how far above the SVG's y (a baseline) its top goes.
+                TextLineBounds = TextLineBounds.TrimToBaseline,
+                IsTextScaleFactorEnabled = false,
+            };
+            double x = label.X - layer.MinX, y = label.Y - layer.MinY;
+            void Place()
+            {
+                double w = block.ActualWidth, h = block.ActualHeight;
+                double along = label.Anchor switch { Svg.Anchor.Middle => w / 2, Svg.Anchor.End => w, _ => 0 };
+                Canvas.SetLeft(block, x - along);
+                Canvas.SetTop(block, y - h);
+                block.RenderTransform = label.Angle == 0 ? null : new RotateTransform { Angle = label.Angle, CenterX = along, CenterY = h };
+            }
+            block.SizeChanged += (_, _) => Place();
+            canvas.Children.Add(block);
+        }
+        return new Viewbox { Stretch = Stretch.Uniform, Child = canvas, IsHitTestVisible = false };
+    }
+
+    /// <summary>An SVG font-family list as XAML takes it: no quotes, and the generic families named as Windows fonts.</summary>
+    FontFamily FontFrom(string family)
+    {
+        var names = family.Split(',')
+            .Select(f => f.Trim().Trim('"', '\'').Trim())
+            .Where(f => f.Length > 0)
+            .Select(f => f.ToLowerInvariant() switch
+            {
+                "sans-serif" or "system-ui" or "fantasy" => "Segoe UI",
+                "serif" => "Times New Roman",
+                "monospace" => "Consolas",
+                "cursive" => "Segoe Print",
+                _ => f,
+            })
+            .ToList();
+        return names.Count == 0 ? _handFont : new FontFamily(string.Join(", ", names.Append("Segoe UI").Distinct()));
+    }
+
+    /// <summary>The ink brush (which follows the theme) for "currentColor", else the colour the SVG names, if XAML knows it.</summary>
+    Brush BrushFor(string? fill)
+    {
+        if (fill is null) return _claudeInk;
+        var value = fill.Trim();
+        // XAML has no #rgb shorthand.
+        if (System.Text.RegularExpressions.Regex.IsMatch(value, "^#[0-9a-fA-F]{3}$"))
+            value = "#" + string.Concat(value.Skip(1).Select(c => $"{c}{c}"));
+        try
+        {
+            return new SolidColorBrush((Color)Windows.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Color), value));
+        }
+        catch (Exception)
+        {
+            return _claudeInk;
         }
     }
 
@@ -562,10 +648,12 @@ public sealed partial class MainPage : Page, IPageView
 
     void IPageView.DrawingAdded(NoteModel note, DrawingModel drawing)
     {
-        var image = new Image { Stretch = Stretch.Uniform };
-        Windows.UI.Xaml.Automation.AutomationProperties.SetName(image, drawing.Alt);
-        drawing.View = image;
-        NoteLayer.Children.Add(image);
+        var picture = new Grid();
+        picture.Children.Add(new Image { Stretch = Stretch.Uniform });
+        if (TextOverlay(drawing.Markup) is { } text) picture.Children.Add(text);
+        Windows.UI.Xaml.Automation.AutomationProperties.SetName(picture, drawing.Alt);
+        drawing.View = picture;
+        NoteLayer.Children.Add(picture);
         _ = LoadDrawingAsync(drawing);
     }
 
