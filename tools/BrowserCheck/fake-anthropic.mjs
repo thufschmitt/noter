@@ -15,7 +15,7 @@ http.createServer((req, res) => {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200"><title>A house</title><path d="M50 100 L200 20 L350 100 V180 H50 Z" stroke="currentColor" fill="none" stroke-width="3" stroke-linejoin="round"/><text x="150" y="150" font-family="Ink Free, sans-serif" font-size="20" fill="currentColor">home</text></svg>';
     const text = calls === 1
       ? 'HEARD: hello notebook\n---\nHi there! This is Claude answering in the notebook, on the ruled lines, in blue handwriting.'
-      : 'HEARD: [a scribble] and a question\n---\nHere is a quick sketch of what you mean.\n' + svg;
+      : 'HEARD: [a scribble] and a question\n---\nHere is your week, with a sketch.\n<figure aria-label="Your week"><table><tr><th>Day</th><th>Plan</th></tr><tr><td>Mon</td><td>gym</td></tr></table>' + svg + '<script>parent.hacked = true</script></figure>';
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     res.write(sse('message_start', { type: 'message_start', message: { id: 'msg_' + calls, type: 'message', role: 'assistant', model: 'claude-haiku-5-5', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } } }));
     res.write(sse('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }));

@@ -130,29 +130,42 @@ static class AgentChecks
             check("the streamed reply never showed drawing markup", progress.All(p => !p.Body.Contains('<')) && progress.Any(p => p.Drawings is { Count: 1 }));
         }
 
-        // ----- drawings in replies -----
-        var split = Svg.Extract("Here is a house.\n<svg viewBox=\"0 0 40 30\"><rect width=\"10\" height=\"10\"/></svg>\nIt has a door.", finished: true);
-        check("a drawing is taken out of the words", split.Text == "Here is a house.\n\nIt has a door." && split.Drawings.Count == 1 && !split.Open);
-        var fenced = Svg.Extract("Look:\n```svg\n<svg viewBox=\"0 0 4 3\"></svg>\n```\nDone", finished: true);
-        check("code fences around a drawing are dropped", fenced.Text == "Look:\n\nDone" && fenced.Drawings.Count == 1);
-        var streaming = Svg.Extract("Here:\n<svg viewBox=\"0 0 4 3\"><circle", finished: false);
-        check("an unfinished drawing is held back", streaming.Open && streaming.Text == "Here:" && streaming.Drawings.Count == 0);
-        check("a possible start of a drawing is held back while streaming", Svg.Extract("Here: <sv", finished: false).Text == "Here:" && Svg.Extract("a < b", finished: false).Text == "a < b");
-        var nested = Svg.Extract("<svg viewBox=\"0 0 4 3\"><svg><g/></svg></svg>after", finished: true);
-        check("nested svg elements stay in one drawing", nested.Drawings.Count == 1 && nested.Text == "after");
+        // ----- blocks in replies: HTML figures, drawings among them -----
+        var split = Html.Extract("Here is a house.\n<svg viewBox=\"0 0 40 30\"><rect width=\"10\" height=\"10\"/></svg>\nIt has a door.", finished: true);
+        check("a bare drawing is taken out of the words", split.Text == "Here is a house.\n\nIt has a door." && split.Blocks.Count == 1 && !split.Open);
+        var table = Html.Extract("Your week:\n<figure aria-label=\"week\"><table><tr><td>Mon</td></tr></table><svg><g/></svg></figure>\nEnjoy.", finished: true);
+        check("a figure is one block, whatever it holds", table.Text == "Your week:\n\nEnjoy." && table.Blocks.Count == 1 && table.Blocks[0].EndsWith("</figure>"));
+        var fenced = Html.Extract("Look:\n```html\n<figure><p>x</p></figure>\n```\nDone", finished: true);
+        check("code fences around a block are dropped", fenced.Text == "Look:\n\nDone" && fenced.Blocks.Count == 1);
+        var streaming = Html.Extract("Here:\n<figure><table><tr><td>Mo", finished: false);
+        check("an unfinished block is held back", streaming.Open && streaming.Text == "Here:" && streaming.Blocks.Count == 0);
+        check("a possible start of a block is held back while streaming", Html.Extract("Here: <fig", finished: false).Text == "Here:" && Html.Extract("Here: <sv", finished: false).Text == "Here:" && Html.Extract("a < b", finished: false).Text == "a < b");
+        var nested = Html.Extract("<figure><figure><p>x</p></figure></figure>after", finished: true);
+        check("nested figures stay in one block", nested.Blocks.Count == 1 && nested.Text == "after");
         var parsed = ReplyParser.Parse("HEARD: draw a cat\n---\nA cat:\n<svg viewBox=\"0 0 4 3\"><path d=\"M0 0\"/></svg>", finished: true);
-        check("the parser keeps drawings out of the cleaned words", parsed.Body == "A cat:" && parsed.Drawings is { Count: 1 } && parsed.Heard == "draw a cat");
+        check("the parser keeps blocks out of the cleaned words", parsed.Body == "A cat:" && parsed.Drawings is { Count: 1 } && parsed.Heard == "draw a cat");
 
-        check("a drawing gets the namespace it needs", Svg.Sanitize("<svg viewBox=\"0 0 4 3\"><g/></svg>")!.Contains("xmlns=\"http://www.w3.org/2000/svg\""));
-        check("scripts, external images and doctypes are refused",
-            Svg.Sanitize("<svg><script>alert(1)</script></svg>") is null && Svg.Sanitize("<svg><image href=\"http://x/y.png\"/></svg>") is null
-            && Svg.Sanitize("<svg><use href=\"http://x/y.svg#a\"/></svg>") is null && Svg.Sanitize("<!DOCTYPE svg><svg/>") is null && Svg.Sanitize("<svg onload=\"x()\"/>") is null);
-        check("malformed or huge drawings are refused", Svg.Sanitize("<svg><g></svg>") is null && Svg.Sanitize("<svg>" + new string('x', Svg.MaxBytes) + "</svg>") is null);
-        check("local references are fine", Svg.Sanitize("<svg viewBox=\"0 0 4 3\"><defs><path id=\"a\"/></defs><use href=\"#a\"/></svg>") is not null);
-        check("the shape comes from the viewBox", Math.Abs(Svg.Aspect("<svg viewBox=\"0 0 400 200\"/>") - 2) < 1e-9 && Math.Abs(Svg.Aspect("<svg width=\"300px\" height=\"100\"/>") - 3) < 1e-9 && Math.Abs(Svg.Aspect("<svg/>") - 4.0 / 3) < 1e-9);
-        check("the title describes it", Svg.Title("<svg><title> A  red\nhouse </title></svg>") == "A red house" && Svg.Title("<svg/>") == "a drawing");
-        var (w, h) = Svg.Fit(0.5, 560, 480);
-        check("a tall drawing is limited in height, keeping its shape", Math.Abs(h - 480) < 1e-9 && Math.Abs(w - 240) < 1e-9 && Svg.Fit(2, 560, 480) == (560, 280));
+        var bare = Html.Sanitize("<svg viewBox=\"0 0 4 3\"><title>A cat</title><path d=\"M0 0\" stroke=\"currentColor\"/></svg>");
+        check("a bare drawing (as saved before) becomes a figure, kept as drawn", bare is not null && bare.StartsWith("<figure>") && bare.Contains("viewBox=\"0 0 4 3\"") && bare.Contains("stroke=\"currentColor\""));
+        var unsafeBlock = Html.Sanitize("<figure><table><tr><td onclick=\"x()\" style=\"color:red;background:url(http://e/x.png)\">a</td></tr></table>"
+            + "<script>alert(1)</script><img src=\"http://e/i.png\"><a href=\"http://e\">link</a><form><input></form><iframe src=\"http://e\"></iframe>"
+            + "<style>@import url(http://e/s.css); td { background: url(//e/p.png) }</style><div style=\"background:url(//e/q.png)\">q</div>"
+            + "<svg><image href=\"http://e/p.png\"/><use href=\"http://e/s.svg#a\"/></svg></figure>")!;
+        check("scripts, handlers, images, links, forms and frames are taken out", !unsafeBlock.Contains("script") && !unsafeBlock.Contains("onclick") && !unsafeBlock.Contains("<img") && !unsafeBlock.Contains("href") && !unsafeBlock.Contains("<input") && !unsafeBlock.Contains("iframe") && !unsafeBlock.Contains("<image") && !unsafeBlock.Contains("<use"));
+        check("nothing in it can be fetched", !unsafeBlock.Contains("http") && !unsafeBlock.Contains("//e/") && !unsafeBlock.Contains("@import"));
+        check("what is safe stays: the table, its words and its colour", unsafeBlock.Contains("<td") && unsafeBlock.Contains(">a</td>") && unsafeBlock.Contains("color") && unsafeBlock.Contains(">link<") && unsafeBlock.Contains(">q<"));
+        check("same-document references are fine", Html.Sanitize("<figure><svg><defs><marker id=\"a\"/></defs><path d=\"M0 0\" marker-end=\"url(#a)\"/></svg></figure>")!.Contains("url(#a)"));
+        check("an empty, a huge or a non-figure block is refused", Html.Sanitize("<figure><script>x</script></figure>") is null && Html.Sanitize("<figure>" + new string('x', Html.MaxBytes) + "</figure>") is null && Html.Sanitize("<div>x</div>") is null);
+
+        check("the title comes from the label, then the caption, then the drawing's title", Html.Title("<figure aria-label=\" Your  week \"><figcaption>c</figcaption></figure>") == "Your week"
+            && Html.Title("<figure><figcaption>Prices</figcaption><table></table></figure>") == "Prices" && Html.Title("<figure><svg><title>A red house</title></svg></figure>") == "A red house"
+            && Html.Title("<figure><table><tr><td>1</td></tr></table></figure>") == "a table");
+        var asText = Html.Text("<figure><h3>Plan</h3><table><tr><th>Day</th><th>Task</th></tr><tr><td>Mon</td><td><b>gym</b> &amp; run</td></tr></table><ul><li>eggs</li><li>milk</li></ul><style>td{color:red}</style><svg><title>Map</title><text>x</text></svg></figure>");
+        check("the text version reads like the block", asText == "Plan\n\nDay | Task\nMon | gym & run\n\n– eggs\n– milk\n\n[drawing: Map]");
+        var doc = Html.Document("<figure><p>hi</p></figure>");
+        check("the document lets nothing run or load, and has the ink to fill in", doc.Contains("default-src 'none'") && !doc.Contains("script-src") && doc.Contains(Html.InkToken) && doc.Contains("<p>hi</p>"));
+        var (w, h) = Html.Fit(0.5, 560, 480);
+        check("a tall block is limited in height, keeping its shape", Math.Abs(h - 480) < 1e-9 && Math.Abs(w - 240) < 1e-9 && Html.Fit(2, 560, 480) == (560, 280) && Html.Fit(0.1, 600).Height == Html.MaxHeight);
     }
 
     static IReadOnlyDictionary<string, JsonElement> Args(string json) =>

@@ -241,14 +241,34 @@ function addNote(m) {
 function removeNote(n) {
   n.el.remove();
   n.tick.remove();
-  for (const d of n.drawings.values()) d.img.remove();
+  for (const d of n.drawings.values()) d.el.remove();
 }
 
-const drawingUrl = (svg, color) => 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg.split('currentColor').join(color));
+// ---------- blocks: Claude's tables, laid-out text and drawings ----------
 
-// Claude's drawings say "currentColor" for the ink colour; an image can't inherit it, so it is filled in here.
+// The server sends each block as a whole document with a stand-in for the ink colour, which follows the theme.
+const inked = (doc, color) => doc.split('%INK%').join(color);
+
+// A block is shown in a frame that runs no scripts and loads nothing (the document's own policy says so too). It shares the
+// page's origin only so the page can measure it; it takes no input, so writing over it reaches the ink as usual.
+function showBlock(d) {
+  d.loaded = new Promise(resolve => d.el.addEventListener('load', resolve, { once: true }));
+  d.el.srcdoc = inked(d.doc, claudeColor());
+}
+
 function colorDrawings() {
-  for (const n of notes.values()) for (const d of n.drawings.values()) d.img.src = drawingUrl(d.svg, claudeColor());
+  for (const n of notes.values()) for (const d of n.drawings.values()) showBlock(d);
+}
+
+// Width over height of a block laid out at the given width, as tall as its content.
+async function blockAspect(d, width) {
+  await d.loaded;
+  const doc = d.el.contentDocument;
+  if (!doc) return 0;
+  if (doc.fonts) await doc.fonts.ready;
+  Object.assign(d.el.style, { width: width + 'px', height: '1px', transform: '' });
+  const height = Math.max(doc.documentElement.scrollHeight, doc.body ? doc.body.scrollHeight : 0, 1);
+  return width / height;
 }
 
 // ---------- what the server tells the page ----------
@@ -277,17 +297,21 @@ const handlers = {
   drawing(m) {
     const n = notes.get(m.note);
     if (!n) return;
-    const img = new Image();
-    img.className = 'drawing';
-    img.alt = m.alt;
-    img.src = drawingUrl(m.svg, claudeColor());
-    notesLayer.append(img);
-    n.drawings.set(m.id, { id: m.id, svg: m.svg, img, top: 0, w: 0, h: 0 });
+    const el = document.createElement('iframe');
+    el.className = 'drawing';
+    el.title = m.alt;
+    el.setAttribute('sandbox', 'allow-same-origin');
+    el.setAttribute('scrolling', 'no');
+    el.tabIndex = -1;
+    notesLayer.append(el);
+    const d = { id: m.id, doc: m.doc, text: m.text, el, top: 0, w: 0, h: 0, nw: 0, nh: 0 };
+    n.drawings.set(m.id, d);
+    showBlock(d);
   },
   drawingsCleared(m) {
     const n = notes.get(m.note);
     if (!n) return;
-    for (const d of n.drawings.values()) d.img.remove();
+    for (const d of n.drawings.values()) d.el.remove();
     n.drawings.clear();
   },
   place(m) {
@@ -302,8 +326,9 @@ const handlers = {
     for (const p of m.drawings) {
       const d = n.drawings.get(p.id);
       if (!d) continue;
-      d.top = p.top; d.w = p.w; d.h = p.h;
-      Object.assign(d.img.style, { top: p.top + 'px', width: p.w + 'px', height: p.h + 'px' });
+      Object.assign(d, { top: p.top, w: p.w, h: p.h, nw: p.nw, nh: p.nh });
+      // Laid out at its natural size, then scaled down if it is taller than a block may be.
+      Object.assign(d.el.style, { top: p.top + 'px', width: p.nw + 'px', height: p.nh + 'px', transform: p.w < p.nw - 0.5 ? `scale(${p.w / p.nw})` : '' });
     }
     updateHeight();
   },
@@ -344,7 +369,13 @@ const handlers = {
       if (!n) return reply(m, 1);
       n.el.style.width = m.width + 'px';
       n.el.textContent = m.text;
-      reply(m, Math.round(n.el.getBoundingClientRect().height / LINE));
+      const lines = Math.round(n.el.getBoundingClientRect().height / LINE);
+      const aspects = {};
+      for (const id of m.blocks || []) {
+        const d = n.drawings.get(id);
+        if (d) aspects[id] = await blockAspect(d, m.width);
+      }
+      reply(m, { lines, aspects });
     } catch (e) {
       fail(m);
     }
@@ -436,13 +467,37 @@ async function makeSnapshot(m) {
       c.textBaseline = 'middle';
       p.lines.forEach((line, i) => c.fillText(line, p.x, p.y + i * LINE + LINE / 2));
     } else {
-      const img = await loadImage(drawingUrl(p.d.svg, '#2C4FC4'));
-      c.drawImage(img, p.x, p.y, p.d.w, p.d.h);
+      await paintBlock(c, p.d, p.x, p.y);
     }
   }
   for (const s of earlier) paintStroke(c, s.pts, '#8C9098');
   for (const s of fresh) paintStroke(c, s.pts, '#000');
   return canvas.toDataURL('image/png').split(',')[1];
+}
+
+// A block in the picture: its document, in the light ink, drawn as an SVG image so it looks as it does on the page. A browser
+// that won't let a page read back such a picture gets the block's text in a box instead.
+async function paintBlock(c, d, x, y) {
+  try {
+    const parsed = new DOMParser().parseFromString(inked(d.doc, '#2C4FC4'), 'text/html');
+    parsed.querySelectorAll('meta').forEach(e => e.remove());
+    const xhtml = new XMLSerializer().serializeToString(parsed.documentElement);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${d.nw}" height="${d.nh}"><foreignObject x="0" y="0" width="100%" height="100%">${xhtml}</foreignObject></svg>`;
+    const img = await loadImage('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg));
+    const probe = document.createElement('canvas');
+    probe.width = probe.height = 1;
+    probe.getContext('2d').drawImage(img, 0, 0, 1, 1);
+    probe.toDataURL(); // throws where the picture would spoil the snapshot
+    c.drawImage(img, x, y, d.w, d.h);
+  } catch (e) {
+    c.strokeStyle = '#2C4FC4';
+    c.lineWidth = 1.5;
+    c.strokeRect(x, y, d.w, d.h);
+    c.font = `20px ${HAND}`;
+    c.fillStyle = '#2C4FC4';
+    c.textBaseline = 'top';
+    wrap(d.text, d.w - 16).forEach((line, i) => { if (i * 28 + 36 < d.h) c.fillText(line, x + 8, y + 8 + i * 28); });
+  }
 }
 
 const loadImage = url => new Promise((resolve, reject) => {

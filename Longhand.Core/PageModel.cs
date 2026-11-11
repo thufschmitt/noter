@@ -26,11 +26,16 @@ public sealed record SavedNote(double Y, string Text, string Heard, bool IsHint,
 /// <summary>Where a stroke sits on the page. The page only ever needs heights: it is one vertical strip.</summary>
 public readonly record struct StrokeSpan(uint Id, double Top, double Bottom);
 
-/// <summary>One of Claude's SVG drawings, shown under the words of its note. <c>View</c> is the platform's picture of it.</summary>
+/// <summary>
+/// One of the blocks shown under the words of Claude's note: a sanitized HTML figure (a table, laid-out text, or a drawing as
+/// inline SVG). <c>View</c> is the platform's picture of it.
+/// </summary>
 public sealed class DrawingModel
 {
+    /// <summary>The figure, from <see cref="Html.Sanitize"/>.</summary>
     public required string Markup;
-    public required double Aspect;
+    /// <summary>Width over height when laid out at the page's text width. Set by the platform when it measures the block.</summary>
+    public double Aspect = 4.0 / 3.0;
     public string Alt = "";
     /// <summary>The rule lines it takes up. Set by the platform when it measures the note.</summary>
     public int Lines;
