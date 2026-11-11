@@ -73,10 +73,18 @@ public sealed class ClaudeService
     public async Task<ReplyResult> AskAsync(byte[]? png, IReadOnlyList<Turn> history, Action<ReplyParser.Parsed> onProgress, CancellationToken ct, Action<string>? onStatus = null, bool hasContext = false, IReadOnlyList<LegendEntry>? legend = null, string? typed = null)
     {
         var messages = new List<BetaMessageParam>();
-        foreach (var turn in history.Skip(Math.Max(0, history.Count - MaxTurns)))
+        var earlier = history.Skip(Math.Max(0, history.Count - MaxTurns)).ToList();
+        for (var i = 0; i < earlier.Count; i++)
         {
+            var turn = earlier[i];
             messages.Add(new BetaUserMessageParam { Content = $"(earlier handwriting, transcribed) {turn.Heard}" });
-            messages.Add(new BetaAssistantMessageParam { Content = $"HEARD: {turn.Heard}\n---\n{turn.Reply}" });
+            // A cache breakpoint at the end of the earlier page: the next note's request starts with the same turns,
+            // so it reads them from the cache instead of paying for them again.
+            var said = $"HEARD: {turn.Heard}\n---\n{turn.Reply}";
+            var reply = i == earlier.Count - 1
+                ? new BetaTextBlockParam { Text = said, CacheControl = new BetaCacheControlEphemeral() }
+                : new BetaTextBlockParam { Text = said };
+            messages.Add(new BetaAssistantMessageParam { Content = new List<BetaContentBlockParam> { reply } });
         }
         var content = new List<BetaContentBlockParam>();
         // My own symbols come first, so the picture of the handwriting that follows is read with them in mind.
@@ -109,13 +117,18 @@ public sealed class ClaudeService
         }
         if (!string.IsNullOrWhiteSpace(typed))
             content.Add(new BetaTextBlockParam { Text = (png is null ? "This is my newest note, typed on a keyboard:\n" : "I also typed this, to go with it:\n") + typed });
+        // The time changes every minute, so it goes here, after everything cached, rather than in the system prompt.
+        content.Add(new BetaTextBlockParam { Text = Context() });
         messages.Add(new BetaUserMessageParam { Content = content });
 
         var parameters = new MessageCreateParams
         {
             Model = _model,
             MaxTokens = 8000,
-            System = SystemPrompt + Context(),
+            // The system prompt never changes, so it (with the tools before it) is cached and shared by every request.
+            System = new List<BetaTextBlockParam> { new() { Text = SystemPrompt, CacheControl = new BetaCacheControlEphemeral() } },
+            // Automatic caching of the growing tail, so each round of tool use reads the rounds before it from the cache.
+            CacheControl = new BetaCacheControlEphemeral(),
             Messages = messages,
             Tools = Tools(),
             McpServers = _connectors.Count == 0 ? null : _connectors.Select(c => new BetaRequestMcpServerUrlDefinition { Name = c.Name, Url = c.Url, AuthorizationToken = c.Token }).ToList(),
@@ -205,6 +218,6 @@ public sealed class ClaudeService
     string Context()
     {
         var now = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, _zone);
-        return $"\n\nIt is now {now.ToString("dddd d MMMM yyyy, HH:mm", System.Globalization.CultureInfo.InvariantCulture)} (UTC{now:zzz}, time zone {_zone.Id}).";
+        return $"It is now {now.ToString("dddd d MMMM yyyy, HH:mm", System.Globalization.CultureInfo.InvariantCulture)} (UTC{now:zzz}, time zone {_zone.Id}).";
     }
 }

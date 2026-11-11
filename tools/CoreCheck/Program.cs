@@ -141,6 +141,7 @@ if (Environment.GetEnvironmentVariable("LONGHAND_FAKE_API") is { Length: > 0 } f
 await AgentChecks.RunAsync(Check);
 await RegistryChecks.RunAsync(Check);
 await SymbolChecks.RunAsync(Check);
+await CachingChecks.RunAsync(Check);
 await PageChecks.RunAsync(Check);
 await BookChecks.RunAsync(Check);
 
