@@ -16,6 +16,10 @@ public interface IPageView
     void ShiftStrokes(double anchor, double delta, IReadOnlySet<uint> keep);
     /// <returns>False when there is no such stroke any more.</returns>
     bool DeleteStroke(uint id);
+    /// <summary>The points a stroke was drawn through, in page coordinates and drawing order; null when there is no such stroke.</summary>
+    IReadOnlyList<(double X, double Y)>? StrokePoints(uint id);
+    /// <summary>Removes a stroke and returns what <see cref="RestoreStrokes"/> needs to put it back; null when there is no such stroke.</summary>
+    object? TakeStroke(uint id);
     /// <summary>Puts back strokes that were erased; <paramref name="token"/> is what <see cref="PageSession.StrokesErased"/> was given.</summary>
     void RestoreStrokes(object token);
     void ClearStrokes();

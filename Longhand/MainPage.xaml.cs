@@ -532,6 +532,17 @@ public sealed partial class MainPage : Page, IPageView
         return found;
     }
 
+    IReadOnlyList<(double X, double Y)>? IPageView.StrokePoints(uint id) =>
+        Strokes.GetStrokes().FirstOrDefault(s => s.Id == id)?.GetInkPoints().Select(p => ((double)p.Position.X, (double)p.Position.Y)).ToList();
+
+    object? IPageView.TakeStroke(uint id)
+    {
+        var stroke = Strokes.GetStrokes().FirstOrDefault(s => s.Id == id);
+        if (stroke is null) return null;
+        var copy = new List<InkStroke> { stroke.Clone() };
+        return ((IPageView)this).DeleteStroke(id) ? copy : null;
+    }
+
     void IPageView.RestoreStrokes(object token)
     {
         foreach (var copy in (List<InkStroke>)token) Strokes.AddStroke(copy);

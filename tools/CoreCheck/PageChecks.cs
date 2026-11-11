@@ -17,11 +17,35 @@ sealed class FakeView : IPageView
     public IReadOnlyList<uint>? LastIds;
     public readonly List<NoteModel> Visible = new();
 
+    /// <summary>The points of each stroke; one drawn with <see cref="Draw"/> is a short line down the margin side.</summary>
+    public readonly Dictionary<uint, List<(double X, double Y)>> Points = new();
+
     public uint Draw(double top, double bottom)
     {
         var id = _next++;
         Ink.Add(new StrokeSpan(id, top, bottom));
+        Points[id] = new() { (120, top), (124, (top + bottom) / 2), (120, bottom) };
         return id;
+    }
+
+    /// <summary>A stroke through the given points.</summary>
+    public uint DrawPoints(IReadOnlyList<(double X, double Y)> points)
+    {
+        var id = _next++;
+        Ink.Add(new StrokeSpan(id, points.Min(p => p.Y), points.Max(p => p.Y)));
+        Points[id] = points.ToList();
+        return id;
+    }
+
+    public IReadOnlyList<(double X, double Y)>? StrokePoints(uint id) => Ink.Any(s => s.Id == id) && Points.TryGetValue(id, out var p)
+        ? p.Select(q => (q.X, q.Y + (Ink.First(s => s.Id == id).Top - p.Min(r => r.Y)))).ToList()
+        : null;
+
+    public object? TakeStroke(uint id)
+    {
+        var taken = Ink.Where(s => s.Id == id).ToList();
+        Ink.RemoveAll(s => s.Id == id);
+        return taken.Count > 0 ? taken : null;
     }
 
     public void SeeIds(IEnumerable<uint> ids) => _next = Math.Max(_next, ids.DefaultIfEmpty(0u).Max() + 1);

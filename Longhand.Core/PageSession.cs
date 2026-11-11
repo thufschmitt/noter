@@ -97,7 +97,16 @@ public sealed class PageSession
 
     public void StrokesCollected(IEnumerable<uint> ids)
     {
-        foreach (var id in ids)
+        var list = ids.ToList();
+        if (list.Count == 1 && IsAskStar(list[0]))
+        {
+            // The star asks: it comes off the page (Ctrl+Z puts it back) and what was written before it goes to Claude.
+            if (_view.TakeStroke(list[0]) is { } token) _undo.Push(new ErasedStrokes(token));
+            ScheduleSave();
+            _ = AskAsync();
+            return;
+        }
+        foreach (var id in list)
         {
             _pending.Add(id);
             _undo.Push(new AddedStroke(id));
@@ -120,6 +129,30 @@ public sealed class PageSession
         UpdateState();
         ScheduleSave();
     }
+
+    /// <summary>
+    /// Whether a stroke is the star that asks Claude: a five-point star drawn in one go (<see cref="StarGesture"/>), standing
+    /// apart from the writing and from Claude's replies (a star on or touching them belongs to them), with something written
+    /// that waits to be asked. Anything else is ink like any other.
+    /// </summary>
+    bool IsAskStar(uint id)
+    {
+        if (_busy || _pending.Count == 0) return false;
+        if (_view.StrokePoints(id) is not { } points || !StarGesture.IsStar(points)) return false;
+        const double Gap = 4;
+        var star = Box(points);
+        foreach (var other in _view.Strokes())
+            if (other.Id != id && _view.StrokePoints(other.Id) is { } p && Box(p) is var box
+                && box.Left < star.Right + Gap && star.Left < box.Right + Gap && box.Top < star.Bottom + Gap && star.Top < box.Bottom + Gap)
+                return false;
+        // Claude's replies run the width of the page, so being level with one is being on it.
+        foreach (var n in _notes)
+            if (!n.IsHint && n.Y < star.Bottom && star.Top < n.Y + n.Covered) return false;
+        return true;
+    }
+
+    static (double Left, double Top, double Right, double Bottom) Box(IReadOnlyList<(double X, double Y)> points) =>
+        (points.Min(p => p.X), points.Min(p => p.Y), points.Max(p => p.X), points.Max(p => p.Y));
 
     public void Undo()
     {

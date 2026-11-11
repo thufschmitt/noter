@@ -144,6 +144,7 @@ await SymbolChecks.RunAsync(Check);
 await CachingChecks.RunAsync(Check);
 await ModelChecks.RunAsync(Check);
 await CalendarWriteChecks.RunAsync(Check);
+await StarChecks.RunAsync(Check);
 await PageChecks.RunAsync(Check);
 await BookChecks.RunAsync(Check);
 

@@ -277,6 +277,16 @@ public sealed class WebConnection : IPageView, IPageData
         return true;
     }
 
+    public IReadOnlyList<(double X, double Y)>? StrokePoints(uint id) =>
+        _ink.FirstOrDefault(s => s.Id == id)?.Pts.Select(p => (p[0], p[1])).ToList();
+
+    public object? TakeStroke(uint id)
+    {
+        var stroke = _ink.FirstOrDefault(s => s.Id == id);
+        if (stroke is null || !DeleteStroke(id)) return null;
+        return new List<WebStroke> { stroke };
+    }
+
     public void RestoreStrokes(object token)
     {
         var strokes = (List<WebStroke>)token;
