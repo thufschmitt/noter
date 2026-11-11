@@ -76,7 +76,10 @@ await stroke([[ox + 120, block.top + 30], [ox + 200, block.top + block.h / 2], [
 await until(`!document.getElementById('ask').disabled`);
 await evaluate(`document.getElementById('ask').click()`);
 check('annotating the block gets a reply', await until(`document.querySelectorAll('iframe.drawing').length === 2`, 20000));
-await sleep(800);
+// The page is saved a moment after the reply; the server then sends the conversation list again. Reload only after that.
+await evaluate(`window.listBeforeSave = conversationState`);
+check('the page is saved after the reply', await until(`conversationState !== window.listBeforeSave`, 5000));
+await sleep(300);
 
 // Reload: the conversation comes back.
 await call('Page.navigate', { url: pageUrl });
