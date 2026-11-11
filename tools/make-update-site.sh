@@ -47,6 +47,22 @@ for arch in x64 arm64; do
   [ -n "$msix" ] || { echo "No $arch .msix under $dist" >&2; exit 1; }
   package=$(basename "$msix")
 
+  # The framework packages the app needs (WinUI 2, for its WebView2) are installed with it from the Release, where the
+  # release step puts them as <name>_<arch>.appx. Their identity is read from their own manifests.
+  dependencies=""
+  while IFS= read -r dep; do
+    [ -n "$dep" ] || continue
+    depManifest=$(unzip -p "$dep" AppxManifest.xml)
+    depIdentity=$(grep -oP '<Identity [^>]*' <<<"$depManifest")
+    depName=$(grep -oP ' Name="\K[^"]+' <<<"$depIdentity")
+    depPublisher=$(grep -oP 'Publisher="\K[^"]+' <<<"$depIdentity")
+    depVersion=$(grep -oP 'Version="\K[^"]+' <<<"$depIdentity")
+    dependencies+="    <Package Name=\"$depName\" Publisher=\"$depPublisher\" Version=\"$depVersion\" ProcessorArchitecture=\"$arch\" Uri=\"$packages/$(basename "${dep%.appx}")_$arch.appx\" />"$'\n'
+  done < <(find "$dist" -ipath "*/Dependencies/$arch/*.appx")
+  [ -n "$dependencies" ] || echo "warning: no framework packages for $arch under $dist" >&2
+  dependencySection=""
+  [ -z "$dependencies" ] || dependencySection="  <Dependencies>"$'\n'"$dependencies  </Dependencies>"$'\n'
+
   # Checks for an update at every launch, and applies it before the app opens (when it is started from the Start menu,
   # a tile or a link; a taskbar or desktop shortcut gets the silent update instead). Every 8 hours a background check
   # installs updates while the app isn't running.
@@ -54,7 +70,7 @@ for arch in x64 arm64; do
 <?xml version="1.0" encoding="utf-8"?>
 <AppInstaller xmlns="http://schemas.microsoft.com/appx/appinstaller/2018" Version="$version" Uri="$site/Longhand-$arch.appinstaller">
   <MainPackage Name="$name" Publisher="$publisher" Version="$version" ProcessorArchitecture="$arch" Uri="$packages/$package" />
-  <UpdateSettings>
+$dependencySection  <UpdateSettings>
     <OnLaunch HoursBetweenUpdateChecks="0" ShowPrompt="true" UpdateBlocksActivation="true" />
     <AutomaticBackgroundTask />
   </UpdateSettings>
