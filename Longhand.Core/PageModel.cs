@@ -21,7 +21,7 @@ public static class PageLayout
 
 /// <summary>What the user did to one part of a saved layout that the model hasn't heard about yet: where it was before the first change.</summary>
 /// <param name="Drawing">Index into the note's drawings.</param>
-public sealed record SavedEdit(int Drawing, string Id, string? Parent, int Position, double Rot, bool Deleted, string? Label = null);
+public sealed record SavedEdit(int Drawing, string Id, string? Parent, int Position, double Rot, bool Deleted, string? Label = null, int? Start = null, int? End = null);
 
 /// <summary>A note the model wrote on the page, as saved to disk.</summary>
 public sealed record SavedNote(double Y, string Text, string Heard, bool IsHint, List<string>? Drawings = null, bool Typed = false, List<SavedEdit>? Edits = null);

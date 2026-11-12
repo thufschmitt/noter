@@ -119,6 +119,28 @@ static class EditChecks
         await session.AskAsync();
         check("and tells them", LastBody().Contains("- c2 \"Gym\": deleted (it was in #todo (position 1))") && LastBody().Contains("- c1 \"Call Anna\": moved from #todo (position 1) to #doing (position 1 of 1)") && !session.HasEdits);
 
+        // ----- a timeline: the times are told to the model, and kept with the edits -----
+        api.FinalText = "HEARD: day\n---\nYour day.\n<layout id=\"day\"><col id=\"thu\" timeline=\"8-18\" drop><box id=\"e1\" edit start=\"9:00\" end=\"10:00\">Standup</box></col></layout>";
+        var dayInk = view.Draw(7000, 7040);
+        session.StrokesCollected(new[] { dayInk });
+        await session.AskAsync();
+        var dayNote = session.Notes.OrderBy(n => n.Y).Last();
+        var dayDrawing = dayNote.Drawings.Single();
+        check("the model's timeline is on the page, editable, with its times in the canonical form", dayDrawing.Editable && dayDrawing.Markup.Contains("<box id=\"e1\" start=\"09:00\" end=\"10:00\" edit>Standup</box>"));
+        session.EditDrawing(dayNote, dayDrawing, new[] { new DrawingChange("e1", "move", "thu", At: "10:30") });
+        session.EditDrawing(dayNote, dayDrawing, new[] { new DrawingChange("e1", "resize", End: "12:00") });
+        check("rescheduling and resizing are local, make the page askable, and are written into the layout", session.HasEdits && view.State.CanAsk && dayDrawing.Markup.Contains("start=\"10:30\" end=\"12:00\"") && dayDrawing.Edits["e1"].Start == 540 && dayDrawing.Edits["e1"].End == 600);
+        await session.SaveAsync();
+        var dayConversation = session.CurrentId;
+        check("the time it was is saved with the edit", data.Pages[dayConversation].Notes.Any(n => n.Edits is { Count: 1 } e && e[0].Id == "e1" && e[0].Start == 540 && e[0].End == 600));
+        await session.NewConversationAsync();
+        await session.OpenConversationAsync(dayConversation);
+        var dayBack = session.Notes.First(n => n.Drawings.Any(d => d.Markup.Contains("id=\"day\""))).Drawings.Single(d => d.Markup.Contains("id=\"day\""));
+        check("and comes back with the page", session.HasEdits && dayBack.Edits["e1"].Start == 540 && dayBack.Edits["e1"].End == 600 && dayBack.Markup.Contains("start=\"10:30\" end=\"12:00\""));
+        api.FinalText = "HEARD: [rescheduled the standup]\n---\nDone.";
+        await session.AskAsync();
+        check("asking tells the model, in times, with the layout as it is now in the history", LastBody().Contains("- e1 \"Standup\": rescheduled from 09:00–10:00 to 10:30–12:00") && LastBody().Contains("<box id=\"e1\" start=\"10:30\" end=\"12:00\" edit>Standup</box>") && !session.HasEdits);
+
         // ----- a picture can't be edited -----
         var pictureFirst = session.Notes.Count;
         api.FinalText = "HEARD: a house\n---\nA house.\n<svg viewBox=\"0 0 4 3\"><title>House</title><rect id=\"r\" data-edit width=\"2\" height=\"2\"/></svg>";

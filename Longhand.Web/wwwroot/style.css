@@ -118,3 +118,4 @@ body.typing #toast { bottom: 150px; }
 #google label input { margin-right: 6px; }
 #google label { display: flex; gap: 8px; align-items: flex-start; font-weight: 400; text-align: left; text-transform: none; letter-spacing: 0; }
 #google label input { margin: 3px 0 0; flex: none; width: auto; min-width: 0; }
+#selection .knob.resize { left: 50%; top: 100%; cursor: ns-resize; }

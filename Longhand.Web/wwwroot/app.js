@@ -309,7 +309,7 @@ function editableAt(px, py) {
 const selEl = document.createElement('div');
 selEl.id = 'selection';
 selEl.hidden = true;
-selEl.innerHTML = '<div class="knob rotate" title="Turn">↻</div><div class="knob delete" title="Delete">×</div>';
+selEl.innerHTML = '<div class="knob rotate" title="Turn">↻</div><div class="knob delete" title="Delete">×</div><div class="knob resize" title="Change the end">↕</div>';
 notesLayer.append(selEl);
 
 function select(d, els) {
@@ -341,19 +341,30 @@ function selectionFrame() {
   return { left: l - PAD, top: t - PAD, right: r + PAD, bottom: b + PAD, cx: (l + r) / 2, cy: (t + b) / 2 };
 }
 
+// What the selection can be asked: parts of a timeline are placed by time, so they aren't turned; a single timed one can have its end moved.
+function selectionCan() {
+  const els = selection ? selection.els : [];
+  return { rotate: !els.some(inTimeline), resize: els.length === 1 && inTimeline(els[0]) && els[0].hasAttribute('data-start') };
+}
+
 function updateSelection() {
   const f = selectionFrame();
   if (!f) { clearSelection(); return; }
   Object.assign(selEl.style, { left: f.left + 'px', top: f.top + 'px', width: f.right - f.left + 'px', height: f.bottom - f.top + 'px' });
+  const can = selectionCan();
+  selEl.querySelector('.rotate').style.display = can.rotate ? '' : 'none';
+  selEl.querySelector('.resize').style.display = can.resize ? '' : 'none';
   selEl.hidden = false;
 }
 
-// What a press at a page point lands on: the delete cross, the turn knob, or the inside of the frame (to move).
+// What a press at a page point lands on: the delete cross, the turn knob, the end knob, or the inside of the frame (to move).
 function grabAt(p) {
   const f = selectionFrame();
   if (!f) return null;
+  const can = selectionCan();
   if (Math.hypot(p[0] - f.right, p[1] - f.top) <= 15) return 'delete';
-  if (Math.hypot(p[0] - f.cx, p[1] - (f.top - 30)) <= 15) return 'rotate';
+  if (can.rotate && Math.hypot(p[0] - f.cx, p[1] - (f.top - 30)) <= 15) return 'rotate';
+  if (can.resize && Math.hypot(p[0] - f.cx, p[1] - f.bottom) <= 15) return 'resize';
   if (p[0] >= f.left && p[0] <= f.right && p[1] >= f.top && p[1] <= f.bottom) return 'move';
   return null;
 }
@@ -413,34 +424,58 @@ function lassoSelect(poly) {
   if (best) select(best.d, best.els); else clearSelection();
 }
 
-// ----- moving, turning and deleting -----
+// ----- moving, turning, resizing and deleting -----
 
 const rotationOf = el => parseFloat(el.dataset.rot || '0') || 0;
 const turned = (el, degrees) => { el.style.transform = degrees ? `rotate(${degrees}deg)` : ''; };
 
+// Timelines: a column marked timeline holds its items on a grid of hours (.tl, which says where it starts and how tall an hour is).
+const SNAP = 15, DAY = 1440;
+const inTimeline = el => !!el.parentElement && el.parentElement.classList.contains('tl');
+const snap = m => Math.round(m / SNAP) * SNAP;
+const hhmm = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+const gridOf = col => [...col.children].find(c => c.classList.contains('tl'));
+// The time at a height of the page (not snapped), on a grid.
+const minutesAt = (d, tl, pageY) => +tl.dataset.from + (pageY - pageRect(d, tl).top) / ((+tl.dataset.ph * frameScale(d)) / 60);
+// Where an item being dragged would start if it were dropped on a grid: its top edge, snapped, and kept inside the day.
+function startFor(a, it, tl) {
+  const length = it.timed ? it.end - it.start : 60;
+  return Math.max(0, Math.min(DAY - Math.max(SNAP, length), snap(minutesAt(a.d, tl, pageRect(a.d, it.el).top))));
+}
+const heightFor = (minutes, ph) => Math.max(14, (minutes * ph) / 60 - 2);
+
 function startEdit(e, kind, p) {
   inkCanvas.setPointerCapture(e.pointerId);
   const { d, els } = selection, f = selectionFrame();
-  const items = els.map(el => ({ el, rot: rotationOf(el), style: el.getAttribute('style') }));
+  const items = els.map(el => {
+    const timed = inTimeline(el) && el.hasAttribute('data-start');
+    return { el, rot: rotationOf(el), style: el.getAttribute('style'), timed, tl: timed ? el.parentElement : null, start: timed ? +el.dataset.start : 0, end: timed ? +el.dataset.end : 0, ph: timed ? +el.parentElement.dataset.ph : 0 };
+  });
   active = {
-    id: e.pointerId, mode: 'edit', kind, d, items, start: p, drop: null, moved: false, degrees: 0,
+    id: e.pointerId, mode: 'edit', kind, d, items, start: p, drop: null, moved: false, degrees: 0, end: 0,
     center: [f.cx, f.cy], angle: Math.atan2(p[1] - f.cy, p[0] - f.cx),
   };
-  if (kind === 'move') for (const it of items) Object.assign(it.el.style, { pointerEvents: 'none', opacity: '0.55', position: 'relative', zIndex: '5' });
+  // A part of a timeline is placed by its time, so it stays where the page put it and only follows the pointer.
+  if (kind === 'move') for (const it of items) Object.assign(it.el.style, { pointerEvents: 'none', opacity: '0.55', zIndex: '5', ...(it.timed ? {} : { position: 'relative' }) });
 }
 
 // The container that accepts drops under a point of the page (the smallest one, and never one inside what is being dragged),
-// and where among its parts the point falls: before which part, and so which place.
+// and where among its parts the point falls: before which part, and so which place. A timeline column always takes its own items.
+// For a timeline column, where it falls is a time: the start of the first part, from where its top edge is.
 function dropAt(a, p) {
   const doc = frameDoc(a.d);
+  const own = new Set(a.items.map(it => it.el.parentElement).filter(el => el && el.hasAttribute('data-tl')));
   let best = null;
-  for (const t of doc.querySelectorAll('[data-drop]')) {
+  for (const t of doc.querySelectorAll('[data-drop], [data-tl]')) {
+    if (!t.hasAttribute('data-drop') && !own.has(t)) continue;
     if (a.items.some(it => it.el === t || it.el.contains(t))) continue;
     const r = pageRect(a.d, t);
     if (rectHas(r, p[0], p[1]) && (!best || area(r) < best.area)) best = { t, area: area(r) };
   }
   if (!best) return null;
-  const t = best.t, row = t.classList.contains('row');
+  const t = best.t, tl = t.hasAttribute('data-tl') ? gridOf(t) : null;
+  if (tl) return { t, tl, timeline: true, start: startFor(a, a.items[0], tl) };
+  const row = t.classList.contains('row');
   const kids = [...t.children].filter(c => c.classList.contains('n') && !a.items.some(it => it.el === c));
   let index = kids.length;
   for (let i = 0; i < kids.length; i++) {
@@ -450,7 +485,7 @@ function dropAt(a, p) {
   return { t, index, kids, row };
 }
 
-// A line where the part would land.
+// A line where the part would land (on a timeline, at the time it would start, with the time written on it).
 function showDropMark(a, drop) {
   const doc = frameDoc(a.d);
   let mark = doc.getElementById('dropmark');
@@ -459,9 +494,20 @@ function showDropMark(a, drop) {
     mark = doc.createElement('div');
     mark.id = 'dropmark';
     mark.style.cssText = 'position:absolute;background:currentColor;border-radius:2px;pointer-events:none;z-index:9';
-    doc.body.append(mark);
+    const label = doc.createElement('span');
+    label.style.cssText = 'position:absolute;left:2px;top:-17px;font:12px/14px sans-serif;background:Canvas;padding:0 4px;border-radius:3px';
+    mark.append(label);
   }
-  const { t, index, kids, row } = drop, scroll = doc.documentElement;
+  if (!mark.isConnected) doc.body.append(mark);
+  const label = mark.firstChild, scroll = doc.documentElement;
+  label.hidden = !drop.timeline;
+  if (drop.timeline) {
+    const r = drop.tl.getBoundingClientRect();
+    label.textContent = hhmm(drop.start);
+    Object.assign(mark.style, { left: r.left + 'px', top: r.top + ((drop.start - +drop.tl.dataset.from) * +drop.tl.dataset.ph) / 60 - 1 + scroll.scrollTop + 'px', width: r.width + 'px', height: '3px' });
+    return;
+  }
+  const { t, index, kids, row } = drop;
   const r = (kids[index] || kids[kids.length - 1] || t).getBoundingClientRect(), tr = t.getBoundingClientRect();
   if (kids.length === 0) Object.assign(mark.style, { left: tr.left + 8 + 'px', top: tr.top + 8 + 'px', width: Math.max(10, tr.width - 16) + 'px', height: '3px' });
   else if (row) Object.assign(mark.style, { left: (index < kids.length ? r.left - 7 : r.right + 5) + scroll.scrollLeft + 'px', top: r.top + 'px', width: '3px', height: r.height + 'px' });
@@ -476,6 +522,12 @@ function moveEdit(a, p) {
     a.drop = dropAt(a, p);
     showDropMark(a, a.drop);
     a.moved = a.moved || Math.hypot(p[0] - a.start[0], p[1] - a.start[1]) > 4;
+  } else if (a.kind === 'resize') {
+    // The end follows the pointer, a step at a time, never before the start (plus a step) or after the day.
+    const it = a.items[0];
+    a.end = Math.min(DAY, Math.max(it.start + SNAP, snap(minutesAt(a.d, it.tl, p[1]))));
+    it.el.style.height = heightFor(a.end - it.start, it.ph) + 'px';
+    a.moved = a.moved || a.end !== it.end;
   } else {
     const angle = Math.atan2(p[1] - a.center[1], p[0] - a.center[0]);
     a.degrees += wrapAngle(((angle - a.angle) * 180) / Math.PI);
@@ -497,13 +549,35 @@ function finishEdit(a, p) {
   }
   showDropMark(a, null);
   const restore = () => { for (const it of a.items) { if (it.style === null) it.el.removeAttribute('style'); else it.el.setAttribute('style', it.style); } };
+  if (a.kind === 'resize') {
+    const it = a.items[0];
+    if (!a.moved) { restore(); return; }
+    reportEdit(a.d, [{ id: it.el.id, op: 'resize', end: hhmm(a.end) }]); // the new height stays until the server's layout follows
+    updateSelection();
+    return;
+  }
   if (!a.moved) { restore(); return; }
   if (a.kind === 'move') {
     if (!a.drop) { restore(); updateSelection(); return; } // dropped where nothing accepts it: it goes back
-    const { t, index, kids } = a.drop, before = kids[index] || null;
-    restore();
-    for (const it of a.items) t.insertBefore(it.el, before); // shown at once; the server's layout follows
-    reportEdit(a.d, a.items.map((it, k) => ({ id: it.el.id, op: 'move', to: t.id, index: index + k })));
+    if (a.drop.timeline) {
+      // Each part starts where its own top edge is. The times are worked out before the parts are put back (they are still being dragged).
+      const tl = a.drop.tl, from = +tl.dataset.from, ph = +tl.dataset.ph, starts = a.items.map(it => startFor(a, it, tl));
+      restore();
+      a.items.forEach((it, k) => {
+        const length = it.timed ? it.end - it.start : 60;
+        tl.append(it.el); // shown at once; the server's layout follows
+        Object.assign(it.el.style, { transform: '', top: ((starts[k] - from) * ph) / 60 + 'px', height: heightFor(length, ph) + 'px', left: '1px', width: 'calc(100% - 3px)' });
+      });
+      reportEdit(a.d, a.items.map((it, k) => ({ id: it.el.id, op: 'move', to: a.drop.t.id, index: 0, at: hhmm(starts[k]) })));
+    } else {
+      const { t, index, kids } = a.drop, before = kids[index] || null;
+      restore();
+      for (const it of a.items) {
+        for (const prop of ['top', 'height', 'left', 'width']) if (it.timed) it.el.style.removeProperty(prop); // it has no time out of a timeline
+        t.insertBefore(it.el, before); // shown at once; the server's layout follows
+      }
+      reportEdit(a.d, a.items.map((it, k) => ({ id: it.el.id, op: 'move', to: t.id, index: index + k })));
+    }
   } else {
     for (const it of a.items) { it.el.dataset.rot = String(it.rot + a.degrees); }
     reportEdit(a.d, a.items.map(it => ({ id: it.el.id, op: 'rotate', deg: Math.round(a.degrees * 10) / 10 })));

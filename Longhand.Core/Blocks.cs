@@ -5,12 +5,14 @@ using System.Text.RegularExpressions;
 
 namespace Longhand.Services;
 
-/// <summary>One thing the user did to a part of a layout: moved it into a container, turned it, or deleted it.</summary>
-/// <param name="Op">"move", "rotate" or "delete".</param>
+/// <summary>One thing the user did to a part of a layout: moved it into a container, turned it, resized it, or deleted it.</summary>
+/// <param name="Op">"move", "rotate", "resize" or "delete".</param>
 /// <param name="To">The id of the container it was dropped into, for a move.</param>
 /// <param name="Index">Its place among the other parts of that container (0 is first), not counting the part itself, for a move.</param>
 /// <param name="Degrees">How far it was turned (clockwise is positive), for a turn.</param>
-public sealed record DrawingChange(string Id, string Op, string? To = null, int Index = 0, double Degrees = 0);
+/// <param name="At">When it now starts (<c>HH:MM</c>), for a move into a timeline column.</param>
+/// <param name="End">When it now ends (<c>HH:MM</c>), for a resize.</param>
+public sealed record DrawingChange(string Id, string Op, string? To = null, int Index = 0, double Degrees = 0, string? At = null, string? End = null);
 
 /// <summary>
 /// The blocks the model can put under its words: a <c>&lt;layout&gt;</c> (a board, a list, a table: structure, which the user can

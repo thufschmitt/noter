@@ -56,7 +56,7 @@ public static class Layout
     static readonly HashSet<string> Containers = new() { "row", "col", "box" };
     /// <summary>Elements that are not part of the language and whose content is not words either: dropped with everything in them.</summary>
     static readonly HashSet<string> DropWithContent = new() { "script", "style", "svg", "iframe", "object", "embed", "template", "noscript", "foreignobject" };
-    static readonly string[] AttrOrder = { "id", "title", "color", "bg", "edit", "drop", "fit", "rot" };
+    static readonly string[] AttrOrder = { "id", "title", "timeline", "color", "bg", "start", "end", "edit", "drop", "fit", "rot" };
 
     /// <summary>
     /// The colour names a layout can use, each with its value on a light page and on a dark one (the page follows the theme, so
@@ -85,6 +85,108 @@ public static class Layout
         return Palette.ContainsKey(value) || HexColor.IsMatch(value) ? value : null;
     }
     static readonly Regex IdRule = new(@"^[A-Za-z][A-Za-z0-9_-]{0,39}$", RegexOptions.Compiled);
+
+    // ----- time: a column marked timeline places its children by start and end time -----
+
+    /// <summary>A timeline column draws this many pixels to the hour; items snap to this many minutes (the page does, when dragging); an item with no end lasts this long.</summary>
+    public const int PxPerHour = 64, SnapMinutes = 15, DefaultMinutes = 60, DayMinutes = 1440;
+    static readonly Regex TimeRule = new(@"^(\d{1,2}):(\d{2})$", RegexOptions.Compiled);
+    static readonly Regex RangeRule = new(@"^(\d{1,2})(?::(\d{2}))?\s*[-–]\s*(\d{1,2})(?::(\d{2}))?$", RegexOptions.Compiled);
+
+    /// <summary>Minutes since midnight from <c>H:MM</c> or <c>HH:MM</c> (24:00 is the end of the day); false for anything else.</summary>
+    public static bool TryMinutes(string? text, out int minutes)
+    {
+        minutes = 0;
+        var m = TimeRule.Match((text ?? "").Trim());
+        if (!m.Success) return false;
+        int hours = int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture), mins = int.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture);
+        if (mins > 59 || hours > 24 || (hours == 24 && mins != 0)) return false;
+        minutes = hours * 60 + mins;
+        return true;
+    }
+
+    public static string Hhmm(int minutes) => $"{minutes / 60:00}:{minutes % 60:00}";
+
+    /// <summary><c>8-18</c>, <c>8:30-17</c> or <c>08:00-18:00</c> as <c>08:00-18:00</c>; null when it isn't a range of times.</summary>
+    static string? NormalizeRange(string value)
+    {
+        var m = RangeRule.Match(value.Trim());
+        if (!m.Success) return null;
+        int Part(int hour, int min) => int.Parse(m.Groups[hour].Value, CultureInfo.InvariantCulture) * 60 + (m.Groups[min].Success ? int.Parse(m.Groups[min].Value, CultureInfo.InvariantCulture) : 0);
+        int from = Part(1, 2), to = Part(3, 4);
+        if (int.Parse(m.Groups[2].Success ? m.Groups[2].Value : "0", CultureInfo.InvariantCulture) > 59 || int.Parse(m.Groups[4].Success ? m.Groups[4].Value : "0", CultureInfo.InvariantCulture) > 59) return null;
+        return from < to && to <= DayMinutes ? Hhmm(from) + "-" + Hhmm(to) : null;
+    }
+
+    static (int From, int To)? ParseRange(string? value)
+    {
+        if (string.IsNullOrEmpty(value) || NormalizeRange(value) is not { } r) return null;
+        TryMinutes(r[..5], out int from);
+        TryMinutes(r[6..], out int to);
+        return (from, to);
+    }
+
+    static bool IsTimeline(LNode n) => n.Tag == "col" && n.Has("timeline");
+
+    /// <summary>When an item in a timeline column starts and ends, in minutes since midnight (an item with no end lasts an hour); null when it has no start or isn't in a timeline column.</summary>
+    public static (int Start, int End)? TimesOf(LNode item)
+    {
+        if (item.IsText || item.Parent is not { } parent || !IsTimeline(parent)) return null;
+        if (!item.Attrs.TryGetValue("start", out var s) || !TryMinutes(s, out int start) || start >= DayMinutes) return null;
+        int end = item.Attrs.TryGetValue("end", out var e) && TryMinutes(e, out int parsed) && parsed > start ? parsed : Math.Min(DayMinutes, start + DefaultMinutes);
+        return (start, end);
+    }
+
+    /// <summary>
+    /// The hours a timeline column shows. Timeline columns side by side (the days of a week) share one range, so their hours line up:
+    /// the widest of the ranges given, widened to whole hours to hold every item, or 08:00–18:00 when nothing says.
+    /// </summary>
+    public static (int From, int To) RangeOf(LNode col)
+    {
+        var group = col.Parent is { } parent ? parent.Elements.Where(IsTimeline).ToList() : new List<LNode> { col };
+        int? from = null, to = null;
+        foreach (var c in group)
+            if (ParseRange(c.Attrs.GetValueOrDefault("timeline")) is { } r)
+            {
+                from = Math.Min(from ?? r.From, r.From);
+                to = Math.Max(to ?? r.To, r.To);
+            }
+        foreach (var c in group)
+            foreach (var item in c.Elements)
+                if (TimesOf(item) is { } t)
+                {
+                    if (from is null || t.Start < from) from = t.Start / 60 * 60;
+                    if (to is null || t.End > to) to = (t.End + 59) / 60 * 60;
+                }
+        int a = from ?? 8 * 60, b = to ?? 18 * 60;
+        if (b - a < 60) { if (a + 60 <= DayMinutes) b = a + 60; else a = b - 60; }
+        return (a, b);
+    }
+
+    /// <summary>Which side-by-side lane each item takes, and how many lanes share its time: items that overlap split the width.</summary>
+    static Dictionary<LNode, (int Lane, int Lanes)> LanesOf(IEnumerable<(LNode Item, int Start, int End)> items)
+    {
+        var result = new Dictionary<LNode, (int, int)>();
+        var cluster = new List<(LNode Item, int Lane)>();
+        var laneEnds = new List<int>();
+        int clusterEnd = 0;
+        void Close()
+        {
+            foreach (var (item, lane) in cluster) result[item] = (lane, Math.Max(1, laneEnds.Count));
+            cluster.Clear();
+            laneEnds.Clear();
+        }
+        foreach (var (item, start, end) in items.OrderBy(i => i.Start).ThenByDescending(i => i.End))
+        {
+            if (cluster.Count > 0 && start >= clusterEnd) Close();
+            int lane = laneEnds.FindIndex(e => e <= start);
+            if (lane < 0) { laneEnds.Add(end); lane = laneEnds.Count - 1; } else laneEnds[lane] = end;
+            clusterEnd = cluster.Count == 0 ? end : Math.Max(clusterEnd, end);
+            cluster.Add((item, lane));
+        }
+        Close();
+        return result;
+    }
 
     // ----- reading it -----
 
@@ -226,6 +328,15 @@ public static class Layout
             case "bg":
                 if (NormalizeColor(value) is { } colour) node.Attrs[key] = colour;
                 break;
+            case "timeline":
+                node.Attrs["timeline"] = NormalizeRange(value) ?? ""; // a bare timeline fits its items
+                break;
+            case "start":
+                if (TryMinutes(value, out int startAt) && startAt < DayMinutes) node.Attrs["start"] = Hhmm(startAt);
+                break;
+            case "end":
+                if (TryMinutes(value, out int endAt) && endAt > 0) node.Attrs["end"] = Hhmm(endAt);
+                break;
             case "edit":
             case "drop":
             case "fit":
@@ -268,6 +379,18 @@ public static class Layout
         if (node.Parent is null) foreach (var a in new[] { "edit", "drop", "fit", "rot" }) node.Attrs.Remove(a); // the layout as a whole isn't a part to move
         if (!Containers.Contains(node.Tag)) node.Attrs.Remove("drop");
         if (node.Tag is "rule") node.Attrs.Remove("title");
+        if (node.Tag != "col") node.Attrs.Remove("timeline");
+        if (node.Parent is { } parent && IsTimeline(parent))
+        {
+            node.Attrs.Remove("rot"); // a slot of a timeline isn't turned
+            if (node.Attrs.TryGetValue("start", out var from) && node.Attrs.TryGetValue("end", out var until) && TryMinutes(from, out int a) && TryMinutes(until, out int b) && b <= a) node.Attrs.Remove("end");
+            if (!node.Has("start")) node.Attrs.Remove("end");
+        }
+        else
+        {
+            node.Attrs.Remove("start"); // times only mean something in a timeline column
+            node.Attrs.Remove("end");
+        }
         foreach (var k in node.Kids) Tidy(k);
     }
 
@@ -334,7 +457,7 @@ public static class Layout
         var sb = new StringBuilder();
         foreach (var key in AttrOrder)
             if (n.Attrs.TryGetValue(key, out var value))
-                sb.Append(' ').Append(key).Append(key is "edit" or "drop" or "fit" ? "" : "=\"" + EscapeAttribute(value) + "\"");
+                sb.Append(' ').Append(key).Append(key is "edit" or "drop" or "fit" || (key == "timeline" && value.Length == 0) ? "" : "=\"" + EscapeAttribute(value) + "\"");
         return sb.ToString();
     }
 
@@ -383,14 +506,40 @@ public static class Layout
                     node.Parent!.Kids.Remove(node);
                     break;
                 case "rotate":
-                    if (!double.IsFinite(c.Degrees)) return null;
+                    if (!double.IsFinite(c.Degrees) || IsTimeline(node.Parent!)) return null; // turning a slot of a timeline makes no sense
                     SetRot(node, node.Rot + c.Degrees);
+                    break;
+                case "resize":
+                    // The end of an item in a timeline column: at least a snap after its start, and not past the end of the day.
+                    if (TimesOf(node) is not { } now || !TryMinutes(c.End, out int newEnd)) return null;
+                    node.Attrs["end"] = Hhmm(Math.Clamp(newEnd, now.Start + SnapMinutes, DayMinutes));
                     break;
                 case "move":
                     var target = c.To is { } to ? Find(root, to) : null;
-                    if (target is null || target == root || !target.Has("drop") || target == node || node.Descendants().Contains(target)) return null;
+                    // A timeline column always lets its own items change time; receiving items from elsewhere takes drop.
+                    bool own = target is not null && target == node.Parent && IsTimeline(target);
+                    if (target is null || target == root || !(target.Has("drop") || own) || target == node || node.Descendants().Contains(target)) return null;
+                    if (IsTimeline(target))
+                    {
+                        // Dropped in a timeline column: it starts at that time (an hour long if it had no length; kept inside the day).
+                        if (!TryMinutes(c.At, out int at) || at >= DayMinutes) return null;
+                        int length = Math.Clamp(TimesOf(node) is { } was ? was.End - was.Start : DefaultMinutes, SnapMinutes, DayMinutes);
+                        int start = Math.Clamp(at, 0, DayMinutes - length);
+                        if (node.Parent != target)
+                        {
+                            node.Parent!.Kids.Remove(node);
+                            node.Parent = target;
+                            target.Kids.Add(node);
+                        }
+                        node.Attrs.Remove("rot");
+                        node.Attrs["start"] = Hhmm(start);
+                        node.Attrs["end"] = Hhmm(start + length);
+                        break;
+                    }
                     node.Parent!.Kids.Remove(node);
                     node.Parent = target;
+                    node.Attrs.Remove("start"); // out of a timeline, it has no time
+                    node.Attrs.Remove("end");
                     var elements = target.Elements.ToList();
                     int index = Math.Clamp(c.Index, 0, elements.Count);
                     if (index >= elements.Count) target.Kids.Add(node);
@@ -413,6 +562,8 @@ public static class Layout
         public int Position;
         public double Rot;
         public bool Deleted;
+        /// <summary>When it was, in minutes since midnight, if it was in a timeline column (with a start).</summary>
+        public int? Start, End;
         /// <summary>Its words, so the report can say which one it means.</summary>
         public string Label = "";
 
@@ -434,8 +585,11 @@ public static class Layout
         if (root is null || node is null || node == root) return null;
         var (parent, position, _) = PlaceOf(root, node);
         var label = node.Words();
-        return new EditEntry { Parent = parent, Position = position, Rot = node.Rot, Label = label.Length > 40 ? label[..40] : label };
+        var times = TimesOf(node);
+        return new EditEntry { Parent = parent, Position = position, Rot = node.Rot, Start = times?.Start, End = times?.End, Label = label.Length > 40 ? label[..40] : label };
     }
+
+    static string Span(int start, int end) => Hhmm(start) + "–" + Hhmm(end);
 
     static List<string> Describe(string markup, IReadOnlyDictionary<string, EditEntry> edits)
     {
@@ -445,7 +599,9 @@ public static class Layout
         foreach (var (id, was) in edits.OrderBy(p => p.Key, StringComparer.Ordinal))
         {
             var name = was.Label.Length > 0 ? $"{id} \"{was.Label}\"" : id;
-            var from = $"#{was.Parent} (position {was.Position})";
+            bool wasTimed = was.Start is not null && was.End is not null;
+            var wasSpan = wasTimed ? Span(was.Start!.Value, was.End!.Value) : "";
+            var from = wasTimed ? $"#{was.Parent} {wasSpan}" : $"#{was.Parent} (position {was.Position})";
             if (was.Deleted)
             {
                 lines.Add($"- {name}: deleted (it was in {from})");
@@ -453,8 +609,16 @@ public static class Layout
             }
             if (Find(root, id) is not { } node || node == root) continue;
             var (parent, position, count) = PlaceOf(root, node);
+            var times = TimesOf(node);
             var what = new List<string>();
-            if (parent != was.Parent) what.Add($"moved from {from} to #{parent} (position {position} of {count})");
+            if (parent != was.Parent)
+                what.Add($"moved from {from} to " + (times is { } t ? $"#{parent} {Span(t.Start, t.End)}" : $"#{parent} (position {position} of {count})"));
+            else if (wasTimed && times is { } now)
+            {
+                if (now.Start != was.Start) what.Add($"rescheduled from {wasSpan} to {Span(now.Start, now.End)}");
+                else if (now.End != was.End) what.Add($"resized from {wasSpan} to {Span(now.Start, now.End)}");
+            }
+            else if (times is { } scheduled) what.Add($"scheduled at {Span(scheduled.Start, scheduled.End)} (it had no time)");
             else if (position != was.Position) what.Add($"moved within #{parent} from position {was.Position} to position {position} (of {count})");
             var turn = Wrap(node.Rot - was.Rot);
             if (Math.Abs(turn) > 0.5) what.Add($"turned {Math.Round(Math.Abs(turn))}° {(turn > 0 ? "clockwise" : "anticlockwise")}");
@@ -473,31 +637,67 @@ public static class Layout
 
     static string Encode(string s) => WebUtility.HtmlEncode(s);
 
-    static void Render(LNode n, StringBuilder sb)
+    static string Num(double v) => Math.Round(v, 2).ToString("0.##", CultureInfo.InvariantCulture);
+
+    /// <param name="placed">A style that puts the part where its time says (an item in a timeline column).</param>
+    static void Render(LNode n, StringBuilder sb, string? placed = null)
     {
         if (n.IsText)
         {
             sb.Append(Encode(n.Text));
             return;
         }
+        bool timeline = IsTimeline(n);
+        bool axis = timeline && n.Parent is { } group && group.Elements.First(IsTimeline) == n;
+        var times = TimesOf(n);
         sb.Append("<div class=\"n ").Append(n.Tag);
         if (n.Has("edit")) sb.Append(" edit");
         if (n.Has("drop")) sb.Append(" drop");
         if (n.Has("fit")) sb.Append(" fit");
+        if (axis) sb.Append(" tl-axis"); // the first of the days shows the hours
         // A palette colour is a class (which follows the theme); a hex colour is a style. Both were checked when the layout was read.
         var styles = new List<string>();
         if (n.Attrs.TryGetValue("color", out var color)) { if (Palette.ContainsKey(color)) sb.Append(" fg-").Append(color); else styles.Add("color:" + color); }
         if (n.Attrs.TryGetValue("bg", out var bg)) { if (Palette.ContainsKey(bg)) sb.Append(" bg-").Append(bg); else styles.Add("background:color-mix(in srgb," + bg + " 22%,transparent)"); }
         if (n.Rot != 0) styles.Add("transform:rotate(" + n.Rot.ToString("0.#", CultureInfo.InvariantCulture) + "deg)");
+        if (placed is not null) styles.Add(placed);
         sb.Append('"');
         if (n.Id is { } id) sb.Append(" id=\"").Append(Encode(id)).Append('"');
         if (n.Has("edit")) sb.Append(" data-edit");
         if (n.Has("drop")) sb.Append(" data-drop");
+        if (timeline) sb.Append(" data-tl");
+        if (times is { } t) sb.Append(" data-start=\"").Append(t.Start).Append("\" data-end=\"").Append(t.End).Append('"');
         if (n.Rot != 0) sb.Append(" data-rot=\"").Append(n.Rot.ToString("0.#", CultureInfo.InvariantCulture)).Append('"');
         if (styles.Count > 0) sb.Append(" style=\"").Append(string.Join(";", styles)).Append('"');
         sb.Append('>');
         if (n.Attrs.TryGetValue("title", out var title)) sb.Append("<div class=\"title\">").Append(Encode(title)).Append("</div>");
-        foreach (var k in n.Kids) Render(k, sb);
+        if (timeline) RenderTimeline(n, sb, axis);
+        else foreach (var k in n.Kids) Render(k, sb);
+        sb.Append("</div>");
+    }
+
+    /// <summary>
+    /// A timeline column: what has no time first, then the hours, with each timed item at its start, as tall as it is long, and side by
+    /// side with the items it overlaps. The browser lays out the rest, so this needs no measuring. The grid carries what the page needs to
+    /// turn a drop position back into a time (<c>data-from</c> in minutes, <c>data-ph</c> pixels to the hour).
+    /// </summary>
+    static void RenderTimeline(LNode col, StringBuilder sb, bool axis)
+    {
+        var (from, to) = RangeOf(col);
+        double px = PxPerHour / 60.0;
+        foreach (var k in col.Kids.Where(k => TimesOf(k) is null)) Render(k, sb);
+        var timed = col.Elements.Select(k => (Item: k, Times: TimesOf(k))).Where(x => x.Times is not null).Select(x => (x.Item, x.Times!.Value.Start, x.Times.Value.End)).ToList();
+        var lanes = LanesOf(timed);
+        sb.Append("<div class=\"tl\" data-from=\"").Append(from).Append("\" data-to=\"").Append(to).Append("\" data-ph=\"").Append(PxPerHour)
+            .Append("\" style=\"height:").Append(Num((to - from) * px)).Append("px\">");
+        if (axis)
+            for (int h = (from + 59) / 60 * 60; h <= to; h += 60)
+                sb.Append("<div class=\"tl-label\" style=\"top:").Append(Num((h - from) * px)).Append("px\">").Append(Hhmm(h)).Append("</div>");
+        foreach (var (item, start, end) in timed)
+        {
+            var (lane, count) = lanes[item];
+            Render(item, sb, $"top:{Num((start - from) * px)}px;height:{Num(Math.Max(14, (end - start) * px - 2))}px;left:calc({Num(100.0 * lane / count)}% + 1px);width:calc({Num(100.0 / count)}% - 3px)");
+        }
         sb.Append("</div>");
     }
 
@@ -530,6 +730,11 @@ public static class Layout
             .drop { min-height: 56px; }
             .rule { border-top: 1.5px solid currentColor; opacity: .6; margin: 6px 0; }
             .text { overflow-wrap: anywhere; }
+            .col.tl-axis { padding-left: 52px; }
+            .tl { position: relative; flex: none; background-image: repeating-linear-gradient(to bottom, color-mix(in srgb, currentColor 30%, transparent) 0 1px, transparent 1px 64px), repeating-linear-gradient(to bottom, color-mix(in srgb, currentColor 12%, transparent) 0 1px, transparent 1px 32px); }
+            .tl-label { position: absolute; left: -50px; width: 44px; margin-top: -7px; text-align: right; font-size: 13px; line-height: 14px; opacity: .6; }
+            .tl > .box { position: absolute; box-sizing: border-box; padding: 0 6px; border-width: 1.5px; border-radius: 6px; gap: 0; overflow: hidden; font-size: 18px; line-height: 20px; }
+            :where(.tl) > .box { background: Canvas; }
             PALETTE
             </style></head>
             <body>BLOCK</body></html>

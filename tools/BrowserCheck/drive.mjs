@@ -182,6 +182,49 @@ check('the hint is gone and the typed note is on the first rule', await evaluate
 check('and Claude answers below it', await until(`[...document.querySelectorAll('.note:not(.hint):not(.typed)')].some(n => n.textContent.includes('Here is a sketch'))`, 20000));
 await sleep(800);
 await shot('6b-typed');
+
+// ----- a timeline: drag an item to another day and time, drag its end, and ask -----
+await evaluate(`window.firstDrawing = () => [...notes.values()].flatMap(n => [...n.drawings.values()]).find(d => d.kind === 'layout')`);
+await until(`state && !state.busy`, 20000); // the last answer is still being written until then
+if (await evaluate(`document.getElementById('typebar').hidden`)) await evaluate(`document.getElementById('keyboard').click()`);
+await evaluate(`document.getElementById('typeInput').focus()`);
+await call('Input.insertText', { text: 'show my day timeline' });
+await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
+await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+check('a timeline arrives: two days, each a grid of hours, as tall as its range', await until(`(() => { const d = window.firstDrawing(); const doc = d && frameDoc(d); return !!doc && doc.querySelectorAll('.tl').length === 2 && Math.round(doc.querySelector('.tl').getBoundingClientRect().height) === 640; })()`, 20000));
+await sleep(1200);
+check('the standup sits at nine, as tall as its hour, and the hours are written once', await evaluate(`(() => { const doc = frameDoc(firstDrawing()), tl = doc.querySelector('.tl'), e = doc.getElementById('e1').getBoundingClientRect(), t = tl.getBoundingClientRect(); return Math.round(e.top - t.top) === 64 && Math.round(e.height) === 62 && doc.querySelectorAll('.tl-label').length === 11 && doc.querySelector('.tl-label').textContent === '08:00'; })()`));
+check('overlapping items share the width side by side, and the hours line up between the days', await evaluate(`(() => { const doc = frameDoc(firstDrawing()), a = doc.getElementById('e2').getBoundingClientRect(), b = doc.getElementById('e3').getBoundingClientRect(), t = doc.querySelectorAll('.tl'); return a.right <= b.left + 1 && Math.abs(a.width - b.width) < 2 && a.top < b.bottom && b.top < a.bottom && Math.abs(t[0].getBoundingClientRect().top - t[1].getBoundingClientRect().top) < 1 && Math.abs(t[0].getBoundingClientRect().height - t[1].getBoundingClientRect().height) < 1; })()`));
+await shot('4f-timeline');
+let [tcx, tcy] = await onScreen('#e1');
+await mouse('mousePressed', tcx, tcy, 'pen'); await mouse('mouseReleased', tcx, tcy, 'pen');
+check('tapping an item selects it, offering its end but no turning', await until(`selection && selection.els[0].id === 'e1'`) && await evaluate(`getComputedStyle(selEl.querySelector('.rotate')).display === 'none' && getComputedStyle(selEl.querySelector('.resize')).display !== 'none'`));
+// To eleven on Friday: where its top edge lands is what counts, so the pointer moves by as much as the edge has to.
+const [, fTop, , fBottom] = await rectOnScreen('#fri .tl'), [, eTop] = await rectOnScreen('#e1'), [fl, , fr] = await rectOnScreen('#fri .tl');
+const pxHour = (fBottom - fTop) / 10, dyTarget = fTop + 3 * pxHour - eTop;
+await mouse('mousePressed', tcx, tcy);
+for (let i = 1; i <= 10; i++) { await mouse('mouseMoved', tcx + (((fl + fr) / 2 - tcx) * i) / 10, tcy + (dyTarget * i) / 10); await sleep(15); }
+check('while dragging, a line shows the time it would start at', await evaluate(`(() => { const m = frameDoc(firstDrawing()).getElementById('dropmark'); return !!m && m.firstChild.textContent === '11:00' && !m.firstChild.hidden; })()`));
+await shot('4g-timeline-dragging');
+await mouse('mouseReleased', (fl + fr) / 2, tcy + dyTarget);
+check('dropping it on Friday at eleven moves it there, keeping its hour, in the layout the server sends back', await until(`(() => { const doc = new DOMParser().parseFromString(firstDrawing().doc, 'text/html'); const e = doc.querySelector('#fri #e1'); return !!e && e.dataset.start === '660' && e.dataset.end === '720'; })()`, 8000));
+check('the move makes the page askable', await until(`!document.getElementById('ask').disabled`, 5000));
+check('the moved item is still selected', await until(`selection && selection.els.length === 1 && selection.els[0].id === 'e1' && inTimeline(selection.els[0])`, 8000));
+await sleep(500);
+const knob = JSON.parse(await evaluate(`(() => { const f = selectionFrame(), r = inkCanvas.getBoundingClientRect(); return JSON.stringify([r.left + f.cx, r.top + f.bottom - scroller.scrollTop]); })()`));
+await mouse('mousePressed', knob[0], knob[1]);
+for (let i = 1; i <= 8; i++) { await mouse('mouseMoved', knob[0], knob[1] + (2 * pxHour * i) / 8); await sleep(15); }
+check('dragging the end knob down two hours stretches the item as it goes', await evaluate(`Math.round(frameDoc(firstDrawing()).getElementById('e1').getBoundingClientRect().height) === ${Math.round(3 * pxHour - 2)}`));
+await mouse('mouseReleased', knob[0], knob[1] + 2 * pxHour);
+check('and sets its end to two o\'clock', await until(`(() => { const doc = new DOMParser().parseFromString(firstDrawing().doc, 'text/html'); const e = doc.querySelector('#fri #e1'); return !!e && e.dataset.start === '660' && e.dataset.end === '840'; })()`, 8000));
+await key('Escape', 'Escape', 27);
+await evaluate(`document.getElementById('ask').click()`);
+check('asking tells the model what changed, in times', await until(`[...document.querySelectorAll('.note')].some(n => n.textContent === 'Rescheduled.')`, 20000));
+const newest = fs.readdirSync(outDir).filter(f => /^request-\d+\.json$/.test(f)).map(f => [+f.match(/\d+/)[0], f]).sort((x, y) => y[0] - x[0]).map(x => x[1]);
+const dayAsk = newest.map(f => JSON.parse(fs.readFileSync(`${outDir}/${f}`, 'utf8')).input.flatMap(m => (m.content || []).map(c => c.text || '')).join('\n')).find(t => t.includes('Layout "day":')) || '';
+check('the request lists the move and the new end, as times', dayAsk.includes('- e1 "Standup": moved from #thu 09:00–10:00 to #fri 11:00–14:00') && !dayAsk.includes('e2 "Dentist"'));
+check('and the layout the model sends back replaces the day where it is', await until(`document.querySelectorAll('iframe.drawing').length === 2 && firstDrawing().doc.includes('Updated by the model.')`, 8000));
+await shot('4h-timeline-replaced');
 // Connected apps: the dialog opens, the registry can be searched, and an app added by address shows up.
 await evaluate(`document.getElementById('appsButton').click()`);
 check('the connected apps dialog opens, empty, with Nextcloud ready to connect', await until(`document.getElementById('apps').open && document.getElementById('appList').textContent.includes('No apps yet') && document.querySelector('#nextcloud input') !== null`));

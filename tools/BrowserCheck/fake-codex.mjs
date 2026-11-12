@@ -23,7 +23,16 @@ http.createServer((req, res) => {
     const board = (todo, doing, doneText) => '<layout id="week" title="Your week"><row>'
       + '<col id="todo" drop title="To do">' + todo + '</col><col id="doing" drop title="Doing">' + doing + '</col></row><text>' + (doneText || 'Drag the cards.') + '</text>'
       + '<script>parent.hacked = true</script></layout>';
-    const text = calls === 1
+    // A day as a timeline: asked for in a typed note, and sent again, with the item moved, when the changes come back.
+    let said = '';
+    try { said = JSON.parse(body).input.flatMap(m => (m.content || []).map(c => c.text || '')).join('\n'); } catch (e) { }
+    const dayItems = '<box id="e1" edit start="09:00" end="10:00">Standup</box><box id="e2" edit start="14:00" end="15:30">Dentist</box><box id="e3" start="14:30" end="15:00">Call</box>';
+    const day = (items, note) => '<layout id="day" title="Thursday 12 Nov"><row><col id="thu" timeline="08:00-18:00" drop title="Thu">' + items + '</col><col id="fri" timeline="08:00-18:00" drop title="Fri"/></row><text>' + note + '</text></layout>';
+    const text = said.includes('newest note, typed on a keyboard:\nshow my day timeline')
+      ? 'HEARD: show my day timeline\n---\nHere is your day.\n' + day(dayItems, 'Drag the items.')
+      : said.includes('Layout "day":')
+      ? 'HEARD: [rescheduled the standup]\n---\nRescheduled.\n' + day(dayItems.replace('<box id="e1" edit start="09:00" end="10:00">Standup', '<box id="e1" edit start="11:00" end="13:00">Standup'), 'Updated by the model.')
+      : calls === 1
       ? 'HEARD: hello notebook\n---\nHi there! This is the model answering in the notebook, on the ruled lines, in blue handwriting.'
       : body.includes('changed your layouts by hand')
         ? 'HEARD: [moved the cards]\n---\nMoved it.\n' + board('', card('c1', 'Call Anna') + card('c2', 'Gym') + '<box id="c3" edit color="red" bg="yellow">Pay rent</box>', 'Updated by the model.')

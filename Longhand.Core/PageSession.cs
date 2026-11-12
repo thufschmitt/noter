@@ -701,7 +701,7 @@ public sealed class PageSession
                 note.DrawingsSeen = note.Drawings.Count;
                 foreach (var e in n.Edits ?? new List<SavedEdit>())
                     if (e.Drawing >= 0 && e.Drawing < note.Drawings.Count)
-                        note.Drawings[e.Drawing].Edits[e.Id] = new Layout.EditEntry { Parent = e.Parent, Position = e.Position, Rot = e.Rot, Deleted = e.Deleted, Label = e.Label ?? "" };
+                        note.Drawings[e.Drawing].Edits[e.Id] = new Layout.EditEntry { Parent = e.Parent, Position = e.Position, Rot = e.Rot, Deleted = e.Deleted, Label = e.Label ?? "", Start = e.Start, End = e.End };
                 await LayoutAsync(note);
             }
         else if (_view.Strokes().Count == 0)
@@ -889,7 +889,7 @@ public sealed class PageSession
         var list = new List<SavedEdit>();
         for (int i = 0; i < n.Drawings.Count; i++)
             foreach (var (id, e) in n.Drawings[i].Edits)
-                list.Add(new SavedEdit(i, id, e.Parent, e.Position, e.Rot, e.Deleted, e.Label.Length > 0 ? e.Label : null));
+                list.Add(new SavedEdit(i, id, e.Parent, e.Position, e.Rot, e.Deleted, e.Label.Length > 0 ? e.Label : null, e.Start, e.End));
         return list.Count > 0 ? list : null;
     }
 

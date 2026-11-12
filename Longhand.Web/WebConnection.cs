@@ -265,7 +265,7 @@ public sealed class WebConnection : IPageView, IPageData
         }
     }
 
-    /// <summary>The user moved, turned or deleted parts of a layout: { note, drawing, changes: [{ id, op, to?, index?, deg? }] }.</summary>
+    /// <summary>The user moved, turned or deleted parts of a layout: { note, drawing, changes: [{ id, op, to?, index?, deg?, at?, end? }] }.</summary>
     void HandleEdit(JsonElement m)
     {
         if (Num(m, "note") is not { } noteId || Num(m, "drawing") is not { } drawingId) return;
@@ -276,7 +276,7 @@ public sealed class WebConnection : IPageView, IPageData
         if (m.TryGetProperty("changes", out var list) && list.ValueKind == JsonValueKind.Array)
             foreach (var c in list.EnumerateArray())
                 if (c.ValueKind == JsonValueKind.Object && Str(c, "id") is { Length: > 0 } id && Str(c, "op") is { } op)
-                    changes.Add(new DrawingChange(id, op, Str(c, "to"), Num(c, "index") is { } index && double.IsFinite(index) ? (int)Math.Clamp(index, 0, 10000) : 0, Num(c, "deg") is { } deg && double.IsFinite(deg) ? deg : 0));
+                    changes.Add(new DrawingChange(id, op, Str(c, "to"), Num(c, "index") is { } index && double.IsFinite(index) ? (int)Math.Clamp(index, 0, 10000) : 0, Num(c, "deg") is { } deg && double.IsFinite(deg) ? deg : 0, Str(c, "at"), Str(c, "end")));
         _session.EditDrawing(note, drawing, changes);
     }
 

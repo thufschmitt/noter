@@ -190,6 +190,74 @@ static class AgentChecks
         check("a turned, coloured part keeps both", Blocks.Document(Blocks.Sanitize("<layout><box edit rot=\"15\" color=\"#f00\">x</box></layout>")!).Contains("data-rot=\"15\" style=\"color:#f00;transform:rotate(15deg)\""));
         check("colours don't get in the way of editing", Layout.ApplyEdits(coloured, new[] { new DrawingChange("a", "rotate", Degrees: 20) }) is { } turnedColour && turnedColour.Contains("<box id=\"a\" color=\"#abc\" bg=\"#1e90ff\" edit rot=\"20\">"));
 
+        // ----- timelines: columns that place their children by time -----
+        var day = Blocks.Sanitize("""
+            <layout id="day"><row>
+              <col id="thu" timeline="8-18" drop title="Thu 12">
+                <box id="e1" edit start="9:00" end="9:30">Standup</box>
+                <box id="e2" edit start="14:00" end="15:30" rot="20">Dentist</box>
+                <box id="e3" start="14:30" end="15:00">Call</box>
+                <box id="e4" edit>Someday</box>
+              </col>
+              <col id="fri" timeline="09:00-17:00" drop/>
+            </row><col id="plain" drop title="Unscheduled"/></layout>
+            """)!;
+        check("a timeline column is written out in the canonical form, its range normalised, its items' times as HH:MM", day.Contains("<col id=\"thu\" title=\"Thu 12\" timeline=\"08:00-18:00\" drop>") && day.Contains("<box id=\"e1\" start=\"09:00\" end=\"09:30\" edit>Standup</box>") && day.Contains("<col id=\"fri\" timeline=\"09:00-17:00\" drop/>"));
+        check("an item in a timeline can't be turned", day.Contains("<box id=\"e2\" start=\"14:00\" end=\"15:30\" edit>Dentist</box>") && !day.Contains("rot="));
+        check("a bare timeline stays bare, and a range that isn't one is taken as bare", Layout.Sanitize("<layout><col id=\"a\" timeline><box>x</box></col></layout>")!.Contains("<col id=\"a\" timeline>") && Layout.Sanitize("<layout><col id=\"a\" timeline=\"18-8\"><box>x</box></col></layout>")!.Contains("<col id=\"a\" timeline>")
+            && Layout.Sanitize("<layout><col id=\"a\" timeline=\"junk\"><box>x</box></col></layout>")!.Contains("<col id=\"a\" timeline>") && Layout.Sanitize("<layout><col id=\"a\" timeline=\"8-25\"><box>x</box></col></layout>")!.Contains("<col id=\"a\" timeline>"));
+        var oddTimes = Layout.Sanitize("<layout><col id=\"plain\"><box start=\"10:00\" end=\"11:00\">x</box></col><box timeline=\"8-18\">y</box><col timeline><box id=\"a\" start=\"25:00\">bad</box><box start=\"10:00\" end=\"09:00\">backwards</box><box end=\"11:00\">no start</box></col></layout>")!;
+        check("times only mean something in a timeline column, and only a column can be one", oddTimes.Contains("<col id=\"plain\">") && !oddTimes.Contains("start=\"10:00\" end=\"11:00\"") && oddTimes.Contains("<box>y</box>") && !oddTimes.Contains("timeline=\"08:00-18:00\""));
+        check("a start that isn't a time, an end before the start, and an end with no start are dropped", oddTimes.Contains("<box id=\"a\">bad</box>") && oddTimes.Contains("<box start=\"10:00\">backwards</box>") && oddTimes.Contains("<box>no start</box>"));
+        check("it survives being read and written again", Layout.Serialize(Layout.Parse(day)!) == day && Layout.Serialize(Layout.Parse(oddTimes)!) == oddTimes);
+        check("times are read back as minutes, with an hour when there is no end, and none for what has no start", Layout.Parse(day) is { } dayTree && Layout.TimesOf(Layout.Find(dayTree, "e1")!) == (540, 570) && Layout.TimesOf(Layout.Find(dayTree, "e4")!) is null
+            && Layout.Parse(oddTimes) is { } oddTimesTree && Layout.TimesOf(oddTimesTree.Descendants().First(d => d.Words() == "backwards")) == (600, 660));
+        var dayRoot = Layout.Parse(day)!;
+        check("the hours of timeline columns side by side are shared, the widest range", Layout.RangeOf(Layout.Find(dayRoot, "thu")!) == (480, 1080) && Layout.RangeOf(Layout.Find(dayRoot, "fri")!) == (480, 1080));
+        var late = Layout.Parse(Layout.Sanitize("<layout><row><col id=\"a\" timeline=\"9-12\"><box start=\"11:30\" end=\"13:10\">x</box></col><col id=\"b\" timeline=\"9-12\"><box start=\"7:45\">y</box></col></row></layout>")!)!;
+        check("an item outside the range widens it to whole hours", Layout.RangeOf(Layout.Find(late, "a")!) == (420, 840));
+        check("with no range the items set it, and with nothing it is a working day", Layout.RangeOf(Layout.Parse(Layout.Sanitize("<layout><col id=\"a\" timeline><box start=\"9:20\" end=\"10:40\">x</box></col></layout>")!)!.Descendants().First(d => d.Id == "a")) == (540, 660)
+            && Layout.RangeOf(Layout.Parse(Layout.Sanitize("<layout><col id=\"a\" timeline><box>x</box></col></layout>")!)!.Descendants().First(d => d.Id == "a")) == (480, 1080));
+        var dayHtml = Blocks.Document(day);
+        var dayBody = dayHtml[dayHtml.IndexOf("<body>")..];
+        check("the hours are a grid as tall as the range, which says where it starts so a drop can be turned back into a time", dayBody.Contains("<div class=\"tl\" data-from=\"480\" data-to=\"1080\" data-ph=\"64\" style=\"height:640px\">"));
+        check("an item is placed at its start, as tall as it is long", dayBody.Contains("data-start=\"540\" data-end=\"570\" style=\"top:64px;height:30px;left:calc(0% + 1px);width:calc(100% - 3px)\">Standup"));
+        check("items that overlap share the width side by side, and the others keep all of it", dayBody.Contains("id=\"e2\" data-edit data-start=\"840\" data-end=\"930\" style=\"top:384px;height:94px;left:calc(0% + 1px);width:calc(50% - 3px)\">Dentist")
+            && dayBody.Contains("id=\"e3\" data-start=\"870\" data-end=\"900\" style=\"top:416px;height:30px;left:calc(50% + 1px);width:calc(50% - 3px)\">Call"));
+        check("what has no time comes before the hours", dayBody.IndexOf("Someday") is > 0 and var someday && someday < dayBody.IndexOf("<div class=\"tl\""));
+        check("the first day shows the hours, once, and the others don't", dayBody.Split("class=\"tl-label\"").Length - 1 == 11 && dayBody.Contains("<div class=\"tl-label\" style=\"top:0px\">08:00</div>") && dayBody.Contains(">18:00</div>")
+            && dayBody.Split("tl-axis").Length - 1 == 1 && dayBody.IndexOf("tl-axis") < dayBody.IndexOf("id=\"fri\""));
+        check("the grid has its own style, and a colour on an item still shows", dayHtml.Contains(".tl { position: relative;") && Blocks.Document(Blocks.Sanitize("<layout><col timeline><box start=\"9:00\" color=\"red\">x</box></col></layout>")!).Contains("class=\"n box fg-red\""));
+
+        string? Times(string? markup, string id) => markup is null ? null : Layout.TimesOf(Layout.Find(Layout.Parse(markup)!, id)!) is { } t ? Layout.Hhmm(t.Start) + "–" + Layout.Hhmm(t.End) : "-";
+        string? ParentId(string? markup, string id) => markup is null ? null : Layout.Find(Layout.Parse(markup)!, id)!.Parent!.Id;
+        var retimed = Layout.ApplyEdits(day, new[] { new DrawingChange("e1", "move", "thu", At: "10:15") });
+        check("an item moved in its own column keeps its length, and its place among the others", Times(retimed, "e1") == "10:15–10:45" && Layout.Find(Layout.Parse(retimed!)!, "thu")!.Elements.Select(e => e.Id).SequenceEqual(new[] { "e1", "e2", "e3", "e4" }));
+        var other = Layout.ApplyEdits(day, new[] { new DrawingChange("e2", "move", "fri", At: "11:00") });
+        check("moved to another day's column it starts there, keeping its length", ParentId(other, "e2") == "fri" && Times(other, "e2") == "11:00–12:30");
+        check("a start that would run past the end of the day is brought back inside it", Times(Layout.ApplyEdits(day, new[] { new DrawingChange("e1", "move", "fri", At: "23:50") }), "e1") == "23:30–24:00");
+        check("an item with no time dropped into a timeline gets an hour", Times(Layout.ApplyEdits(day, new[] { new DrawingChange("e4", "move", "thu", At: "11:00") }), "e4") == "11:00–12:00");
+        check("a move into a timeline needs a time that is one", Layout.ApplyEdits(day, new[] { new DrawingChange("e1", "move", "fri") }) is null && Layout.ApplyEdits(day, new[] { new DrawingChange("e1", "move", "fri", At: "25:00") }) is null && Layout.ApplyEdits(day, new[] { new DrawingChange("e1", "move", "fri", At: "soon") }) is null);
+        var noDrop = Layout.Sanitize("<layout><row><col id=\"a\" timeline><box id=\"x\" edit start=\"9:00\">x</box></col><col id=\"b\" timeline/></row></layout>")!;
+        check("a timeline column lets its own items change time without drop, but takes items from elsewhere only with it", Times(Layout.ApplyEdits(noDrop, new[] { new DrawingChange("x", "move", "a", At: "10:00") }), "x") == "10:00–11:00" && Layout.ApplyEdits(noDrop, new[] { new DrawingChange("x", "move", "b", At: "10:00") }) is null);
+        var out2 = Layout.ApplyEdits(day, new[] { new DrawingChange("e1", "move", "plain") });
+        check("moved out of a timeline it has no time any more", ParentId(out2, "e1") == "plain" && Times(out2, "e1") == "-" && !out2!.Contains("start=\"09:00\""));
+        check("an end can be dragged, to at least a step after the start and not past the day", Times(Layout.ApplyEdits(day, new[] { new DrawingChange("e1", "resize", End: "11:00") }), "e1") == "09:00–11:00" && Times(Layout.ApplyEdits(day, new[] { new DrawingChange("e1", "resize", End: "09:05") }), "e1") == "09:00–09:15"
+            && Times(Layout.ApplyEdits(day, new[] { new DrawingChange("e1", "resize", End: "24:00") }), "e1") == "09:00–24:00");
+        check("only an item with a start can be resized, to a time that is one", Layout.ApplyEdits(day, new[] { new DrawingChange("e4", "resize", End: "11:00") }) is null && Layout.ApplyEdits(day, new[] { new DrawingChange("e1", "resize", End: "25:00") }) is null && Layout.ApplyEdits(day, new[] { new DrawingChange("e1", "resize") }) is null);
+        check("turning an item of a timeline is refused, and so is a move to a column that isn't there", Layout.ApplyEdits(day, new[] { new DrawingChange("e1", "rotate", Degrees: 10) }) is null && Layout.ApplyEdits(day, new[] { new DrawingChange("e1", "move", "mon", At: "10:00") }) is null);
+
+        var wasE1 = new Dictionary<string, Layout.EditEntry> { ["e1"] = Layout.Capture(day, "e1")! };
+        check("what an item was is remembered, with its time", wasE1["e1"].Parent == "thu" && wasE1["e1"].Start == 540 && wasE1["e1"].End == 570 && Layout.Capture(day, "e4")!.Start is null);
+        check("a new time is reported as rescheduled, with both", Layout.DescribeEdits(retimed!, wasE1) == "- e1 \"Standup\": rescheduled from 09:00–09:30 to 10:15–10:45");
+        check("a new end is reported as resized", Layout.DescribeEdits(Layout.ApplyEdits(day, new[] { new DrawingChange("e1", "resize", End: "11:00") })!, wasE1) == "- e1 \"Standup\": resized from 09:00–09:30 to 09:00–11:00");
+        check("another day is reported as a move, with the day and the times", Layout.DescribeEdits(Layout.ApplyEdits(day, new[] { new DrawingChange("e1", "move", "fri", At: "16:30") })!, wasE1) == "- e1 \"Standup\": moved from #thu 09:00–09:30 to #fri 16:30–17:00");
+        check("moved away and back is not reported", Layout.DescribeEdits(Layout.ApplyEdits(retimed!, new[] { new DrawingChange("e1", "move", "thu", At: "09:00") })!, wasE1) is null);
+        var wasE4 = new Dictionary<string, Layout.EditEntry> { ["e4"] = Layout.Capture(day, "e4")! };
+        check("an item given a time is reported as scheduled", Layout.DescribeEdits(Layout.ApplyEdits(day, new[] { new DrawingChange("e4", "move", "thu", At: "11:00") })!, wasE4) == "- e4 \"Someday\": scheduled at 11:00–12:00 (it had no time)");
+        check("moving out of a timeline and deleting say where the item was", Layout.DescribeEdits(out2!, wasE1) == "- e1 \"Standup\": moved from #thu 09:00–09:30 to #plain (position 1 of 1)"
+            && Layout.DescribeEdits(Layout.ApplyEdits(day, new[] { new DrawingChange("e1", "delete") })!, new Dictionary<string, Layout.EditEntry> { ["e1"] = new() { Parent = "thu", Position = 1, Start = 540, End = 570, Label = "Standup", Deleted = true } }) == "- e1 \"Standup\": deleted (it was in #thu 09:00–09:30)");
+
         // ----- the user's changes -----
         var moved = Layout.ApplyEdits(board, new[] { new DrawingChange("c1", "move", "area-1") })!;
         check("a part can be moved into a container that accepts drops, at the end by default", moved.Contains("<col id=\"todo\" title=\"To do\" drop>\n") && moved.IndexOf("id=\"item-1\"") < moved.IndexOf("<col id=\"area-1\"") && moved.IndexOf("<col id=\"area-1\"") < moved.IndexOf("id=\"c1\" edit") && Layout.Find(Layout.Parse(moved)!, "c1")!.Parent!.Id == "area-1");

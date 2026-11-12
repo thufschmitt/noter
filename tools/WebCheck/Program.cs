@@ -209,6 +209,32 @@ try
     await Task.Delay(300);
     Check("the layout is in the saved page", Directory.GetFiles(Path.Combine(data, "conversations"), "notes.json", SearchOption.AllDirectories).Any(f => System.Text.RegularExpressions.Regex.Unescape(File.ReadAllText(f)).Contains("<col id=\"doing\" drop>")));
 
+    // ----- a timeline -----
+    api.FinalText = "HEARD: day\n---\nThere.\n<layout id=\"day\"><row><col id=\"thu\" timeline=\"8-18\" drop><box id=\"e1\" edit start=\"9:00\" end=\"9:30\">Standup</box><box id=\"e2\" start=\"9:15\" end=\"10:00\">Call</box></col><col id=\"fri\" timeline=\"8-18\" drop/></row></layout>";
+    await using (var b = await FakeBrowser.ConnectAsync(url))
+    {
+        await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "page"));
+        await b.SendAsync(new { t = "type", text = "show my day" });
+        Check("a timeline reaches the browser as a grid of hours, with each item at its time and overlapping ones side by side", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "drawing" && m.GetProperty("edit").GetBoolean()
+            && m.GetProperty("doc").GetString()!.Contains("<div class=\"tl\" data-from=\"480\" data-to=\"1080\" data-ph=\"64\"") && m.GetProperty("doc").GetString()!.Contains("data-start=\"540\" data-end=\"570\"") && m.GetProperty("doc").GetString()!.Contains("width:calc(50% - 3px)")), 8000));
+        await b.UntilAsync(l => l.Where(m => m.GetProperty("t").GetString() == "state").LastOrDefault() is { ValueKind: JsonValueKind.Object } s && !s.GetProperty("busy").GetBoolean(), 8000);
+        var shown = b.Of("drawing").Last();
+        int noteId = shown.GetProperty("note").GetInt32(), drawingId = shown.GetProperty("id").GetInt32(), changed = b.Of("drawingChanged").Count();
+        await b.SendAsync(new { t = "edit", note = noteId, drawing = drawingId, changes = new[] { new { id = "e1", op = "move", to = "fri", index = 0, at = "10:15" } } });
+        Check("moving an item to another day with a time makes the move in the layout and sends it back", await b.UntilAsync(l => l.Count(m => m.GetProperty("t").GetString() == "drawingChanged") == changed + 1)
+            && b.Of("drawingChanged").Last().GetProperty("doc").GetString() is { } moved && moved.Contains("id=\"fri\"") && moved.IndexOf("id=\"e1\"") > moved.IndexOf("id=\"fri\"") && moved.Contains("data-start=\"615\" data-end=\"645\""));
+        await b.SendAsync(new { t = "edit", note = noteId, drawing = drawingId, changes = new[] { new { id = "e1", op = "move", to = "fri" } } });
+        await b.SendAsync(new { t = "edit", note = noteId, drawing = drawingId, changes = new[] { new { id = "e2", op = "resize", end = "11:00" } } });
+        Check("a move with no time, and a resize of something that isn't editable, are refused and the layout is shown as it is", await b.UntilAsync(l => l.Count(m => m.GetProperty("t").GetString() == "drawingChanged") == changed + 3));
+        await b.SendAsync(new { t = "edit", note = noteId, drawing = drawingId, changes = new[] { new { id = "e1", op = "resize", end = "11:00" } } });
+        Check("dragging the end sets it", await b.UntilAsync(l => l.Count(m => m.GetProperty("t").GetString() == "drawingChanged") == changed + 4) && b.Of("drawingChanged").Last().GetProperty("doc").GetString()!.Contains("data-start=\"615\" data-end=\"660\""));
+        int asked = api.Requests.Count(r => r.Path.EndsWith("/responses"));
+        api.FinalText = "HEARD: [rescheduled]\n---\nDone.";
+        await b.SendAsync(new { t = "ask" });
+        Check("asking tells the model what changed, in times", await b.UntilAsync(_ => api.Requests.Count(r => r.Path.EndsWith("/responses")) == asked + 1, 8000)
+            && System.Text.RegularExpressions.Regex.Unescape(api.Requests.Last(r => r.Path.EndsWith("/responses")).Body) is var timeline && timeline.Contains("e1 \"Standup\": moved from #thu 09:00–09:30 to #fri 10:15–11:00"));
+    }
+
     // ----- connected apps -----
     HttpRequestMessage ApiReq(HttpMethod m, string path, object? json = null)
     {
