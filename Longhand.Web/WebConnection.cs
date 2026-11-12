@@ -261,7 +261,7 @@ public sealed class WebConnection : IPageView, IPageData
         }
     }
 
-    /// <summary>The user moved, turned or deleted parts of a drawing: { note, drawing, changes: [{ id, op, transform?, deg? }], boxes: { id: [x, y, w, h] } }.</summary>
+    /// <summary>The user moved, turned or deleted parts of a layout: { note, drawing, changes: [{ id, op, to?, index?, deg? }] }.</summary>
     void HandleEdit(JsonElement m)
     {
         if (Num(m, "note") is not { } noteId || Num(m, "drawing") is not { } drawingId) return;
@@ -272,9 +272,8 @@ public sealed class WebConnection : IPageView, IPageData
         if (m.TryGetProperty("changes", out var list) && list.ValueKind == JsonValueKind.Array)
             foreach (var c in list.EnumerateArray())
                 if (c.ValueKind == JsonValueKind.Object && Str(c, "id") is { Length: > 0 } id && Str(c, "op") is { } op)
-                    changes.Add(new DrawingChange(id, op, Str(c, "transform"), Num(c, "deg") is { } deg && double.IsFinite(deg) ? deg : 0));
-        var boxes = m.TryGetProperty("boxes", out var measured) ? ReadBoxes(measured) : null;
-        _session.EditDrawing(note, drawing, changes, boxes ?? new Dictionary<string, Box>());
+                    changes.Add(new DrawingChange(id, op, Str(c, "to"), Num(c, "index") is { } index && double.IsFinite(index) ? (int)Math.Clamp(index, 0, 10000) : 0, Num(c, "deg") is { } deg && double.IsFinite(deg) ? deg : 0));
+        _session.EditDrawing(note, drawing, changes);
     }
 
     // ---------- IPageView: the ink ----------
@@ -336,14 +335,16 @@ public sealed class WebConnection : IPageView, IPageData
     public void DrawingAdded(NoteModel note, DrawingModel drawing)
     {
         drawing.View = ++_drawingSeq;
-        // The page renders the drawing from this document (filling in the ink colour), in a frame that runs nothing.
-        Send("drawing", ("note", NoteId(note)), ("id", DrawingId(drawing)), ("doc", Svg.Document(drawing.Markup)), ("alt", drawing.Alt), ("text", Svg.Text(drawing.Markup)), ("edit", drawing.Editable));
+        // The page renders the block from this document (filling in the ink colour), in a frame that runs nothing.
+        Send("drawing", ("note", NoteId(note)), ("id", DrawingId(drawing)), ("doc", Blocks.Document(drawing.Markup)), ("kind", Blocks.IsLayout(drawing.Markup) ? "layout" : "svg"),
+            ("alt", drawing.Alt), ("text", Blocks.Text(drawing.Markup)), ("edit", drawing.Editable));
     }
 
     public void DrawingChanged(NoteModel note, DrawingModel drawing) =>
-        Send("drawingChanged", ("note", NoteId(note)), ("id", DrawingId(drawing)), ("doc", Svg.Document(drawing.Markup)), ("alt", drawing.Alt), ("text", Svg.Text(drawing.Markup)), ("edit", drawing.Editable));
+        Send("drawingChanged", ("note", NoteId(note)), ("id", DrawingId(drawing)), ("doc", Blocks.Document(drawing.Markup)), ("kind", Blocks.IsLayout(drawing.Markup) ? "layout" : "svg"),
+            ("alt", drawing.Alt), ("text", Blocks.Text(drawing.Markup)), ("edit", drawing.Editable));
 
-    /// <summary>The browser can select, move, turn and delete the editable parts of a drawing.</summary>
+    /// <summary>The browser can select, move, turn and delete the editable parts of a layout.</summary>
     public bool CanEdit => true;
 
     public void DrawingsCleared(NoteModel note) => Send("drawingsCleared", ("note", NoteId(note)));
@@ -365,34 +366,15 @@ public sealed class WebConnection : IPageView, IPageData
                 foreach (var d in note.Drawings)
                     if (aspects.TryGetProperty(DrawingId(d).ToString(System.Globalization.CultureInfo.InvariantCulture), out var a) && a.ValueKind == JsonValueKind.Number && a.GetDouble() > 0)
                         d.Aspect = a.GetDouble();
-            // Where the parts of each editable drawing are: the browser has the renderer, so it measures.
-            if (value.TryGetProperty("boxes", out var measured) && measured.ValueKind == JsonValueKind.Object)
-                foreach (var d in note.Drawings)
-                    if (measured.TryGetProperty(DrawingId(d).ToString(System.Globalization.CultureInfo.InvariantCulture), out var found) && ReadBoxes(found) is { } boxes)
-                        d.Boxes = boxes;
+
         }
         // A reply that is only blocks has no line of words above them.
         note.Lines = Math.Max(note.Drawings.Count > 0 && note.Shown.Length == 0 ? 0 : 1, words);
         foreach (var d in note.Drawings)
         {
-            var (_, h) = Svg.Fit(d.Aspect, TextWidth);
+            var (_, h) = Blocks.Fit(d.Aspect, TextWidth);
             d.Lines = (int)Math.Ceiling(h / LineHeight);
         }
-    }
-
-    /// <summary>{ id: [x, y, w, h], … } from the browser; null when it isn't that.</summary>
-    static Dictionary<string, Box>? ReadBoxes(JsonElement element)
-    {
-        if (element.ValueKind != JsonValueKind.Object) return null;
-        var boxes = new Dictionary<string, Box>();
-        foreach (var p in element.EnumerateObject())
-        {
-            if (p.Value.ValueKind != JsonValueKind.Array || p.Value.GetArrayLength() != 4) continue;
-            var n = p.Value.EnumerateArray().Select(e => e.ValueKind == JsonValueKind.Number ? e.GetDouble() : double.NaN).ToArray();
-            if (n.Any(v => !double.IsFinite(v))) continue;
-            boxes[p.Name] = new Box(n[0], n[1], n[2], n[3]);
-        }
-        return boxes;
     }
 
     public void Place(NoteModel note)
@@ -402,7 +384,7 @@ public sealed class WebConnection : IPageView, IPageData
         foreach (var d in note.Drawings)
         {
             // Laid out at the text width (its natural size), then scaled down to the shown size if it is too tall.
-            var (w, h) = Svg.Fit(d.Aspect, TextWidth);
+            var (w, h) = Blocks.Fit(d.Aspect, TextWidth);
             drawings.Add(new { id = DrawingId(d), top, w, h, nw = TextWidth, nh = TextWidth / d.Aspect });
             top += d.Lines * LineHeight;
         }

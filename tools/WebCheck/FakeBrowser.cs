@@ -17,8 +17,6 @@ sealed class FakeBrowser : IAsyncDisposable
     readonly List<JsonElement> _log = new();
     Task _loop = Task.CompletedTask;
     public int Snapshots;
-    /// <summary>Where the browser says the parts of a drawing are (id to [x, y, w, h]), when it measures one.</summary>
-    public Dictionary<string, double[]>? Boxes;
     public JsonElement LastSnapshotRequest;
 
     public static async Task<FakeBrowser> ConnectAsync(string httpUrl, double width = 800, string? zone = null)
@@ -53,11 +51,7 @@ sealed class FakeBrowser : IAsyncDisposable
                 switch (m.GetProperty("t").GetString())
                 {
                     case "measure":
-                        var lines = (int)Math.Ceiling(m.GetProperty("text").GetString()!.Length / 30.0);
-                        if (Boxes is not null && m.TryGetProperty("blocks", out var blocks) && blocks.GetArrayLength() > 0)
-                            await SendAsync(new { t = "reply", req = m.GetProperty("req").GetInt32(), value = new { lines, aspects = new Dictionary<string, double>(), boxes = blocks.EnumerateArray().ToDictionary(b => b.GetInt32().ToString(), _ => Boxes) } });
-                        else
-                            await SendAsync(new { t = "reply", req = m.GetProperty("req").GetInt32(), value = lines });
+                        await SendAsync(new { t = "reply", req = m.GetProperty("req").GetInt32(), value = (int)Math.Ceiling(m.GetProperty("text").GetString()!.Length / 30.0) });
                         break;
                     case "snapshot":
                         Snapshots++;

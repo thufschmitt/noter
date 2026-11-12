@@ -172,35 +172,36 @@ try
         Check("and the writing is waiting to be answered", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "state" && m.GetProperty("canAsk").GetBoolean())));
     }
 
-    // ----- editing a drawing -----
-    api.FinalText = "HEARD: board\n---\nHere.\n<svg id=\"board\" viewBox=\"0 0 400 200\"><rect id=\"col-doing\" x=\"200\" width=\"200\" height=\"200\" fill=\"none\"/><g id=\"card-1\" data-edit><rect x=\"20\" y=\"20\" width=\"100\" height=\"40\"/></g></svg>";
+    // ----- editing a layout -----
+    api.FinalText = "HEARD: board\n---\nHere.\n<layout id=\"board\"><row><col id=\"todo\" drop><box id=\"c1\" edit>Call Anna</box></col><col id=\"doing\" drop/></row></layout>";
     await using (var b = await FakeBrowser.ConnectAsync(url))
     {
-        b.Boxes = new() { ["col-doing"] = new[] { 200.0, 0, 200, 200 }, ["card-1"] = new[] { 20.0, 20, 100, 40 } };
         await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "page"));
         await b.SendAsync(new { t = "ask" });
-        Check("a drawing reaches the browser as a document, marked editable", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "drawing" && m.GetProperty("edit").GetBoolean() && m.GetProperty("doc").GetString()!.Contains("data-edit=\"\"") && m.GetProperty("doc").GetString()!.Contains("default-src 'none'")), 8000));
+        Check("a layout reaches the browser as a document, marked editable, with the parts it can act on", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "drawing" && m.GetProperty("edit").GetBoolean() && m.GetProperty("kind").GetString() == "layout"
+            && m.GetProperty("doc").GetString()!.Contains("id=\"c1\" data-edit>Call Anna</div>") && m.GetProperty("doc").GetString()!.Contains("data-drop") && m.GetProperty("doc").GetString()!.Contains("default-src 'none'")), 8000));
         Check("and the reply is done", await b.UntilAsync(l => l.Where(m => m.GetProperty("t").GetString() == "state").LastOrDefault() is { ValueKind: JsonValueKind.Object } s && !s.GetProperty("busy").GetBoolean() && !s.GetProperty("canAsk").GetBoolean(), 8000));
         var shown = b.Of("drawing").Last();
         int noteId = shown.GetProperty("note").GetInt32(), drawingId = shown.GetProperty("id").GetInt32();
-        int states = b.Of("state").Count();
-        var edited = new { t = "edit", note = noteId, drawing = drawingId, changes = new[] { new { id = "card-1", op = "move", transform = "translate(210 0)", deg = 0.0 } },
-            boxes = new Dictionary<string, double[]> { ["col-doing"] = new[] { 200.0, 0, 200, 200 }, ["card-1"] = new[] { 230.0, 20, 100, 40 } } };
-        await b.SendAsync(new { edited.t, note = noteId, drawing = drawingId, changes = new[] { new { id = "card-1", op = "move", transform = "translate(1 1); evil()", deg = 0.0 } }, edited.boxes });
-        Check("an edit that isn't a transform is refused, and the browser is told to show the drawing as it is", await b.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "drawingChanged" && m.GetProperty("id").GetInt32() == drawingId)));
-        await b.SendAsync(new { t = "edit", note = 999, drawing = drawingId, changes = new[] { new { id = "card-1", op = "delete" } }, edited.boxes });
-        await b.SendAsync(edited);
-        Check("an edit makes the page askable", await b.UntilAsync(l => l.Where(m => m.GetProperty("t").GetString() == "state").Skip(states).Any(s => s.GetProperty("canAsk").GetBoolean())));
+        int states = b.Of("state").Count(), changed = b.Of("drawingChanged").Count();
+        await b.SendAsync(new { t = "edit", note = noteId, drawing = drawingId, changes = new[] { new { id = "c1", op = "move", to = "nowhere", index = 0 } } });
+        Check("a drop where nothing accepts it is refused, and the browser is told to show the layout as it is", await b.UntilAsync(l => l.Count(m => m.GetProperty("t").GetString() == "drawingChanged") == changed + 1)
+            && b.Of("drawingChanged").Last().GetProperty("doc").GetString()!.Contains("id=\"todo\" data-drop><div class=\"n box edit\" id=\"c1\""));
+        await b.SendAsync(new { t = "edit", note = 999, drawing = drawingId, changes = new[] { new { id = "c1", op = "delete" } } });
+        await b.SendAsync(new { t = "edit", note = noteId, drawing = drawingId, changes = new[] { new { id = "c1", op = "move", to = "doing", index = 0 } } });
+        Check("a move is made in the layout, and the browser is sent it back", await b.UntilAsync(l => l.Count(m => m.GetProperty("t").GetString() == "drawingChanged") == changed + 2)
+            && b.Of("drawingChanged").Last().GetProperty("doc").GetString()!.Contains("id=\"doing\" data-drop><div class=\"n box edit\" id=\"c1\""));
+        Check("it makes the page askable", await b.UntilAsync(l => l.Where(m => m.GetProperty("t").GetString() == "state").Skip(states).Any(s => s.GetProperty("canAsk").GetBoolean())));
         int asked = api.Requests.Count(r => r.Path.EndsWith("/responses"));
         await Task.Delay(300);
         Check("and nothing is sent until it is asked", api.Requests.Count(r => r.Path.EndsWith("/responses")) == asked);
         api.FinalText = "HEARD: [moved the card]\n---\nDone.";
         await b.SendAsync(new { t = "ask" });
-        Check("asking sends what changed, with where it landed", await b.UntilAsync(_ => api.Requests.Count(r => r.Path.EndsWith("/responses")) == asked + 1, 8000)
-            && System.Text.RegularExpressions.Regex.Unescape(api.Requests.Last(r => r.Path.EndsWith("/responses")).Body) is var told && told.Contains("card-1: moved by (+210, +0)") && told.Contains("inside #col-doing") && told.Contains("translate(210 0)"));
+        Check("asking sends what changed, by id", await b.UntilAsync(_ => api.Requests.Count(r => r.Path.EndsWith("/responses")) == asked + 1, 8000)
+            && System.Text.RegularExpressions.Regex.Unescape(api.Requests.Last(r => r.Path.EndsWith("/responses")).Body) is var told && told.Contains("c1 \"Call Anna\": moved from #todo (position 1) to #doing (position 1 of 1)"));
     }
     await Task.Delay(300);
-    Check("the edit is in the saved page", Directory.GetFiles(Path.Combine(data, "conversations"), "notes.json", SearchOption.AllDirectories).Any(f => File.ReadAllText(f).Contains("translate(210 0)")));
+    Check("the layout is in the saved page", Directory.GetFiles(Path.Combine(data, "conversations"), "notes.json", SearchOption.AllDirectories).Any(f => System.Text.RegularExpressions.Regex.Unescape(File.ReadAllText(f)).Contains("<col id=\"doing\" drop>")));
 
     // ----- connected apps -----
     HttpRequestMessage ApiReq(HttpMethod m, string path, object? json = null)

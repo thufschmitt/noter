@@ -22,15 +22,16 @@ const mouse = (type, x, y, pointerType = 'mouse') => call('Input.dispatchMouseEv
 // The barrel button of a pen, or the right button of a mouse: the lasso.
 const barrel = (type, x, y) => call('Input.dispatchMouseEvent', { type, x, y, button: 'right', buttons: type === 'mouseReleased' ? 0 : 2, clickCount: 1, pointerType: 'mouse' });
 const key = async (k, code, vk) => { await call('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code, windowsVirtualKeyCode: vk }); await call('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk }); };
-// A drawing's part, where it is on the screen (scrolled into view first).
-const onScreen = async (selector) => JSON.parse(await evaluate(`(() => {
-  const d = [...notes.values()].flatMap(n => [...n.drawings.values()])[0], root = svgRoot(d), el = root.querySelector(${JSON.stringify(selector)});
-  const b = boxOf(root, el), [px, py] = rootToPage(d, b[0] + b[2] / 2, b[1] + b[3] / 2);
+// A part of the first block, where it is on the screen as [left, top, right, bottom] (scrolled into view first).
+const rectOnScreen = async (selector) => JSON.parse(await evaluate(`(() => {
+  const d = firstDrawing(), el = frameDoc(d).querySelector(${JSON.stringify(selector)});
   scroller.scrollTop = Math.max(0, d.top - 80);
-  const r = inkCanvas.getBoundingClientRect();
-  return JSON.stringify([r.left + px, r.top + py - scroller.scrollTop]);
+  const q = pageRect(d, el), r = inkCanvas.getBoundingClientRect();
+  return JSON.stringify([r.left + q.left, r.top + q.top - scroller.scrollTop, r.left + q.right, r.top + q.bottom - scroller.scrollTop]);
 })()`));
-const knob = async (which) => JSON.parse(await evaluate(`(() => { const f = selectionFrame(), r = inkCanvas.getBoundingClientRect(); const p = ${which === 'delete' ? '[f.right, f.top]' : '[f.cx, f.top - 30]'}; return JSON.stringify([r.left + p[0], r.top + p[1] - scroller.scrollTop]); })()`));
+const onScreen = async (selector) => { const [l, t, r, b] = await rectOnScreen(selector); return [(l + r) / 2, (t + b) / 2]; };
+// The selection's frame on the screen: its knobs and its centre.
+const selFrame = async () => JSON.parse(await evaluate(`(() => { const f = selectionFrame(), r = inkCanvas.getBoundingClientRect(), y = r.top - scroller.scrollTop; return JSON.stringify({ cx: r.left + f.cx, cy: y + f.cy, rotate: [r.left + f.cx, y + f.top - 30], remove: [r.left + f.right, y + f.top] }); })()`));
 async function stroke(points) {
   await mouse('mousePressed', ...points[0]);
   for (const p of points.slice(1)) { await mouse('mouseMoved', ...p); await sleep(8); }
@@ -74,65 +75,74 @@ const replyTop = await evaluate(`parseFloat([...document.querySelectorAll('.note
 await stroke([[ox + 90, replyTop + 20], [ox + 400, replyTop + 24], [ox + 500, replyTop + 20]]);
 await until(`!document.getElementById('ask').disabled`);
 await evaluate(`document.getElementById('ask').click()`);
-check('a drawing arrives with the second reply', await until(`document.querySelectorAll('iframe.drawing').length === 1`, 20000));
+check('a layout arrives with the second reply', await until(`document.querySelectorAll('iframe.drawing').length === 1`, 20000));
+await evaluate(`window.firstDrawing = () => [...notes.values()].flatMap(n => [...n.drawings.values()])[0]`);
 await sleep(1500);
-check('the drawing is rendered and sized to its content', await evaluate(`(() => { const f = document.querySelector('iframe.drawing'); const d = f.contentDocument; return parseFloat(f.style.width) > 300 && parseFloat(f.style.height) > 200 && d.querySelectorAll('[data-edit]').length === 2 && d.querySelector('svg text').getBBox().width > 10; })()`));
-check('nothing in the drawing ran, and it runs nothing', await evaluate(`window.hacked === undefined && !document.querySelector('iframe.drawing').contentDocument.querySelector('script') && document.querySelector('iframe.drawing').getAttribute('sandbox') === 'allow-same-origin'`));
-check('the drawing is in the ink colour, on a clear background', await evaluate(`(() => { const d = document.querySelector('iframe.drawing').contentDocument; return getComputedStyle(d.body).color === 'rgb(44, 79, 196)' && getComputedStyle(d.body).backgroundColor === 'rgba(0, 0, 0, 0)'; })()`));
-check('the words above the block are only the words', await evaluate(`[...document.querySelectorAll('.note')].some(n => n.textContent === 'Here is your week, with a sketch.')`));
+check('the layout is rendered by the browser, sized to its content, with its parts', await evaluate(`(() => { const f = document.querySelector('iframe.drawing'); const d = f.contentDocument; return parseFloat(f.style.width) > 300 && parseFloat(f.style.height) > 100 && d.querySelectorAll('[data-edit]').length === 3 && d.querySelectorAll('[data-drop]').length === 2 && d.querySelector('#todo .title').textContent === 'To do' && d.querySelector('#todo').getBoundingClientRect().width > 100; })()`));
+check('nothing in the layout ran, and it runs nothing', await evaluate(`window.hacked === undefined && !document.querySelector('iframe.drawing').contentDocument.querySelector('script') && document.querySelector('iframe.drawing').getAttribute('sandbox') === 'allow-same-origin' && !firstDrawing().doc.includes('<script')`));
+check('the layout is in the ink colour, on a clear background', await evaluate(`(() => { const d = document.querySelector('iframe.drawing').contentDocument; return getComputedStyle(d.body).color === 'rgb(44, 79, 196)' && getComputedStyle(d.body).backgroundColor === 'rgba(0, 0, 0, 0)'; })()`));
+check('the words above the block are only the words', await evaluate(`[...document.querySelectorAll('.note')].some(n => n.textContent === 'Here is your week, with a board.')`));
 await shot('4-block');
 
-// ----- editing the board: tap to select, drag to move, turn, delete, lasso -----
-await evaluate(`window.firstDrawing = () => [...notes.values()].flatMap(n => [...n.drawings.values()])[0]`);
+// ----- editing the board: tap to select, drag into a column, turn, delete, lasso -----
+// What the server last sent as the layout (not the optimistic change on the page): is this part in that container?
+const inDoc = (container, id) => `!!new DOMParser().parseFromString(firstDrawing().doc, 'text/html').querySelector('#${container} #${id}')`;
 await sleep(1200); // a tap right after writing is part of the writing; wait it out
 const strokesBefore = await evaluate(`strokes.size`);
-let [cx, cy] = await onScreen('#card-1');
+let [cx, cy] = await onScreen('#c1');
 await mouse('mousePressed', cx, cy, 'pen'); await mouse('mouseReleased', cx, cy, 'pen');
-check('tapping a part with the pen selects it, with no dot of ink', await until(`selection && selection.els.length === 1 && selection.els[0].id === 'card-1' && !document.getElementById('selection').hidden`) && await evaluate(`strokes.size`) === strokesBefore);
+check('tapping a part with the pen selects it, with no dot of ink', await until(`selection && selection.els.length === 1 && selection.els[0].id === 'c1' && !document.getElementById('selection').hidden`) && await evaluate(`strokes.size`) === strokesBefore);
 await shot('4b-selected');
-await mouse('mousePressed', cx, cy); for (let i = 1; i <= 10; i++) { await mouse('mouseMoved', cx + i * 15, cy + i * 4); await sleep(10); } await mouse('mouseReleased', cx + 150, cy + 40);
-check('dragging inside the frame moves the part', await evaluate(`/^translate\\(/.test(svgRoot(firstDrawing()).querySelector('#card-1').getAttribute('transform'))`));
+const [tx, ty] = await onScreen('#doing');
+await mouse('mousePressed', cx, cy); for (let i = 1; i <= 10; i++) { await mouse('mouseMoved', cx + ((tx - cx) * i) / 10, cy + ((ty - cy) * i) / 10); await sleep(15); }
+check('while dragging, the part follows the pointer and the column it would land in is marked', await evaluate(`(() => { const doc = frameDoc(firstDrawing()); const m = doc.getElementById('dropmark'); return !!m && doc.getElementById('c1').style.opacity === '0.55'; })()`));
+await shot('4b2-dragging');
+await mouse('mouseReleased', tx, ty);
+check('dropping it into the other column moves it there, in the layout the server sends back', await until(inDoc('doing', 'c1'), 8000));
 check('the move makes the page askable, though nothing was written', await until(`!document.getElementById('ask').disabled`, 5000));
-let [rx, ry] = await knob('rotate');
-const frame = JSON.parse(await evaluate(`JSON.stringify(selectionFrame())`));
-const [fcx, fcy] = await onScreen('#card-1');
-await mouse('mousePressed', rx, ry); for (let i = 1; i <= 8; i++) { const a = -Math.PI / 2 + (i * 5 * Math.PI) / 180, R = Math.hypot(rx - fcx, ry - fcy); await mouse('mouseMoved', fcx + R * Math.cos(a), fcy + R * Math.sin(a)); await sleep(10); } await mouse('mouseReleased', rx, ry);
-check('dragging the knob turns the part', await evaluate(`svgRoot(firstDrawing()).querySelector('#card-1').getAttribute('transform').startsWith('matrix(')`));
+await sleep(800);
+check('the moved part is still selected', await evaluate(`selection && selection.els.length === 1 && selection.els[0].id === 'c1'`));
+let f = await selFrame();
+await mouse('mousePressed', ...f.rotate); for (let i = 1; i <= 8; i++) { const a = -Math.PI / 2 + (i * 5 * Math.PI) / 180, R = Math.hypot(f.rotate[0] - f.cx, f.rotate[1] - f.cy); await mouse('mouseMoved', f.cx + R * Math.cos(a), f.cy + R * Math.sin(a)); await sleep(10); } await mouse('mouseReleased', f.rotate[0], f.rotate[1]);
+check('dragging the knob turns the part', await until(`/data-rot="(3\\d|4\\d)(\\.\\d)?"/.test(firstDrawing().doc)`, 8000));
+await sleep(600);
 await shot('4c-moved-and-turned');
-const [dx, dy] = await knob('delete');
-await mouse('mousePressed', dx, dy); await mouse('mouseReleased', dx, dy);
-check('the cross deletes the part', await until(`!svgRoot(firstDrawing()).querySelector('#card-1') && !selection`));
+[cx, cy] = await onScreen('#c3');
+await mouse('mousePressed', cx, cy, 'pen'); await mouse('mouseReleased', cx, cy, 'pen');
+await until(`selection && selection.els[0].id === 'c3'`);
+f = await selFrame();
+await mouse('mousePressed', ...f.remove); await mouse('mouseReleased', ...f.remove);
+check('the cross deletes the part', await until(`!firstDrawing().doc.includes('Pay rent') && !selection`, 8000));
 await evaluate(`document.getElementById('undo').click()`);
-check('undo brings the part back (the server shows the drawing again)', await until(`(() => { const r = svgRoot(firstDrawing()); return r && r.querySelector('#card-1') && r.querySelector('#card-1').getAttribute('transform').startsWith('matrix('); })()`, 8000));
-await sleep(500);
-// The lasso: the pen's barrel button held, circling both cards.
-const [c1x, c1y] = await onScreen('#card-1'), [c2x, c2y] = await onScreen('#card-2');
-const loop = [[Math.min(c1x, c2x) - 150, Math.min(c1y, c2y) - 90], [Math.max(c1x, c2x) + 150, Math.min(c1y, c2y) - 90], [Math.max(c1x, c2x) + 150, Math.max(c1y, c2y) + 90], [Math.min(c1x, c2x) - 150, Math.max(c1y, c2y) + 90]];
+check('undo brings the part back (the server shows the layout again)', await until(`firstDrawing().doc.includes('Pay rent')`, 8000));
+await sleep(800);
+// The lasso: the pen's barrel button held, circling the whole board.
+const [bl, bt, br, bb] = await rectOnScreen('.layout');
+const loop = [[bl - 20, bt - 20], [br + 20, bt - 20], [br + 20, bb + 20], [bl - 20, bb + 20]];
 await barrel('mousePressed', ...loop[0]);
-for (let i = 1; i <= 4; i++) for (let k = 1; k <= 5; k++) { const a = loop[i - 1], b = loop[i % 4]; await barrel('mouseMoved', a[0] + (b[0] - a[0]) * k / 5, a[1] + (b[1] - a[1]) * k / 5); await sleep(8); }
+for (let i = 1; i <= 4; i++) for (let k = 1; k <= 5; k++) { const p = loop[i - 1], q = loop[i % 4]; await barrel('mouseMoved', p[0] + (q[0] - p[0]) * k / 5, p[1] + (q[1] - p[1]) * k / 5); await sleep(8); }
 await barrel('mouseReleased', ...loop[0]);
-check('circling with the barrel button selects what is inside', await until(`selection && selection.els.length === 2`));
+check('circling with the barrel button selects what is inside', await until(`selection && selection.els.length === 3`));
 await shot('4d-lasso');
 await key('Escape', 'Escape', 27);
 check('Escape puts the selection away', await until(`!selection && document.getElementById('selection').hidden`));
 // Writing, then a dot at once beside it, is writing: the dot is not a tap on the part under it.
-[cx, cy] = await onScreen('#card-2');
+[cx, cy] = await onScreen('#c2');
 const inkBefore = await evaluate(`strokes.size`);
 await stroke([[cx - 40, cy - 6], [cx - 20, cy + 4], [cx, cy - 4]]);
 await mouse('mousePressed', cx + 14, cy, 'pen'); await mouse('mouseReleased', cx + 14, cy, 'pen');
 check('a dot right after other ink stays ink', await until(`strokes.size === ${inkBefore + 2}`) && await evaluate(`!selection`));
 await sleep(1200);
-await mouse('mousePressed', cx, cy - 50, 'pen'); await mouse('mouseReleased', cx, cy - 50, 'pen');
 await evaluate(`clearSelection()`);
 await until(`!document.getElementById('ask').disabled`);
-// Ask: what was moved and turned goes to the model with the writing over it; the drawing it sends back replaces this one.
+// Ask: what was moved and turned goes to the model with the writing over it; the layout it sends back replaces this one.
 await evaluate(`document.getElementById('ask').click()`);
 check('the model answers the edits', await until(`[...document.querySelectorAll('.note')].some(n => n.textContent === 'Moved it.')`, 20000));
-const sentEdits = fs.existsSync(`${outDir}/request-3.json`) ? fs.readFileSync(`${outDir}/request-3.json`, 'utf8') : '';
-check('the request told it what changed, and carried the drawing as it is now', sentEdits.includes('I changed your drawings by hand') && /card-1: moved by/.test(sentEdits) && sentEdits.includes('turned') && sentEdits.includes('Its source now:') && !sentEdits.includes('card-2: deleted'));
-check('and the drawing was replaced where it was, by the one with the same id', await until(`document.querySelectorAll('iframe.drawing').length === 1 && !svgRoot(firstDrawing()).querySelector('#card-1').hasAttribute('transform') && svgRoot(firstDrawing()).querySelector('#card-1 rect').getAttribute('x') === '220'`, 8000));
+const sentEdits = fs.existsSync(`${outDir}/request-3.json`) ? JSON.parse(fs.readFileSync(`${outDir}/request-3.json`, 'utf8')).input.flatMap(m => (m.content || []).map(c => c.text || '')).join('\n') : '';
+check('the request told it what changed, by id', sentEdits.includes('I changed your layouts by hand') && sentEdits.includes('- c1 "Call Anna": moved from #todo (position 1) to #doing (position 1 of 1), turned') && !sentEdits.includes('c3 "Pay rent"') && !sentEdits.includes('Its source now') && sentEdits.includes('<box id="c1" edit rot='));
+check('and the layout was replaced where it was, by the one with the same id', await until(`document.querySelectorAll('iframe.drawing').length === 1 && firstDrawing().doc.includes('Updated by the model.') && ${inDoc('doing', 'c3')}`, 8000));
 await shot('4e-replaced');
-check('the picture sent with the edits showed the drawing', fs.readdirSync(outDir).some(f => f.startsWith('sent-3-')));
+check('the picture sent with the edits showed the layout', fs.readdirSync(outDir).some(f => f.startsWith('sent-3-')));
 
 // Annotate the drawing: the picture sent to the model shows it.
 const block = await evaluate(`(() => { const f = document.querySelector('iframe.drawing'); return { top: parseFloat(f.style.top), h: parseFloat(f.style.height) }; })()`);
@@ -168,7 +178,7 @@ await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter
 check('Enter sends it and empties the box', await until(`document.getElementById('typeInput').value === ''`));
 check('the typed note appears in the user\'s ink', await until(`[...document.querySelectorAll('.note.typed')].some(n => n.textContent === 'What is the capital of France?')`));
 check('the hint is gone and the typed note is on the first rule', await evaluate(`!document.querySelector('.note.hint') && parseFloat(document.querySelector('.note.typed').style.top) === 123`));
-check('and Claude answers below it', await until(`[...document.querySelectorAll('.note:not(.hint):not(.typed)')].some(n => n.textContent.includes('with a sketch'))`, 20000));
+check('and Claude answers below it', await until(`[...document.querySelectorAll('.note:not(.hint):not(.typed)')].some(n => n.textContent.includes('Here is a sketch'))`, 20000));
 await sleep(800);
 await shot('6b-typed');
 // Connected apps: the dialog opens, the registry can be searched, and an app added by address shows up.

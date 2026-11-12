@@ -220,7 +220,7 @@ public sealed partial class MainPage : Page, IPageView
         n.Lines = Math.Max(least, (int)Math.Round(block.DesiredSize.Height / LineHeight));
         foreach (var d in n.Drawings)
         {
-            var (w, h) = Svg.Fit(d.Aspect, TextWidth);
+            var (w, h) = Blocks.Fit(d.Aspect, TextWidth);
             var image = PictureOf(d);
             image.Width = w;
             image.Height = h;
@@ -332,7 +332,7 @@ public sealed partial class MainPage : Page, IPageView
         var rendered = await _blocks.RenderAsync(d.Markup, TextWidth, Hex6(_claudeInk.Color));
         if (rendered is null)
         {
-            if (image.Tag is null) ShowToast("A drawing couldn't be shown.");
+            if (image.Tag is null) ShowToast("A drawing or layout couldn't be shown.");
             image.Tag ??= "";
             return;
         }
@@ -604,9 +604,9 @@ public sealed partial class MainPage : Page, IPageView
     }
 
     /// <summary>
-    /// Not yet: here a drawing is a picture, so selecting, moving, turning and deleting its parts (data-edit) needs a native
-    /// selection layer over it and the parts' boxes from the renderer, which hasn't been built or tried on a Windows device.
-    /// The model is told, so it doesn't offer what can't be done.
+    /// Not yet: here a layout is a picture, so selecting, moving, turning and deleting its parts (edit, drop) needs a native
+    /// selection layer over it and the boxes of its parts from the renderer (the layout's tree and those boxes are all the drop logic
+    /// needs), which hasn't been built or tried on a Windows device. The model is told, so it doesn't offer what can't be done.
     /// </summary>
     bool IPageView.CanEdit => false;
 

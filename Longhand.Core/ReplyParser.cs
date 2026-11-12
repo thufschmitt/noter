@@ -39,7 +39,7 @@ public static class ReplyParser
     /// <summary>Splits the reply into its words and its drawings. Only the words are cleaned: markdown rules would mangle SVG.</summary>
     static Parsed Reply(string heard, string body, bool finished)
     {
-        var split = Svg.Extract(body, finished);
+        var split = Blocks.Extract(body, finished);
         return new Parsed(true, heard, Clean(split.Text), split.Blocks, split.Open);
     }
 

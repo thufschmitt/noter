@@ -261,73 +261,44 @@ inkCanvas.addEventListener('pointerup', finishPointer);
 inkCanvas.addEventListener('pointercancel', finishPointer);
 inkCanvas.addEventListener('contextmenu', e => e.preventDefault());
 
-// ---------- editing Claude's drawings ----------
+// ---------- editing Claude's layouts ----------
 
-// A drawing is an SVG in a frame that runs nothing. The page reaches into the frame (it is the same origin) to measure the parts
-// the model marked data-edit and to move them. The user's edits are applied here at once and reported to the server, which writes
-// them into the drawing; nothing goes to the model until the user asks.
+// A layout is shown in a frame that runs nothing. The page reaches into the frame (it is the same origin) to find the parts the
+// model marked edit (data-edit) and the containers that accept drops (data-drop). What the user does is shown at once and reported
+// to the server as a structural change (this part into that container at that place, turned by so many degrees, deleted); the
+// server changes the layout, which is the truth, and sends it back. Nothing goes to the model until the user asks.
 //
 // Tap a part with the pen (or click it) to select it: a frame appears with a knob to turn it and a cross to delete it, and dragging
-// inside the frame moves it. Hold the pen's barrel button (or the mouse's right button) and circle parts to select several.
+// inside the frame moves it: drop it into a container that accepts drops. Hold the pen's barrel button (or the mouse's right button)
+// and circle parts to select several.
 
-const EDIT_SELECTOR = '[data-edit]';
-let selection = null; // { d, els: [SVG elements in d's frame] }
+let selection = null; // { d, els: [elements in d's frame] }
 
-const svgRoot = d => (d.el.contentDocument ? d.el.contentDocument.querySelector('svg') : null);
+const frameDoc = d => d.el.contentDocument;
 const frameScale = d => (d.nw > 0 && d.w < d.nw - 0.5 ? d.w / d.nw : 1);
 const wrapAngle = a => ((((a + 180) % 360) + 360) % 360) - 180;
 
-// Page pixels <-> the drawing's own coordinates (its viewBox units).
-function pageToRoot(d, px, py) {
-  const s = frameScale(d), m = svgRoot(d).getScreenCTM();
-  const p = new DOMPoint((px - MARGIN_X) / s, (py - d.top) / s).matrixTransform(m.inverse());
-  return [p.x, p.y];
+// Page pixels <-> the frame's own pixels.
+const toFrame = (d, px, py) => { const s = frameScale(d); return [(px - MARGIN_X) / s, (py - d.top) / s]; };
+function pageRect(d, el) {
+  const r = el.getBoundingClientRect(), s = frameScale(d);
+  return { left: MARGIN_X + r.left * s, top: d.top + r.top * s, right: MARGIN_X + r.right * s, bottom: d.top + r.bottom * s };
 }
-function rootToPage(d, x, y) {
-  const s = frameScale(d), p = new DOMPoint(x, y).matrixTransform(svgRoot(d).getScreenCTM());
-  return [MARGIN_X + p.x * s, d.top + p.y * s];
-}
-
-// Where a part is, as [x, y, w, h] in the drawing's own coordinates (what its transforms have done to it included).
-function boxOf(root, el) {
-  let bb;
-  try { bb = el.getBBox(); } catch (e) { return null; }
-  const m = root.getScreenCTM().inverse().multiply(el.getScreenCTM());
-  const pts = [[bb.x, bb.y], [bb.x + bb.width, bb.y], [bb.x, bb.y + bb.height], [bb.x + bb.width, bb.y + bb.height]]
-    .map(([x, y]) => new DOMPoint(x, y).matrixTransform(m));
-  const xs = pts.map(p => p.x), ys = pts.map(p => p.y), x = Math.min(...xs), y = Math.min(...ys), r = v => Math.round(v * 100) / 100;
-  if (![x, y, ...xs, ...ys].every(Number.isFinite)) return null;
-  return [r(x), r(y), r(Math.max(...xs) - x), r(Math.max(...ys) - y)];
-}
-
-// Every part of the drawing that has an id: the server does the arithmetic on these (which part now sits over which).
-function drawingBoxes(d) {
-  const root = svgRoot(d), boxes = {};
-  if (!root) return boxes;
-  for (const el of root.querySelectorAll('[id]')) {
-    if (el === root) continue;
-    const b = boxOf(root, el);
-    if (b) boxes[el.id] = b;
-  }
-  return boxes;
-}
+const area = r => Math.max(0, r.right - r.left) * Math.max(0, r.bottom - r.top);
+const rectHas = (r, x, y, tol = 0) => x >= r.left - tol && x <= r.right + tol && y >= r.top - tol && y <= r.bottom + tol;
 
 function eachDrawing(fn) {
-  for (const n of notes.values()) for (const d of n.drawings.values()) if (d.edit && d.w > 0) fn(d, n);
+  for (const n of notes.values()) for (const d of n.drawings.values()) if (d.edit && d.kind === 'layout' && d.w > 0 && frameDoc(d)) fn(d, n);
 }
 
 // The smallest editable part under a point of the page.
 function editableAt(px, py) {
   let best = null;
   eachDrawing(d => {
-    if (px < MARGIN_X - 8 || px > MARGIN_X + d.w + 8 || py < d.top - 8 || py > d.top + d.h + 8) return;
-    const root = svgRoot(d);
-    if (!root) return;
-    const [x, y] = pageToRoot(d, px, py), tol = 6 / (frameScale(d) * (root.getScreenCTM().a || 1));
-    for (const el of root.querySelectorAll(EDIT_SELECTOR)) {
-      const b = boxOf(root, el);
-      if (!b || x < b[0] - tol || x > b[0] + b[2] + tol || y < b[1] - tol || y > b[1] + b[3] + tol) continue;
-      if (!best || b[2] * b[3] < best.area) best = { d, el, area: b[2] * b[3] };
+    if (!rectHas({ left: MARGIN_X, top: d.top, right: MARGIN_X + d.w, bottom: d.top + d.h }, px, py, 8)) return;
+    for (const el of frameDoc(d).querySelectorAll('[data-edit]')) {
+      const r = pageRect(d, el);
+      if (rectHas(r, px, py, 4) && (!best || area(r) < best.area)) best = { d, el, area: area(r) };
     }
   });
   return best;
@@ -354,24 +325,20 @@ function clearSelection() {
   selEl.hidden = true;
 }
 
-// The frame around the selected parts, in page pixels, and the same box in the drawing's own coordinates.
+// The frame around the selected parts, in page pixels.
 function selectionFrame() {
   if (!selection) return null;
-  const { d, els } = selection, root = svgRoot(d);
-  if (!root || !d.w) return null;
-  let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity, ul = Infinity, ut = Infinity, ur = -Infinity, ub = -Infinity;
+  const { d, els } = selection;
+  if (!d.w || !frameDoc(d)) return null;
+  let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
   for (const el of els) {
-    const bx = el.isConnected ? boxOf(root, el) : null;
-    if (!bx) continue;
-    ul = Math.min(ul, bx[0]); ut = Math.min(ut, bx[1]); ur = Math.max(ur, bx[0] + bx[2]); ub = Math.max(ub, bx[1] + bx[3]);
-    for (const [x, y] of [[bx[0], bx[1]], [bx[0] + bx[2], bx[1]], [bx[0], bx[1] + bx[3]], [bx[0] + bx[2], bx[1] + bx[3]]]) {
-      const [px, py] = rootToPage(d, x, y);
-      l = Math.min(l, px); t = Math.min(t, py); r = Math.max(r, px); b = Math.max(b, py);
-    }
+    if (!el.isConnected) continue;
+    const q = pageRect(d, el);
+    l = Math.min(l, q.left); t = Math.min(t, q.top); r = Math.max(r, q.right); b = Math.max(b, q.bottom);
   }
   if (!isFinite(l)) return null;
   const PAD = 6;
-  return { left: l - PAD, top: t - PAD, right: r + PAD, bottom: b + PAD, cx: (l + r) / 2, center: [(ul + ur) / 2, (ut + ub) / 2] };
+  return { left: l - PAD, top: t - PAD, right: r + PAD, bottom: b + PAD, cx: (l + r) / 2, cy: (t + b) / 2 };
 }
 
 function updateSelection() {
@@ -425,7 +392,7 @@ function insidePolygon(x, y, poly) {
   return inside;
 }
 
-// The editable parts that the loop mostly encloses (in one drawing: the one with the most).
+// The editable parts that the loop mostly encloses (in one layout: the one with the most).
 function lassoSelect(poly) {
   if (poly.length < 3 || isTap(poly)) { // a barrel press without a loop selects what is under it
     tapAt(poly[0]);
@@ -433,17 +400,12 @@ function lassoSelect(poly) {
   }
   let best = null;
   eachDrawing(d => {
-    const root = svgRoot(d);
-    if (!root) return;
     const els = [];
-    for (const el of root.querySelectorAll(EDIT_SELECTOR)) {
-      const b = boxOf(root, el);
-      if (!b) continue;
+    for (const el of frameDoc(d).querySelectorAll('[data-edit]')) {
+      const r = pageRect(d, el);
       let inside = 0;
-      for (let i = 0; i < 5; i++) for (let j = 0; j < 5; j++) {
-        const [px, py] = rootToPage(d, b[0] + (b[2] * (i + 0.5)) / 5, b[1] + (b[3] * (j + 0.5)) / 5);
-        if (insidePolygon(px, py, poly)) inside++;
-      }
+      for (let i = 0; i < 5; i++) for (let j = 0; j < 5; j++)
+        if (insidePolygon(r.left + ((r.right - r.left) * (i + 0.5)) / 5, r.top + ((r.bottom - r.top) * (j + 0.5)) / 5, poly)) inside++;
       if (inside >= 13) els.push(el);
     }
     if (els.length > 0 && (!best || els.length > best.els.length)) best = { d, els };
@@ -453,51 +415,79 @@ function lassoSelect(poly) {
 
 // ----- moving, turning and deleting -----
 
-const near = (a, b) => Math.abs(a - b) < 1e-6;
-// The frame's own matrices (SVGMatrix) only multiply with each other: copy them into this page's DOMMatrix first.
-const mat = m => new DOMMatrix([m.a, m.b, m.c, m.d, m.e, m.f]);
-const num = v => String(+v.toFixed(3));
-function transformText(m) {
-  if (![m.a, m.b, m.c, m.d, m.e, m.f].every(Number.isFinite)) return null;
-  if (near(m.a, 1) && near(m.b, 0) && near(m.c, 0) && near(m.d, 1)) return `translate(${num(m.e)} ${num(m.f)})`;
-  return `matrix(${num(m.a)} ${num(m.b)} ${num(m.c)} ${num(m.d)} ${num(m.e)} ${num(m.f)})`;
-}
+const rotationOf = el => parseFloat(el.dataset.rot || '0') || 0;
+const turned = (el, degrees) => { el.style.transform = degrees ? `rotate(${degrees}deg)` : ''; };
 
 function startEdit(e, kind, p) {
   inkCanvas.setPointerCapture(e.pointerId);
-  const { d, els } = selection, root = svgRoot(d), f = selectionFrame();
-  const items = els.map(el => {
-    const parent = el.parentNode, own = el.transform.baseVal;
-    const m = own.numberOfItems > 0 ? own.consolidate().matrix : null;
-    return {
-      el,
-      had: el.getAttribute('transform'),
-      orig: m ? mat(m) : new DOMMatrix(),
-      toRoot: mat(root.getScreenCTM().inverse().multiply(parent.getScreenCTM())), // the part's parent space -> the drawing's
-    };
-  });
-  const start = pageToRoot(d, p[0], p[1]);
-  active = { id: e.pointerId, mode: 'edit', kind, d, items, start, center: f.center, angle: Math.atan2(start[1] - f.center[1], start[0] - f.center[0]), degrees: 0, moved: false };
+  const { d, els } = selection, f = selectionFrame();
+  const items = els.map(el => ({ el, rot: rotationOf(el), style: el.getAttribute('style') }));
+  active = {
+    id: e.pointerId, mode: 'edit', kind, d, items, start: p, drop: null, moved: false, degrees: 0,
+    center: [f.cx, f.cy], angle: Math.atan2(p[1] - f.cy, p[0] - f.cx),
+  };
+  if (kind === 'move') for (const it of items) Object.assign(it.el.style, { pointerEvents: 'none', opacity: '0.55', position: 'relative', zIndex: '5' });
+}
+
+// The container that accepts drops under a point of the page (the smallest one, and never one inside what is being dragged),
+// and where among its parts the point falls: before which part, and so which place.
+function dropAt(a, p) {
+  const doc = frameDoc(a.d);
+  let best = null;
+  for (const t of doc.querySelectorAll('[data-drop]')) {
+    if (a.items.some(it => it.el === t || it.el.contains(t))) continue;
+    const r = pageRect(a.d, t);
+    if (rectHas(r, p[0], p[1]) && (!best || area(r) < best.area)) best = { t, area: area(r) };
+  }
+  if (!best) return null;
+  const t = best.t, row = t.classList.contains('row');
+  const kids = [...t.children].filter(c => c.classList.contains('n') && !a.items.some(it => it.el === c));
+  let index = kids.length;
+  for (let i = 0; i < kids.length; i++) {
+    const r = pageRect(a.d, kids[i]), mid = row ? (r.left + r.right) / 2 : (r.top + r.bottom) / 2;
+    if ((row ? p[0] : p[1]) < mid) { index = i; break; }
+  }
+  return { t, index, kids, row };
+}
+
+// A line where the part would land.
+function showDropMark(a, drop) {
+  const doc = frameDoc(a.d);
+  let mark = doc.getElementById('dropmark');
+  if (!drop) { if (mark) mark.remove(); return; }
+  if (!mark) {
+    mark = doc.createElement('div');
+    mark.id = 'dropmark';
+    mark.style.cssText = 'position:absolute;background:currentColor;border-radius:2px;pointer-events:none;z-index:9';
+    doc.body.append(mark);
+  }
+  const { t, index, kids, row } = drop, scroll = doc.documentElement;
+  const r = (kids[index] || kids[kids.length - 1] || t).getBoundingClientRect(), tr = t.getBoundingClientRect();
+  if (kids.length === 0) Object.assign(mark.style, { left: tr.left + 8 + 'px', top: tr.top + 8 + 'px', width: Math.max(10, tr.width - 16) + 'px', height: '3px' });
+  else if (row) Object.assign(mark.style, { left: (index < kids.length ? r.left - 7 : r.right + 5) + scroll.scrollLeft + 'px', top: r.top + 'px', width: '3px', height: r.height + 'px' });
+  else Object.assign(mark.style, { left: r.left + 'px', top: (index < kids.length ? r.top - 5 : r.bottom + 3) + scroll.scrollTop + 'px', width: r.width + 'px', height: '3px' });
 }
 
 function moveEdit(a, p) {
   if (a.kind === 'delete') return;
-  const cur = pageToRoot(a.d, p[0], p[1]);
-  let x;
   if (a.kind === 'move') {
-    x = new DOMMatrix().translate(cur[0] - a.start[0], cur[1] - a.start[1]);
+    const s = frameScale(a.d), dx = (p[0] - a.start[0]) / s, dy = (p[1] - a.start[1]) / s;
+    for (const it of a.items) it.el.style.transform = `translate(${dx}px, ${dy}px)` + (it.rot ? ` rotate(${it.rot}deg)` : '');
+    a.drop = dropAt(a, p);
+    showDropMark(a, a.drop);
+    a.moved = a.moved || Math.hypot(p[0] - a.start[0], p[1] - a.start[1]) > 4;
   } else {
-    const angle = Math.atan2(cur[1] - a.center[1], cur[0] - a.center[0]);
+    const angle = Math.atan2(p[1] - a.center[1], p[0] - a.center[0]);
     a.degrees += wrapAngle(((angle - a.angle) * 180) / Math.PI);
     a.angle = angle;
-    x = new DOMMatrix().translate(a.center[0], a.center[1]).rotate(a.degrees).translate(-a.center[0], -a.center[1]);
+    for (const it of a.items) turned(it.el, Math.round((it.rot + a.degrees) * 10) / 10);
+    a.moved = a.moved || Math.abs(a.degrees) > 0.5;
   }
-  for (const it of a.items) {
-    const text = transformText(it.toRoot.inverse().multiply(x).multiply(it.toRoot).multiply(it.orig));
-    if (text) it.el.setAttribute('transform', text);
-  }
-  a.moved = a.moved || Math.hypot(cur[0] - a.start[0], cur[1] - a.start[1]) > 0.5 || Math.abs(a.degrees) > 0.2;
   updateSelection();
+}
+
+function reportEdit(d, changes) {
+  send({ t: 'edit', note: d.note, drawing: d.id, changes });
 }
 
 function finishEdit(a, p) {
@@ -505,14 +495,19 @@ function finishEdit(a, p) {
     if (selection && grabAt(p) === 'delete') deleteSelection();
     return;
   }
-  if (!a.moved) {
-    for (const it of a.items) { // nothing happened: put the attribute back exactly as it was
-      if (it.had === null) it.el.removeAttribute('transform'); else it.el.setAttribute('transform', it.had);
-    }
-    return;
+  showDropMark(a, null);
+  const restore = () => { for (const it of a.items) { if (it.style === null) it.el.removeAttribute('style'); else it.el.setAttribute('style', it.style); } };
+  if (!a.moved) { restore(); return; }
+  if (a.kind === 'move') {
+    if (!a.drop) { restore(); updateSelection(); return; } // dropped where nothing accepts it: it goes back
+    const { t, index, kids } = a.drop, before = kids[index] || null;
+    restore();
+    for (const it of a.items) t.insertBefore(it.el, before); // shown at once; the server's layout follows
+    reportEdit(a.d, a.items.map((it, k) => ({ id: it.el.id, op: 'move', to: t.id, index: index + k })));
+  } else {
+    for (const it of a.items) { it.el.dataset.rot = String(it.rot + a.degrees); }
+    reportEdit(a.d, a.items.map(it => ({ id: it.el.id, op: 'rotate', deg: Math.round(a.degrees * 10) / 10 })));
   }
-  const changes = a.items.map(it => ({ id: it.el.id, op: a.kind, transform: it.el.getAttribute('transform'), deg: a.kind === 'rotate' ? a.degrees : 0 }));
-  send({ t: 'edit', note: a.d.note, drawing: a.d.id, changes, boxes: drawingBoxes(a.d) });
   updateSelection();
 }
 
@@ -521,7 +516,7 @@ function deleteSelection() {
   const { d, els } = selection, changes = els.map(el => ({ id: el.id, op: 'delete' }));
   for (const el of els) el.remove();
   clearSelection();
-  send({ t: 'edit', note: d.note, drawing: d.id, changes, boxes: drawingBoxes(d) });
+  reportEdit(d, changes);
 }
 
 // ---------- Claude's notes ----------
@@ -610,18 +605,24 @@ const handlers = {
     el.setAttribute('scrolling', 'no');
     el.tabIndex = -1;
     notesLayer.append(el);
-    const d = { id: m.id, note: m.note, doc: m.doc, text: m.text, edit: m.edit, el, top: 0, w: 0, h: 0, nw: 0, nh: 0 };
+    const d = { id: m.id, note: m.note, doc: m.doc, kind: m.kind, text: m.text, edit: m.edit, el, top: 0, w: 0, h: 0, nw: 0, nh: 0 };
     n.drawings.set(m.id, d);
     showBlock(d);
   },
-  // The drawing was replaced (by the model, or by undoing an edit): show it again. The server measures it next.
+  // The block was changed (by an edit, by the model, or by undoing one): show it again. The server measures it next. What was
+  // selected stays selected, once the new frame has loaded.
   drawingChanged(m) {
     const n = notes.get(m.note), d = n && n.drawings.get(m.id);
     if (!d) return;
-    if (selection && selection.d === d) clearSelection();
-    Object.assign(d, { doc: m.doc, text: m.text, edit: m.edit });
+    const keep = selection && selection.d === d ? selection.els.map(el => el.id).filter(Boolean) : [];
+    if (keep.length) clearSelection();
+    Object.assign(d, { doc: m.doc, kind: m.kind, text: m.text, edit: m.edit });
     d.el.title = m.alt;
     showBlock(d);
+    if (keep.length) d.loaded.then(() => {
+      const doc = frameDoc(d);
+      if (doc && !selection) select(d, keep.map(id => doc.getElementById(id)).filter(Boolean));
+    });
   },
   drawingsCleared(m) {
     const n = notes.get(m.note);
@@ -687,14 +688,12 @@ const handlers = {
       n.el.style.width = m.width + 'px';
       n.el.textContent = m.text;
       const lines = Math.round(n.el.getBoundingClientRect().height / LINE);
-      const aspects = {}, boxes = {};
+      const aspects = {};
       for (const id of m.blocks || []) {
         const d = n.drawings.get(id);
-        if (!d) continue;
-        aspects[id] = await blockAspect(d, m.width);
-        if (d.edit) boxes[id] = drawingBoxes(d);
+        if (d) aspects[id] = await blockAspect(d, m.width);
       }
-      reply(m, { lines, aspects, boxes });
+      reply(m, { lines, aspects });
     } catch (e) {
       fail(m);
     }
@@ -789,19 +788,29 @@ async function makeSnapshot(m) {
   return canvas.toDataURL('image/png').split(',')[1];
 }
 
-// A drawing in the picture: the SVG as it is now (edits included), in the light ink, drawn as an image so it looks as it does on the page.
-// A browser that won't let a page read back such a picture gets the drawing's text in a box instead.
+// A block in the picture, as it is now (edits included), in the light ink, drawn as an image so it looks as it does on the page. A
+// layout is its document in a foreignObject; a picture is the SVG itself. A browser that won't let a page read back such a picture
+// gets the block's text in a box instead.
 async function paintBlock(c, d, x, y) {
   try {
-    const root = svgRoot(d);
-    if (!root) throw new Error('not shown');
-    const size = root.getBoundingClientRect(), copy = root.cloneNode(true);
-    copy.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-    copy.setAttribute('width', size.width);
-    copy.setAttribute('height', size.height);
-    if (!copy.hasAttribute('viewBox')) copy.setAttribute('viewBox', `0 0 ${size.width} ${size.height}`);
-    copy.setAttribute('style', `color:#2C4FC4;overflow:visible;font-family:${HAND.replace(/"/g, "'")}`);
-    const img = await loadImage('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(new XMLSerializer().serializeToString(copy)));
+    let svg;
+    if (d.kind === 'layout') {
+      const parsed = new DOMParser().parseFromString(inked(d.doc, '#2C4FC4'), 'text/html');
+      parsed.querySelectorAll('meta').forEach(e => e.remove());
+      const xhtml = new XMLSerializer().serializeToString(parsed.documentElement);
+      svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${d.nw}" height="${d.nh}"><foreignObject x="0" y="0" width="100%" height="100%">${xhtml}</foreignObject></svg>`;
+    } else {
+      const root = d.el.contentDocument && d.el.contentDocument.querySelector('svg');
+      if (!root) throw new Error('not shown');
+      const size = root.getBoundingClientRect(), copy = root.cloneNode(true);
+      copy.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      copy.setAttribute('width', size.width);
+      copy.setAttribute('height', size.height);
+      if (!copy.hasAttribute('viewBox')) copy.setAttribute('viewBox', `0 0 ${size.width} ${size.height}`);
+      copy.setAttribute('style', `color:#2C4FC4;overflow:visible;font-family:${HAND.replace(/"/g, "'")}`);
+      svg = new XMLSerializer().serializeToString(copy);
+    }
+    const img = await loadImage('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg));
     const probe = document.createElement('canvas');
     probe.width = probe.height = 1;
     probe.getContext('2d').drawImage(img, 0, 0, 1, 1);

@@ -4,13 +4,13 @@ using System.Linq;
 using System.Threading.Tasks;
 using Longhand.Services;
 
-/// <summary>Checks for editable drawings on the page: what an edit does, when it is told to the model, replacing a drawing in place, undo and saving.</summary>
+/// <summary>Checks for editable layouts on the page: what an edit does, when it is told to the model, replacing a layout in place, undo and saving.</summary>
 static class EditChecks
 {
-    const string Cards = "<g id=\"card-1\" data-edit><rect x=\"{X}\" y=\"20\" width=\"100\" height=\"40\"/><text x=\"{X}\" y=\"45\">Call Anna</text></g>";
-    static string Board(int cardX, string rootId = "board") =>
-        $"<svg id=\"{rootId}\" viewBox=\"0 0 400 200\"><title>Board</title><rect id=\"col-todo\" width=\"200\" height=\"200\" fill=\"none\" stroke=\"currentColor\"/>"
-        + "<rect id=\"col-doing\" x=\"200\" width=\"200\" height=\"200\" fill=\"none\" stroke=\"currentColor\"/>" + Cards.Replace("{X}", cardX.ToString()) + "</svg>";
+    static string Board(string todo, string doing, string id = "board") =>
+        $"<layout id=\"{id}\" title=\"Week\"><row><col id=\"todo\" drop title=\"To do\">{todo}</col><col id=\"doing\" drop title=\"Doing\">{doing}</col></row></layout>";
+    const string Anna = "<box id=\"c1\" edit>Call Anna</box>";
+    const string Gym = "<box id=\"c2\" edit>Gym</box>";
 
     static List<(double X, double Y)> Star(double cx, double cy, double r)
     {
@@ -32,108 +32,108 @@ static class EditChecks
 
     public static async Task RunAsync(Action<string, bool> check)
     {
-        await using var api = new FakeCodex { AskForTool = false, FinalText = "HEARD: show my board\n---\nHere it is.\n" + Board(20) };
+        await using var api = new FakeCodex { AskForTool = false, FinalText = "HEARD: show my board\n---\nHere it is.\n" + Board(Anna + Gym, "") };
         var view = new FakeView();
-        var where = new Dictionary<string, Box> { ["col-todo"] = new(0, 0, 200, 200), ["col-doing"] = new(200, 0, 200, 200), ["card-1"] = new(20, 20, 100, 40) };
-        view.Boxes = _ => new Dictionary<string, Box>(where);
         var data = new FakeData(view, api);
         var session = new PageSession(view, data);
         await session.StartAsync();
         int Asked() => api.Requests.Count(r => r.Path.EndsWith("/responses"));
         string LastBody() => System.Text.RegularExpressions.Regex.Unescape(api.Requests.Last(r => r.Path.EndsWith("/responses")).Body);
 
-        // ----- the model draws a board -----
+        // ----- the model writes a board -----
         var ink = view.Draw(160, 200);
         session.StrokesCollected(new[] { ink });
         await session.AskAsync();
         var note = session.Notes.Single(n => !n.IsHint);
         var board = note.Drawings.Single();
-        check("the model's drawing is on the page, editable, and its parts were measured", board.Editable && Svg.FigureId(board.Markup) == "board" && board.Boxes.Count == 3 && note.Text == "Here it is.");
-        check("the model was told the user can edit, and how", LastBody().Contains("Your drawings can be interactive") && LastBody().Contains("data-edit"));
-        check("the history shows the drawing by id", session.History().Last().Reply.Contains("[drawing: id \"board\", Board, editable]"));
+        check("the model's layout is on the page, editable, in its canonical form", board.Editable && Blocks.FigureId(board.Markup) == "board" && note.Text == "Here it is." && board.Markup.Contains("<col id=\"doing\" title=\"Doing\" drop/>") && board.Alt == "Week");
+        check("the model was told the user can edit, and how", LastBody().Contains("Layouts can be interactive") && LastBody().Contains("edit on a part"));
+        check("the history shows the layout as it is", session.History().Last().Reply.Contains("<box id=\"c1\" edit>Call Anna</box>"));
         check("nothing has been edited, so there is nothing more to ask", !session.HasEdits && !view.State.CanAsk);
 
-        // ----- the user moves the card: local, and told only when asked -----
+        // ----- the user moves a card: local, and told only when asked -----
         int asked = Asked();
-        where["card-1"] = new Box(230, 20, 100, 40);
-        bool ok = session.EditDrawing(note, board, new[] { new DrawingChange("card-1", "move", "translate(210 0)") }, where);
-        check("the edit is written into the drawing", ok && board.Markup.Contains("transform=\"translate(210 0)\"") && board.Boxes["card-1"].X == 230);
+        view.Changed.Clear();
+        bool ok = session.EditDrawing(note, board, new[] { new DrawingChange("c1", "move", "doing", 0) });
+        check("the move is made in the layout, and the screen is sent it back", ok && Layout.Find(Layout.Parse(board.Markup)!, "c1")!.Parent!.Id == "doing" && view.Changed.Contains(board));
         check("it makes the page askable, and nothing is sent", session.HasEdits && view.State.CanAsk && Asked() == asked);
 
-        // ----- an edit that isn't allowed leaves the drawing alone -----
+        // ----- an edit that isn't allowed leaves the layout alone -----
         view.Changed.Clear();
         string before = board.Markup;
-        bool refused = session.EditDrawing(note, board, new[] { new DrawingChange("col-todo", "move", "translate(5 5)") }, where);
-        check("an edit of something that isn't editable is refused, and the screen is told to show the drawing as it is", !refused && board.Markup == before && view.Changed.Contains(board));
+        bool refused = session.EditDrawing(note, board, new[] { new DrawingChange("todo", "move", "doing") });
+        check("an edit of something that isn't editable is refused, and the screen is told to show the layout as it is", !refused && board.Markup == before && view.Changed.Contains(board));
+        check("a drop where nothing accepts it is refused too", !session.EditDrawing(note, board, new[] { new DrawingChange("c2", "move", "board") }) && board.Markup == before);
 
         // ----- asking with only an edit -----
-        api.FinalText = "HEARD: [moved Call Anna to Doing]\n---\nI moved it to Doing.\n" + Board(230);
+        api.FinalText = "HEARD: [moved Call Anna to Doing]\n---\nI moved it to Doing.\n" + Board(Gym, Anna.Replace("Call Anna", "Call Anna (done)"));
         await session.AskAsync();
         var body = LastBody();
-        check("Ask works with no ink: the edit is what is sent", Asked() == asked + 1 && !body.Contains("input_image") && body.Contains("I changed your drawings by hand since your last reply"));
-        check("it lists the move, with where it landed", body.Contains("Drawing \"board\":") && body.Contains("card-1: moved by (+210, +0), from x 20, y 20 to x 230, y 20") && body.Contains("its centre is now inside #col-doing"));
-        check("and carries the drawing's source as it is now", body.Contains("Its source now:") && body.Contains("translate(210 0)"));
+        check("Ask works with no ink: the edit is what is sent", Asked() == asked + 1 && !body.Contains("input_image") && body.Contains("I changed your layouts by hand since your last reply"));
+        check("it lists the move by id, with where the part was and where it is", body.Contains("Layout \"board\":") && body.Contains("- c1 \"Call Anna\": moved from #todo (position 1) to #doing (position 1 of 1)"));
+        check("and the layout in the history already has it", body.Contains("<col id=\"doing\" title=\"Doing\" drop>\n") && !body.Contains("Its source now"));
         check("the edit is told once", !session.HasEdits && board.Edits.Count == 0 && !view.State.CanAsk);
         var second = session.Notes.Where(n => !n.IsHint).OrderBy(n => n.Y).Last();
-        check("a drawing with the same id replaces the old one where it is", second != note && second.Drawings.Count == 0 && second.Text == "I moved it to Doing." && note.Drawings.Single() == board && board.Markup.Contains("x=\"230\"") && !board.Markup.Contains("translate(210 0)") && view.Changed.Contains(board));
+        check("a layout with the same id replaces the old one where it is", second != note && second.Drawings.Count == 0 && second.Text == "I moved it to Doing." && note.Drawings.Single() == board && board.Markup.Contains("Call Anna (done)") && view.Changed.Contains(board));
         check("the exchange is in the history, heard as the model said", session.History().Last().Heard == "[moved Call Anna to Doing]");
 
         // ----- undoing the replacement, then the edit -----
-        where["card-1"] = new Box(20, 20, 100, 40); // where the screen would find it once both are undone
         session.Undo();
-        check("Ctrl+Z brings back the drawing as the user left it", board.Markup.Contains("translate(210 0)") && board.Edits.Count == 0 && !session.HasEdits);
+        check("Ctrl+Z brings back the layout as the user left it", board.Markup.Contains("Call Anna<") && !board.Markup.Contains("(done)") && Layout.Find(Layout.Parse(board.Markup)!, "c1")!.Parent!.Id == "doing" && board.Edits.Count == 0 && !session.HasEdits);
         session.Undo();
-        await Task.Delay(100); // the screen measures the drawing again after an undo
-        check("and again takes the move back", !board.Markup.Contains("transform=") && !session.HasEdits && !view.State.CanAsk && board.Boxes["card-1"].X == 20);
+        check("and again takes the move back", Layout.Find(Layout.Parse(board.Markup)!, "c1")!.Parent!.Id == "todo" && !session.HasEdits && !view.State.CanAsk);
 
         // ----- moving away and back is nothing -----
-        where["card-1"] = new Box(230, 20, 100, 40);
-        session.EditDrawing(note, board, new[] { new DrawingChange("card-1", "move", "translate(210 0)") }, where);
-        where["card-1"] = new Box(20, 20, 100, 40);
-        session.EditDrawing(note, board, new[] { new DrawingChange("card-1", "move", "translate(0 0)") }, where);
+        session.EditDrawing(note, board, new[] { new DrawingChange("c1", "move", "doing", 0) });
+        session.EditDrawing(note, board, new[] { new DrawingChange("c1", "move", "todo", 0) });
         check("a part moved away and back changes nothing to tell", !session.HasEdits && !view.State.CanAsk);
 
         // ----- turning, deleting, and the star -----
-        where["card-1"] = new Box(10, 10, 120, 60);
-        session.EditDrawing(note, board, new[] { new DrawingChange("card-1", "rotate", "matrix(0.9659 0.2588 -0.2588 0.9659 5 -3)", 15) }, where);
-        check("a turn is an edit too", session.HasEdits && board.Edits["card-1"].Degrees == 15);
+        session.EditDrawing(note, board, new[] { new DrawingChange("c1", "rotate", Degrees: 15) });
+        check("a turn is an edit too", session.HasEdits && board.Markup.Contains("rot=\"15\""));
         int asked2 = Asked();
         api.FinalText = "HEARD: [turned the card]\n---\nOK.";
         var star = view.DrawPoints(Star(300, 3000, 25));
         session.StrokesCollected(new[] { star });
         check("a star asks about edits alone", await Until(() => Asked() == asked2 + 1 && !session.Busy) && !view.Ink.Any(s => s.Id == star));
-        check("and the turn was described", LastBody().Contains("card-1: turned 15° clockwise"));
-
-        // ----- the history stops carrying the source -----
-        check("later turns show the drawing by id and title only", !session.History().Any(t => t.Reply.Contains("<svg")));
+        check("and the turn was described", LastBody().Contains("c1 \"Call Anna\": turned 15° clockwise"));
 
         // ----- a failed answer gives the edits back -----
-        where["card-1"] = new Box(230, 20, 100, 40);
-        session.EditDrawing(note, board, new[] { new DrawingChange("card-1", "move", "translate(220 10)") }, where);
+        session.EditDrawing(note, board, new[] { new DrawingChange("c1", "move", "doing", 0) });
         api.FailStatus = 401;
         await session.AskAsync();
         api.FailStatus = 0;
         check("when no answer comes, the edits are still waiting to be told", session.HasEdits && view.State.CanAsk && !view.State.Busy);
 
         // ----- deleting, and what is saved -----
-        session.EditDrawing(note, board, new[] { new DrawingChange("card-1", "delete") }, new Dictionary<string, Box> { ["col-todo"] = new(0, 0, 200, 200), ["col-doing"] = new(200, 0, 200, 200) });
-        check("deleting takes the part out of the drawing", !board.Markup.Contains("Call Anna") && board.Edits["card-1"].Deleted && Svg.EditableIds(board.Markup).Count == 0);
+        session.EditDrawing(note, board, new[] { new DrawingChange("c2", "delete") });
+        check("deleting takes the part out of the layout", !board.Markup.Contains("Gym") && board.Edits["c2"].Deleted && board.Edits["c2"].Label == "Gym");
         await session.SaveAsync();
         var id = session.CurrentId;
-        check("the edits are saved with the page", data.Pages[id].Notes.Any(n => n.Edits is { Count: 1 } e && e[0].Id == "card-1" && e[0].Deleted) && data.Pages[id].Notes.Any(n => n.Drawings is { } d && d.Any(s => !s.Contains("Call Anna"))));
+        check("the edits are saved with the page, and the layout with them made", data.Pages[id].Notes.Any(n => n.Edits is { Count: 2 } e && e.Any(x => x.Id == "c2" && x.Deleted && x.Parent == "todo" && x.Position == 1) && e.Any(x => x.Id == "c1" && x.Parent == "todo")) && data.Pages[id].Notes.Any(n => n.Drawings is { } d && d.Any(s => !s.Contains("Gym"))));
         await session.NewConversationAsync();
         await session.OpenConversationAsync(id);
         var back = session.Notes.First(n => n.Drawings.Count > 0).Drawings[0];
-        check("a reopened page still has them to tell", session.HasEdits && back.Edits["card-1"].Deleted && back.Edits["card-1"].First is { } was && was.X == 10);
-        api.FinalText = "HEARD: [deleted the card]\n---\nGone.";
+        check("a reopened page still has them to tell", session.HasEdits && back.Edits["c2"].Deleted && back.Edits["c1"].Parent == "todo" && back.Edits["c1"].Position == 1);
+        api.FinalText = "HEARD: [edited the board]\n---\nGone.";
         await session.AskAsync();
-        check("and tells them", LastBody().Contains("card-1: deleted (it was at x 10, y 10, 120×60)") && !session.HasEdits);
+        check("and tells them", LastBody().Contains("- c2 \"Gym\": deleted (it was in #todo (position 1))") && LastBody().Contains("- c1 \"Call Anna\": moved from #todo (position 1) to #doing (position 1 of 1)") && !session.HasEdits);
+
+        // ----- a picture can't be edited -----
+        var pictureFirst = session.Notes.Count;
+        api.FinalText = "HEARD: a house\n---\nA house.\n<svg viewBox=\"0 0 4 3\"><title>House</title><rect id=\"r\" data-edit width=\"2\" height=\"2\"/></svg>";
+        var more = view.Draw(5000, 5040);
+        session.StrokesCollected(new[] { more });
+        await session.AskAsync();
+        var picture = session.Notes.OrderBy(n => n.Y).Last().Drawings.Single();
+        check("a picture is shown, and has nothing the user can edit", !picture.Editable && !picture.Markup.Contains("data-edit") && !session.EditDrawing(session.Notes.OrderBy(n => n.Y).Last(), picture, new[] { new DrawingChange("r", "delete") }));
+        check("the history shows it as a stand-in", session.History().Last().Reply.Contains("[drawing: House]"));
 
         // ----- a device that can't edit says so -----
         view.CanEdit = false;
-        var more = view.Draw(4000, 4040);
-        session.StrokesCollected(new[] { more });
+        var again = view.Draw(6000, 6040);
+        session.StrokesCollected(new[] { again });
         await session.AskAsync();
-        check("the model is told not to offer editing when the screen can't", LastBody().Contains("cannot move, turn or delete") && !LastBody().Contains("Your drawings can be interactive"));
+        check("the model is told not to offer editing when the screen can't", LastBody().Contains("cannot select, move, turn or delete") && !LastBody().Contains("Layouts can be interactive"));
     }
 }

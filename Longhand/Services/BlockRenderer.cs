@@ -13,7 +13,7 @@ namespace Longhand.Services;
 public sealed record RenderedBlock(byte[] Png, double Width, double Height);
 
 /// <summary>
-/// Renders Claude's SVG drawings to pictures, with one hidden WebView2 that runs no scripts.
+/// Renders Claude's layouts and SVG drawings to pictures, with one hidden WebView2 that runs no scripts.
 /// Drawings are static here, so a picture shows them fully, costs no more than a drawing did, and goes into the snapshot Claude reads
 /// like anything else on the page. Through the DevTools protocol it lays the block out at the page's text width, reads how tall
 /// it is, and captures all of it on a clear background.
@@ -44,7 +44,7 @@ public sealed class BlockRenderer
             core.NavigationCompleted += Done;
             try
             {
-                core.NavigateToString(Svg.Document(markup).Replace(Svg.InkToken, ink));
+                core.NavigateToString(Blocks.Document(markup).Replace(Blocks.InkToken, ink));
                 if (await Task.WhenAny(loaded.Task, Task.Delay(LoadTimeout)) != loaded.Task || !loaded.Task.Result) return null;
             }
             finally
