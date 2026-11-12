@@ -39,6 +39,34 @@ static class CalendarWriteChecks
         check("and keeps the rest: alarm, categories, uid; the sequence goes up", changed.Contains("BEGIN:VALARM") && changed.Contains("DESCRIPTION:Soon") && changed.Contains("CATEGORIES:Work") && changed.Contains("UID:x") && changed.Contains("SEQUENCE:3") && !changed.Contains("DURATION") && !changed.Contains("TZID"));
         check("a repeating event isn't changed", ICalendar.Change(withAlarm.Replace("SUMMARY:Old", "RRULE:FREQ=WEEKLY\r\nSUMMARY:Old"), new EventChange(Title: "x"), now, out var why) is null && why!.Contains("repeating"));
 
+        // ----- one occurrence of a repeating event -----
+        const string weekly = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:w\r\nSEQUENCE:1\r\nDTSTART:20261111T080000Z\r\nDTEND:20261111T090000Z\r\nRRULE:FREQ=WEEKLY\r\nSUMMARY:Gym\r\nLOCATION:Pool\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT10M\r\nEND:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        var third = new CalendarEvent("P", "Gym", new DateTimeOffset(2026, 11, 18, 8, 0, 0, TimeSpan.Zero), new DateTimeOffset(2026, 11, 18, 9, 0, 0, TimeSpan.Zero), false, "Pool", "", Repeats: true);
+        int Count(string text, string what) => System.Text.RegularExpressions.Regex.Matches(text, what).Count;
+        check("a repeating calendar says so, a plain one doesn't", ICalendar.Repeats(weekly) && !ICalendar.Repeats(withAlarm));
+        var movedOcc = ICalendar.ChangeOccurrence(weekly, third, new EventChange(When: new EventWhen(third.Start.AddHours(2), third.End.AddHours(2), false)), now, Plus1, out var problem)!;
+        var parsed = ICalendar.ParseEvents(movedOcc, "P", Plus1);
+        check("changing one occurrence adds an exception for it, and the event keeps repeating as it was", problem is null && parsed.Count == 2 && Count(movedOcc, "RRULE:FREQ=WEEKLY") == 1 && movedOcc.Contains("RECURRENCE-ID:20261118T080000Z")
+            && parsed[0].Start == new DateTimeOffset(2026, 11, 11, 8, 0, 0, TimeSpan.Zero) && parsed[0].Title == "Gym" && Count(movedOcc, "UID:w") == 2);
+        check("the exception is at its new time, with the rest of the event kept (place, alarm), and no rule of its own", parsed[1].Start == third.Start.AddHours(2) && parsed[1].End == third.End.AddHours(2) && parsed[1].Location == "Pool" && Count(movedOcc, "BEGIN:VALARM") == 2 && Count(movedOcc, "RRULE") == 1);
+        var renamed = ICalendar.ChangeOccurrence(weekly, third, new EventChange(Title: "Swim"), now, Plus1, out _)!;
+        var renamedEvents = ICalendar.ParseEvents(renamed, "P", Plus1);
+        check("a change that isn't of the time leaves the occurrence where it was", renamedEvents[1].Title == "Swim" && renamedEvents[1].Start == third.Start && renamedEvents[0].Title == "Gym");
+        var again = ICalendar.ChangeOccurrence(movedOcc, third with { Start = third.Start.AddHours(2), End = third.End.AddHours(2) }, new EventChange(Location: "Gym 2"), now, Plus1, out _)!;
+        var againEvents = ICalendar.ParseEvents(again, "P", Plus1);
+        check("an occurrence changed before is changed again, as the calendar shows it now, not added twice", againEvents.Count == 2 && againEvents[1].Location == "Gym 2" && againEvents[1].Start == third.Start.AddHours(2) && Count(again, "RECURRENCE-ID") == 1);
+        var cancelled = ICalendar.DeleteOccurrence(movedOcc, third with { Start = third.Start.AddHours(2) }, now, Plus1, out _)!;
+        check("deleting an occurrence leaves it out of the rule, and drops its exception", ICalendar.ParseEvents(cancelled, "P", Plus1).Count == 1 && cancelled.Contains("EXDATE:20261118T080000Z") && !cancelled.Contains("RECURRENCE-ID") && cancelled.Contains("RRULE:FREQ=WEEKLY"));
+        var seriesRenamed = ICalendar.ChangeSeries(movedOcc, new EventChange(Title: "Pool time"), now, out _)!;
+        var seriesEvents = ICalendar.ParseEvents(seriesRenamed, "P", Plus1);
+        check("changing every occurrence changes the event itself, not the ones changed on their own", seriesEvents[0].Title == "Pool time" && seriesEvents[1].Title == "Gym" && Count(seriesRenamed, "RECURRENCE-ID") == 1);
+        check("the time of every occurrence isn't changed that way, and a plain event isn't a repeating one", ICalendar.ChangeSeries(weekly, new EventChange(When: new EventWhen(now, now.AddHours(1), false)), now, out var whyNot) is null && whyNot!.Contains("time")
+            && ICalendar.ChangeOccurrence(withAlarm, third, new EventChange(Title: "x"), now, Plus1, out var notRepeating) is null && notRepeating!.Contains("isn't a repeating")
+            && ICalendar.DeleteOccurrence(withAlarm, third, now, Plus1, out _) is null);
+        var wholeDay = new CalendarEvent("P", "Trip", new DateTimeOffset(2026, 11, 18, 0, 0, 0, TimeSpan.Zero), new DateTimeOffset(2026, 11, 19, 0, 0, 0, TimeSpan.Zero), true, "", "", Repeats: true);
+        var dayEvents = ICalendar.ChangeOccurrence("BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:t\r\nDTSTART;VALUE=DATE:20261111\r\nDTEND;VALUE=DATE:20261112\r\nRRULE:FREQ=WEEKLY\r\nSUMMARY:Trip\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n", wholeDay, new EventChange(Title: "Trip!"), now, Plus1, out _)!;
+        check("an all-day occurrence is named by its date", dayEvents.Contains("RECURRENCE-ID;VALUE=DATE:20261118") && dayEvents.Contains("DTSTART;VALUE=DATE:20261118"));
+
         // ----- the tools, against a fake Nextcloud -----
         await using var server = new FakeNextcloud();
         var account = new NextcloudAccount(server.BaseUrl, FakeNextcloud.User, FakeNextcloud.Password);

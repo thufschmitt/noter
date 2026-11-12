@@ -165,20 +165,176 @@ public static class ICalendar
 
     /// <summary>
     /// The calendar with its one event changed, everything else in it kept as it was (alarms, attendees, categories…). Null,
-    /// with the reason, for a repeating event or anything else that isn't one plain event.
+    /// with the reason, for a repeating event (see <see cref="ChangeOccurrence"/>) or anything else that isn't one plain event.
     /// </summary>
     public static string? Change(string ics, EventChange change, DateTimeOffset now, out string? problem)
     {
         problem = null;
-        var lines = Unfold(ics).ToList();
-        var events = lines.Count(l => SplitLine(l) is ("BEGIN", _, var v) && v.Equals("VEVENT", StringComparison.OrdinalIgnoreCase));
-        if (events != 1)
+        var parts = Parts(Unfold(ics).ToList());
+        var events = parts.Where(p => p.IsEvent).ToList();
+        if (events.Count != 1)
         {
-            problem = events == 0 ? "That isn't an event." : "That is a repeating event; Longhand can't change repeating events.";
+            problem = events.Count == 0 ? "That isn't an event." : "That is a repeating event.";
             return null;
         }
+        if (TopProperties(events[0].Lines).Keys.Any(k => k is "RRULE" or "RDATE" or "RECURRENCE-ID"))
+        {
+            problem = "That is a repeating event.";
+            return null;
+        }
+        events[0].Lines = Rewrite(events[0].Lines, change, now);
+        return Join(parts.SelectMany(p => p.Lines));
+    }
 
+    // ---------- a repeating event: one occurrence, or all of them ----------
+
+    /// <summary>Calendar lines split into the stretches outside the events and each event (<c>BEGIN:VEVENT</c> to <c>END:VEVENT</c>).</summary>
+    sealed class Part
+    {
+        public bool IsEvent;
+        public List<string> Lines = new();
+    }
+
+    static List<Part> Parts(List<string> lines)
+    {
+        var parts = new List<Part>();
+        Part? open = null;
+        foreach (var line in lines)
+        {
+            var (name, _, value) = SplitLine(line);
+            bool begins = name == "BEGIN" && value.Equals("VEVENT", StringComparison.OrdinalIgnoreCase);
+            if (begins || open is null)
+            {
+                if (begins || parts.Count == 0 || parts[^1].IsEvent) parts.Add(new Part { IsEvent = begins });
+                open = parts[^1];
+            }
+            open.Lines.Add(line);
+            if (name == "END" && value.Equals("VEVENT", StringComparison.OrdinalIgnoreCase)) open = null;
+        }
+        return parts;
+    }
+
+    /// <summary>The properties of an event itself, not of what is inside it (an alarm).</summary>
+    static Dictionary<string, (string Value, Dictionary<string, string> Params)> TopProperties(List<string> block)
+    {
+        var props = new Dictionary<string, (string, Dictionary<string, string>)>();
+        int depth = 0;
+        foreach (var line in block)
+        {
+            var (name, parameters, value) = SplitLine(line);
+            if (name == "BEGIN") { if (depth++ == 0) continue; }
+            else if (name == "END") { depth--; continue; }
+            if (depth == 1) props[name] = (value, parameters);
+        }
+        return props;
+    }
+
+    /// <summary>Whether a part is the repeating event itself: the one with the rule, not an occurrence that was changed.</summary>
+    static bool IsSeries(Part p) => p.IsEvent && TopProperties(p.Lines) is var props && (props.ContainsKey("RRULE") || props.ContainsKey("RDATE")) && !props.ContainsKey("RECURRENCE-ID");
+
+    /// <summary>
+    /// Whether a part is a changed occurrence (an exception) of the given one. The calendar shows an occurrence that was moved at its new
+    /// time, while the exception names the time it had, so both are looked at.
+    /// </summary>
+    static bool IsExceptionFor(Part p, CalendarEvent occurrence, TimeZoneInfo zone)
+    {
+        if (!p.IsEvent || TopProperties(p.Lines) is not { } props || !props.ContainsKey("RECURRENCE-ID")) return false;
+        bool Same(string key)
+        {
+            if (!props.TryGetValue(key, out var v)) return false;
+            var (time, allDay) = ParseTime(v.Value, v.Params, zone);
+            return time is { } t && allDay == occurrence.AllDay && (allDay ? t.Date == occurrence.Start.Date : t == occurrence.Start);
+        }
+        return Same("RECURRENCE-ID") || Same("DTSTART");
+    }
+
+    static string OccurrenceLine(string name, CalendarEvent occurrence) =>
+        occurrence.AllDay ? name + ";VALUE=DATE:" + Date(occurrence.Start) : name + ":" + Utc(occurrence.Start);
+
+    /// <summary>Whether the calendar holds a repeating event.</summary>
+    public static bool Repeats(string ics) => Parts(Unfold(ics).ToList()).Any(IsSeries);
+
+    /// <summary>
+    /// The calendar with one occurrence of its repeating event changed: the event itself keeps repeating as it did, and the occurrence
+    /// becomes an exception that holds the change (a copy of the event with what was given changed). An occurrence changed before is
+    /// changed again. <paramref name="occurrence"/> is the occurrence as the calendar shows it, before the change. Null, with the reason,
+    /// when the calendar holds no repeating event.
+    /// </summary>
+    public static string? ChangeOccurrence(string ics, CalendarEvent occurrence, EventChange change, DateTimeOffset now, TimeZoneInfo zone, out string? problem)
+    {
+        problem = null;
+        var parts = Parts(Unfold(ics).ToList());
+        var series = parts.FirstOrDefault(IsSeries);
+        if (series is null)
+        {
+            problem = "That isn't a repeating event.";
+            return null;
+        }
+        if (parts.FirstOrDefault(p => IsExceptionFor(p, occurrence, zone)) is { } existing)
+        {
+            existing.Lines = Rewrite(existing.Lines, change, now);
+            return Join(parts.SelectMany(p => p.Lines));
+        }
+        // The exception starts as the event, without its rule, and says which occurrence it replaces. Unless told otherwise it stays
+        // where the occurrence was.
+        var exception = new Part
+        {
+            IsEvent = true,
+            Lines = Rewrite(series.Lines, change with { When = change.When ?? new EventWhen(occurrence.Start, occurrence.End, occurrence.AllDay) }, now,
+                dropped: new[] { "RRULE", "RDATE", "EXDATE", "EXRULE", "RECURRENCE-ID", "CREATED" }, added: new[] { OccurrenceLine("RECURRENCE-ID", occurrence) }),
+        };
+        parts.Insert(parts.FindLastIndex(p => p.IsEvent) + 1, exception);
+        return Join(parts.SelectMany(p => p.Lines));
+    }
+
+    /// <summary>The calendar with one occurrence of its repeating event left out (an exception date), the others kept. Null, with the reason, when it holds no repeating event.</summary>
+    public static string? DeleteOccurrence(string ics, CalendarEvent occurrence, DateTimeOffset now, TimeZoneInfo zone, out string? problem)
+    {
+        problem = null;
+        var parts = Parts(Unfold(ics).ToList());
+        var series = parts.FirstOrDefault(IsSeries);
+        if (series is null)
+        {
+            problem = "That isn't a repeating event.";
+            return null;
+        }
+        // An occurrence that was moved is left out by the time it had in the rule, which its exception names.
+        var original = occurrence;
+        if (parts.FirstOrDefault(p => IsExceptionFor(p, occurrence, zone)) is { } exception
+            && TopProperties(exception.Lines).TryGetValue("RECURRENCE-ID", out var id) && ParseTime(id.Value, id.Params, zone).Time is { } was)
+            original = occurrence with { Start = was };
+        series.Lines = Rewrite(series.Lines, new EventChange(), now, added: new[] { OccurrenceLine("EXDATE", original) });
+        parts.RemoveAll(p => IsExceptionFor(p, occurrence, zone)); // a change made to it before goes with it
+        return Join(parts.SelectMany(p => p.Lines));
+    }
+
+    /// <summary>
+    /// The calendar with the repeating event itself changed, which is every occurrence that wasn't changed on its own: its title, place
+    /// or notes. Its time can't be: that would have to be written again with the event's own time zone and rule. Null, with the reason,
+    /// when the calendar holds no repeating event.
+    /// </summary>
+    public static string? ChangeSeries(string ics, EventChange change, DateTimeOffset now, out string? problem)
+    {
+        problem = null;
+        var parts = Parts(Unfold(ics).ToList());
+        var series = parts.FirstOrDefault(IsSeries);
+        if (series is null || change.When is not null)
+        {
+            problem = series is null ? "That isn't a repeating event." : "The time of every occurrence can't be changed from here.";
+            return null;
+        }
+        series.Lines = Rewrite(series.Lines, change, now);
+        return Join(parts.SelectMany(p => p.Lines));
+    }
+
+    /// <summary>
+    /// One event with what was given changed and the rest of it kept (alarms, attendees…), its sequence up by one and its stamps renewed.
+    /// <paramref name="dropped"/> properties are left out; <paramref name="added"/> lines are put in.
+    /// </summary>
+    static List<string> Rewrite(List<string> block, EventChange change, DateTimeOffset now, IEnumerable<string>? dropped = null, IEnumerable<string>? added = null)
+    {
         var replaced = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "DTSTAMP", "LAST-MODIFIED", "SEQUENCE" };
+        if (dropped is not null) replaced.UnionWith(dropped);
         if (change.Title is not null) replaced.Add("SUMMARY");
         if (change.Location is not null) replaced.Add("LOCATION");
         if (change.Description is not null) replaced.Add("DESCRIPTION");
@@ -186,19 +342,12 @@ public static class ICalendar
 
         var result = new List<string>();
         int sequence = 0, depth = 0;
-        bool inEvent = false;
-        foreach (var line in lines)
+        foreach (var line in block)
         {
             var (name, _, value) = SplitLine(line);
-            if (name == "BEGIN" && value.Equals("VEVENT", StringComparison.OrdinalIgnoreCase)) { inEvent = true; result.Add(line); continue; }
-            if (inEvent && name == "BEGIN") depth++;
-            if (inEvent && depth == 0)
+            if (name == "BEGIN" && depth++ == 0) { result.Add(line); continue; }
+            if (depth == 1)
             {
-                if (name is "RRULE" or "RDATE" or "RECURRENCE-ID")
-                {
-                    problem = "That is a repeating event; Longhand can't change repeating events.";
-                    return null;
-                }
                 if (name == "SEQUENCE" && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n)) sequence = n;
                 if (name == "END" && value.Equals("VEVENT", StringComparison.OrdinalIgnoreCase))
                 {
@@ -209,16 +358,17 @@ public static class ICalendar
                     if (change.Title is not null) result.Add("SUMMARY:" + Escape(change.Title));
                     if (!string.IsNullOrWhiteSpace(change.Location)) result.Add("LOCATION:" + Escape(change.Location));
                     if (!string.IsNullOrWhiteSpace(change.Description)) result.Add("DESCRIPTION:" + Escape(change.Description));
+                    if (added is not null) result.AddRange(added);
                     result.Add(line);
-                    inEvent = false;
+                    depth--;
                     continue;
                 }
                 if (replaced.Contains(name)) continue;
             }
-            if (inEvent && name == "END" && depth > 0) depth--;
+            if (name == "END") depth--;
             result.Add(line);
         }
-        return Join(result);
+        return result;
     }
 
     static IEnumerable<string> Times(EventWhen when) => when.AllDay
