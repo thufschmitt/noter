@@ -39,7 +39,8 @@ public static class Blocks
     /// <param name="Text">The reply with the blocks taken out, words in their original order.</param>
     /// <param name="Blocks">The complete <c>&lt;layout&gt;…&lt;/layout&gt;</c> and <c>&lt;svg&gt;…&lt;/svg&gt;</c> elements, in order.</param>
     /// <param name="Open">True while a block has started but not ended, as when the reply is still streaming.</param>
-    public readonly record struct Split(string Text, IReadOnlyList<string> Blocks, bool Open);
+    /// <param name="Erases">What the reply asked to erase of the user's marks over its blocks (<see cref="InkErase"/>).</param>
+    public readonly record struct Split(string Text, IReadOnlyList<string> Blocks, bool Open, IReadOnlyList<EraseRequest>? Erases = null);
 
     public static Split Extract(string body, bool finished)
     {
@@ -67,13 +68,15 @@ public static class Blocks
             at = end;
         }
 
-        var words = text.ToString();
+        var erases = new List<EraseRequest>();
+        var words = InkErase.Take(text.ToString(), finished, erases);
         // While streaming, the start of "<svg" or "<layout" at the very end may begin a block: don't show it yet.
         if (!finished && !open)
             for (int len = Math.Min(7, words.Length); len >= 1; len--)
             {
                 var tail = words[^len..];
-                if ("<svg".StartsWith(tail, StringComparison.OrdinalIgnoreCase) || "<layout".StartsWith(tail, StringComparison.OrdinalIgnoreCase) || "<figure".StartsWith(tail, StringComparison.OrdinalIgnoreCase))
+                if ("<svg".StartsWith(tail, StringComparison.OrdinalIgnoreCase) || "<layout".StartsWith(tail, StringComparison.OrdinalIgnoreCase) || "<figure".StartsWith(tail, StringComparison.OrdinalIgnoreCase)
+                    || "<erase".StartsWith(tail, StringComparison.OrdinalIgnoreCase))
                 {
                     words = words[..^len];
                     break;
@@ -82,7 +85,7 @@ public static class Blocks
 
         words = Regex.Replace(words, @"[ \t]+\n", "\n");
         words = Regex.Replace(words, @"\n{3,}", "\n\n").Trim();
-        return new Split(words, blocks, open);
+        return new Split(words, blocks, open, erases);
     }
 
     /// <summary>Just past the tag that closes the element opened at <paramref name="start"/>, or -1 when it isn't closed yet.</summary>

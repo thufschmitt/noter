@@ -18,7 +18,8 @@ public static class ReplyParser
     /// <param name="Body">The words of the reply.</param>
     /// <param name="Drawings">Complete SVG drawings in the reply, in order.</param>
     /// <param name="Drawing">True while a block is being written but isn't complete yet.</param>
-    public readonly record struct Parsed(bool Ready, string Heard, string Body, IReadOnlyList<string>? Drawings = null, bool Drawing = false);
+    /// <param name="Erases">Marks of the user's over its blocks that the reply asks to erase.</param>
+    public readonly record struct Parsed(bool Ready, string Heard, string Body, IReadOnlyList<string>? Drawings = null, bool Drawing = false, IReadOnlyList<EraseRequest>? Erases = null);
 
     /// <param name="finished">True once the stream has ended: then a reply that skipped the format is shown as-is.</param>
     public static Parsed Parse(string full, bool finished)
@@ -40,7 +41,7 @@ public static class ReplyParser
     static Parsed Reply(string heard, string body, bool finished)
     {
         var split = Blocks.Extract(body, finished);
-        return new Parsed(true, heard, Clean(split.Text), split.Blocks, split.Open);
+        return new Parsed(true, heard, Clean(split.Text), split.Blocks, split.Open, split.Erases);
     }
 
     /// <summary>Strips markdown the handwriting font can't show.</summary>

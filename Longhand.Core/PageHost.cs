@@ -33,6 +33,8 @@ public interface IPageView
     void DrawingsCleared(NoteModel note);
     /// <summary>The drawing's <see cref="DrawingModel.Markup"/> was replaced (by the model, or by undoing an edit): show it again. It will be measured next.</summary>
     void DrawingChanged(NoteModel note, DrawingModel drawing);
+    /// <summary>How wide the blocks are laid out (the page's text width), which says where a block is on the page.</summary>
+    double TextWidth => PageLayout.PageMaxWidth - PageLayout.MarginX - PageLayout.RightPad - 8;
     /// <summary>Whether the user can select, move, turn and delete the editable parts of a drawing here. The model is told, so it doesn't offer what can't be done.</summary>
     bool CanEdit { get; }
     /// <summary>Works out how many rule lines the note's words and each drawing take (sets <see cref="NoteModel.Lines"/> and <see cref="DrawingModel.Lines"/>).</summary>

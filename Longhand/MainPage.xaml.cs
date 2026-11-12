@@ -47,7 +47,7 @@ public sealed partial class MainPage : Page, IPageView
     readonly FontFamily _handFont = new("Ink Free, Segoe Print, Comic Sans MS");
 
     InkStrokeContainer Strokes => Ink.InkPresenter.StrokeContainer;
-    double TextWidth => Math.Max(200, _sheetWidth - MarginX - RightPad - 8);
+    public double TextWidth => Math.Max(200, _sheetWidth - MarginX - RightPad - 8);
 
     public MainPage()
     {

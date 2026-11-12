@@ -49,7 +49,7 @@ public sealed class WebConnection : IPageView, IPageData
         _session = new PageSession(this, this);
     }
 
-    double TextWidth => Math.Max(200, _sheetWidth - MarginX - RightPad - 8);
+    public double TextWidth => Math.Max(200, _sheetWidth - MarginX - RightPad - 8);
 
     // ---------- the connection ----------
 

@@ -20,6 +20,8 @@ public sealed class PageSession
     abstract record UndoStep;
     sealed record AddedStroke(uint StrokeId) : UndoStep;
     sealed record ErasedStrokes(object Token) : UndoStep;
+    /// <summary>Marks of the user's that the model erased, as one step.</summary>
+    sealed record ErasedByModel(IReadOnlyList<object> Tokens) : UndoStep;
     /// <summary>A drawing as it was before the user edited it, or before the model replaced it.</summary>
     sealed record EditedDrawing(NoteModel Note, DrawingModel Drawing, string Markup, Dictionary<string, Layout.EditEntry> Edits) : UndoStep;
 
@@ -173,6 +175,9 @@ public sealed class PageSession
                 break;
             case ErasedStrokes erased:
                 _view.RestoreStrokes(erased.Token);
+                break;
+            case ErasedByModel byModel:
+                foreach (var token in byModel.Tokens) _view.RestoreStrokes(token);
                 break;
             case EditedDrawing edit:
                 if (_notes.Contains(edit.Note) && edit.Note.Drawings.Contains(edit.Drawing))
@@ -336,6 +341,8 @@ public sealed class PageSession
             AddNewDrawings(note, result.Drawings);
             // A drawing with the id of one already on the page replaces that one, where it is.
             int replaced = result.Outcome == ReplyOutcome.Done ? await ReplaceFiguresAsync(note, result.Drawings) : 0;
+            // Marks of the user's over its blocks that it said no longer make sense.
+            int erased = result.Outcome == ReplyOutcome.Done ? EraseMarks(result.Erases) : 0;
             note.Text = result.Outcome switch
             {
                 ReplyOutcome.Refused when result.Body.Length == 0 && note.Drawings.Count == 0 => "I can't help with that one.",
@@ -343,6 +350,7 @@ public sealed class PageSession
                 _ when result.Body.Length > 0 => result.Body,
                 _ when note.Drawings.Count > 0 => "",
                 _ when replaced > 0 => "Updated the drawing above.",
+                _ when erased > 0 => "Erased the marks above.",
                 _ => "I couldn't come up with a reply. Try writing it again?",
             };
             note.Done = true;
@@ -591,6 +599,51 @@ public sealed class PageSession
             replaced++;
         }
         return replaced;
+    }
+
+    // ---------- erasing the user's marks over the model's blocks ----------
+
+    /// <summary>Where each block is on the page (its note's words come first, then its blocks one under another, as the views place them).</summary>
+    IEnumerable<(DrawingModel Drawing, HitRect Box)> BlockBoxes()
+    {
+        foreach (var n in _notes.Where(n => !n.IsHint))
+        {
+            double top = n.Y + n.Lines * LineHeight;
+            foreach (var d in n.Drawings)
+            {
+                var (w, h) = Blocks.Fit(d.Aspect, _view.TextWidth);
+                yield return (d, new HitRect(PageLayout.MarginX, top, PageLayout.MarginX + w, top + h));
+                top += d.Lines * LineHeight;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Takes the user's ink that lies on the regions the model named off the page, as one undo step. Only ink that is mostly inside
+    /// a region goes, never anything else, and a block that isn't on the page is ignored. Returns how many strokes went.
+    /// </summary>
+    int EraseMarks(IReadOnlyList<EraseRequest>? requests)
+    {
+        if (requests is null || requests.Count == 0) return 0;
+        var tokens = new List<object>();
+        var boxes = BlockBoxes().ToList();
+        foreach (var request in requests.Take(InkErase.MaxRequests))
+            foreach (var (drawing, box) in boxes.Where(b => Blocks.FigureId(b.Drawing.Markup) == request.Over))
+            {
+                var region = InkErase.Region(box, request);
+                foreach (var stroke in _view.Strokes().Where(s => s.Top < region.Bottom + 6 && s.Bottom > region.Top - 6))
+                    if (_view.StrokePoints(stroke.Id) is { } points && InkErase.MostlyIn(points, region) && _view.TakeStroke(stroke.Id) is { } token)
+                    {
+                        tokens.Add(token);
+                        _pending.Remove(stroke.Id);
+                    }
+            }
+        if (tokens.Count == 0) return 0;
+        _undo.Push(new ErasedByModel(tokens));
+        _view.Toast(tokens.Count == 1 ? "Erased 1 of your marks. Undo brings it back." : $"Erased {tokens.Count} of your marks. Undo brings them back.", 5);
+        UpdateState();
+        ScheduleSave();
+        return tokens.Count;
     }
 
     static Dictionary<string, Layout.EditEntry> CopyEdits(Dictionary<string, Layout.EditEntry> edits) => edits.ToDictionary(p => p.Key, p => p.Value.Copy());

@@ -154,6 +154,7 @@ await McpChecks.RunAsync(Check);
 await PageChecks.RunAsync(Check);
 await EditChecks.RunAsync(Check);
 NativeChecks.Run(Check);
+await EraseChecks.RunAsync(Check);
 await BookChecks.RunAsync(Check);
 await GoogleChecks.RunAsync(Check);
 
