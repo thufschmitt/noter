@@ -50,8 +50,10 @@ public sealed class WindowsPageData : IPageData
     {
         var tools = new List<IAgentTool>();
         if (NextcloudStore.Load() is { } account) tools.AddRange(CalendarTools.For(_nextcloud, account));
+        if (GoogleStore.Book.Connected) tools.AddRange(GoogleCalendarTools.For(new GoogleCalendar(ct2 => GoogleStore.Book.AccessTokenAsync(_oauth, ct2)), GoogleStore.Book.CanWrite));
         var (connectors, expired) = await ConnectorStore.ActiveAsync(_oauth, ct);
-        var (appTools, unreachable) = await McpTool.ForAsync(connectors, ct);
+        var (appTools, failures) = await McpTool.ForWithReasonsAsync(connectors, ct);
+        var unreachable = failures.Select(f => f.Reason.Length > 0 ? $"{f.Name} ({f.Reason})" : f.Name);
         tools.AddRange(appTools);
         var legend = await SymbolStore.LegendAsync();
         var service = new CodexService(signIn, renewed => { SignInStore.Save(renewed); return Task.CompletedTask; }, model, tools);

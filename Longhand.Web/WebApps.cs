@@ -18,7 +18,7 @@ namespace Longhand.Web;
 public sealed class WebApps
 {
     /// <summary>A sign-in that was started and is waiting for the browser to come back to /oauth/callback.</summary>
-    sealed record Pending(string Name, SignInRequest Request, DateTimeOffset Started);
+    sealed record Pending(string Name, SignInRequest Request, DateTimeOffset Started, bool Google = false);
 
     sealed class NextcloudLogin
     {
@@ -46,6 +46,19 @@ public sealed class WebApps
 
     public Nextcloud NextcloudClient => _nextcloud;
 
+    GoogleEndpoints GoogleEp => _store.Options.GoogleEndpoints ?? GoogleEndpoints.Default;
+
+    /// <summary>Google Calendar, called with the user's sign-in (renewed when it runs low).</summary>
+    public GoogleCalendar GoogleClient => new(ct => _store.Google.AccessTokenAsync(_oauth, ct), GoogleEp);
+
+    object GoogleStatus() => new
+    {
+        clientId = _store.Google.Client()?.ClientId,
+        hasSecret = !string.IsNullOrEmpty(_store.Google.Client()?.ClientSecret),
+        canWrite = _store.Google.CanWrite,
+        connected = _store.Google.Connected,
+    };
+
     /// <summary>The apps ready for a request (tokens close to expiring are renewed), and the ones whose sign-in has lapsed.</summary>
     public Task<(System.Collections.Generic.List<Connector> Active, System.Collections.Generic.List<string> Expired)> ActiveAsync(CancellationToken ct) =>
         _store.Connectors.ActiveAsync(_oauth, ct);
@@ -53,7 +66,7 @@ public sealed class WebApps
     bool Allowed(string url) => McpRegistry.IsPublicHttps(url)
         || (_store.Options.AllowPrivateApps && Uri.TryCreate(url, UriKind.Absolute, out var u) && u.Scheme is "http" or "https");
 
-    static object Shape(ConnectedApp a) => new { name = a.Name, url = a.Url, access = a.Access, ready = a.Ready };
+    static object Shape(ConnectedApp a) => new { name = a.Name, url = a.Url, access = a.Access, ready = a.Ready, ownClient = a.OwnClient };
 
     object NextcloudStatus()
     {
@@ -71,7 +84,7 @@ public sealed class WebApps
 
     public void Map(WebApplication app)
     {
-        app.MapGet("/api/apps", () => new { apps = _store.Connectors.List().Select(Shape), nextcloud = NextcloudStatus() });
+        app.MapGet("/api/apps", () => new { apps = _store.Connectors.List().Select(Shape), nextcloud = NextcloudStatus(), google = GoogleStatus() });
 
         app.MapPost("/api/apps", async (HttpContext ctx, AddApp body) =>
         {
@@ -89,8 +102,20 @@ public sealed class WebApps
                 McpAccess.Token => AppAccess.Token,
                 _ => body.TokenRequired == true ? AppAccess.Token : AppAccess.Open,
             };
+            // An OAuth client the user registered with the service themselves (for services that don't let apps register).
+            OAuthClient? client = null;
+            if (!string.IsNullOrWhiteSpace(body.ClientId))
+            {
+                // A client ID says the user knows it signs in, even if the server didn't say so to the probe (a server may answer anyone until a tool is called).
+                if (access == AppAccess.Open) access = AppAccess.SignIn;
+                if (access != AppAccess.SignIn) return Results.BadRequest(new { error = "That server doesn't use a browser sign-in, so a client ID is of no use." });
+                var id = body.ClientId.Trim();
+                if (id.Length > 300 || id.Any(char.IsWhiteSpace) || (body.ClientSecret ?? "").Length > 300 || (body.Scope ?? "").Length > 1000)
+                    return Results.BadRequest(new { error = "That client ID, secret or scope doesn't look right." });
+                client = new OAuthClient(id, string.IsNullOrWhiteSpace(body.ClientSecret) ? null : body.ClientSecret.Trim(), body.Scope);
+            }
             var unique = _store.Connectors.UniqueName(name);
-            _store.Connectors.Add(unique, url, access);
+            _store.Connectors.Add(unique, url, access, client);
             return Results.Ok(new { app = Shape(_store.Connectors.List().First(a => a.Name == unique)) });
         });
 
@@ -124,7 +149,7 @@ public sealed class WebApps
             try
             {
                 var redirect = $"{ctx.Request.Scheme}://{ctx.Request.Host}/oauth/callback";
-                var request = await _oauth.BeginAsync(found.Url, redirect, ctx.RequestAborted);
+                var request = await _oauth.BeginAsync(found.Url, redirect, ctx.RequestAborted, _store.Connectors.ClientFor(name));
                 foreach (var old in _pending.Where(p => DateTimeOffset.UtcNow - p.Value.Started > SignInWindow).Select(p => p.Key)) _pending.TryRemove(old, out _);
                 _pending[request.State] = new Pending(name, request, DateTimeOffset.UtcNow);
                 return Results.Ok(new { url = request.AuthorizeUrl.ToString() });
@@ -143,8 +168,12 @@ public sealed class WebApps
             {
                 try
                 {
-                    _store.Connectors.SaveSession(pending.Name, await _oauth.FinishAsync(pending.Request, query, ctx.RequestAborted));
-                    (title, message) = ("Signed in", $"Longhand is now signed in to {pending.Name}. You can close this tab.");
+                    var session = await _oauth.FinishAsync(pending.Request, query, ctx.RequestAborted);
+                    if (pending.Google) _store.Google.SaveSession(session);
+                    else _store.Connectors.SaveSession(pending.Name, session);
+                    (title, message) = pending.Google
+                        ? ("Connected", "Longhand is now connected to your Google Calendar" + (_store.Google.CanWrite ? "" : " (read-only)") + ". You can close this tab.")
+                        : ("Signed in", $"Longhand is now signed in to {pending.Name}. You can close this tab.");
                 }
                 catch (Exception ex)
                 {
@@ -190,6 +219,52 @@ public sealed class WebApps
             }
             catch (OperationCanceledException) { return Results.StatusCode(499); }
             catch (Exception ex) { return Results.Json(new { error = "Couldn't search the registry: " + ex.Message }, statusCode: 502); }
+        });
+
+        // ----- Google Calendar: through Google's own API, with an OAuth client the user made in their own Google Cloud project -----
+
+        app.MapGet("/api/google", () => GoogleStatus());
+
+        app.MapPut("/api/google/client", (GoogleClientBody body) =>
+        {
+            var id = (body.ClientId ?? "").Trim();
+            if (id.Length == 0 || id.Length > 300 || id.Any(char.IsWhiteSpace) || (body.ClientSecret ?? "").Length > 300)
+                return Results.BadRequest(new { error = "Paste the client ID of the OAuth client you made in Google Cloud (it ends in .apps.googleusercontent.com)." });
+            // A secret left blank next to the same client ID is the one already kept.
+            var kept = _store.Google.Client() is { } current && current.ClientId == id ? current.ClientSecret : null;
+            var secret = string.IsNullOrWhiteSpace(body.ClientSecret) ? kept : body.ClientSecret.Trim();
+            _store.Google.SaveClient(new OAuthClient(id, secret), body.Write == true);
+            return Results.Ok(GoogleStatus());
+        });
+
+        // Starts the browser sign-in: the page opens the returned address; Google sends the browser back to /oauth/callback.
+        app.MapPost("/api/google/connect", (HttpContext ctx) =>
+        {
+            if (_store.Google.Client() is not { } client) return Results.BadRequest(new { error = "Save your Google OAuth client first." });
+            var redirect = $"{ctx.Request.Scheme}://{ctx.Request.Host}/oauth/callback";
+            var request = GoogleSignIn.Begin(client, redirect, _store.Google.CanWrite, GoogleEp);
+            foreach (var old in _pending.Where(p => DateTimeOffset.UtcNow - p.Value.Started > SignInWindow).Select(p => p.Key)) _pending.TryRemove(old, out _);
+            _pending[request.State] = new Pending("google-calendar", request, DateTimeOffset.UtcNow, Google: true);
+            return Results.Ok(new { url = request.AuthorizeUrl.ToString() });
+        });
+
+        app.MapPost("/api/google/check", async (HttpContext ctx) =>
+        {
+            if (!_store.Google.Connected) return Results.BadRequest(new { error = "Google Calendar isn't connected." });
+            try { return Results.Ok(new { calendars = (await GoogleClient.ListCalendarsAsync(ctx.RequestAborted)).Select(c => c.Writable ? c.Name : c.Name + " (read only)") }); }
+            catch (OperationCanceledException) { return Results.StatusCode(499); }
+            catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+
+        app.MapPost("/api/google/disconnect", async (HttpContext ctx, ForgetBody body) =>
+        {
+            if (_store.Google.TokenToRevoke() is { } token)
+            {
+                try { await GoogleCalendar.RevokeAsync(token, GoogleEp, ct: ctx.RequestAborted); }
+                catch (Exception) { /* forgotten here either way; it can be removed in the Google account's security page */ }
+            }
+            if (body.Forget == true) _store.Google.Forget(); else _store.Google.SignOut();
+            return Results.Ok(GoogleStatus());
         });
 
         // ----- Nextcloud -----
@@ -241,7 +316,9 @@ public sealed class WebApps
         });
     }
 
-    sealed record AddApp(string? Name, string? Url, bool? TokenRequired);
+    sealed record AddApp(string? Name, string? Url, bool? TokenRequired, string? ClientId = null, string? ClientSecret = null, string? Scope = null);
     sealed record TokenBody(string? Token);
     sealed record ServerBody(string? Server);
+    sealed record GoogleClientBody(string? ClientId, string? ClientSecret, bool? Write);
+    sealed record ForgetBody(bool? Forget);
 }

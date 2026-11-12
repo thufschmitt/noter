@@ -15,6 +15,9 @@ sealed class FakeOAuthServer : IAsyncDisposable
 
     public string BaseUrl { get; }
     public string? RegisteredRedirect, RegisteredAuthMethod, LastVerifier;
+    /// <summary>The last form sent to the Google-like token endpoint (/gtoken), and how many registrations were asked for.</summary>
+    public Dictionary<string, string> LastGoogleForm = new();
+    public int Registrations;
 
     public FakeOAuthServer()
     {
@@ -55,6 +58,32 @@ sealed class FakeOAuthServer : IAsyncDisposable
                     json = FakeMcp.Answer(body, "search") ?? "{}";
                     if (json == "") { c.Response.StatusCode = 202; json = null; }
                     break;
+                // A server like Google's: no registration (the client is the user's own, with a secret), no offline_access scope.
+                case "/gcal" when auth is "Bearer access-g1" or "Bearer access-g2":
+                    json = FakeMcp.Answer(body, "list_events") ?? "{}";
+                    if (json == "") { c.Response.StatusCode = 202; json = null; }
+                    break;
+                case "/gcal" when body.Contains("\"method\":\"initialize\""):
+                    json = FakeMcp.Answer(body, "list_events");
+                    break;
+                case "/gcal":
+                    c.Response.StatusCode = 401;
+                    c.Response.Headers["WWW-Authenticate"] = $"Bearer resource_metadata=\"{BaseUrl}/.well-known/oauth-protected-resource/gcal\"";
+                    break;
+                case "/.well-known/oauth-protected-resource/gcal":
+                    json = $$"""{"resource":"{{BaseUrl}}/gcal","authorization_servers":["{{BaseUrl}}/google"],"scopes_supported":["https://example/calendar.readonly"]}""";
+                    break;
+                case "/.well-known/oauth-authorization-server/google":
+                    json = $$"""{"issuer":"{{BaseUrl}}/google","authorization_endpoint":"{{BaseUrl}}/gauthorize?kept=1","token_endpoint":"{{BaseUrl}}/gtoken","scopes_supported":["openid","email","profile"]}""";
+                    break;
+                case "/gtoken":
+                    var gform = ParseForm(body);
+                    LastGoogleForm = gform;
+                    if (gform.GetValueOrDefault("client_id") != "gcid" || gform.GetValueOrDefault("client_secret") != "gsecret") { c.Response.StatusCode = 401; json = """{"error":"invalid_client"}"""; }
+                    else if (gform["grant_type"] == "authorization_code") json = """{"access_token":"access-g1","refresh_token":"refresh-g1","expires_in":3599,"token_type":"Bearer"}""";
+                    else if (gform["grant_type"] == "refresh_token" && gform["refresh_token"] == "refresh-g1") json = """{"access_token":"access-g2","expires_in":3599,"token_type":"Bearer"}""";
+                    else c.Response.StatusCode = 400;
+                    break;
                 case "/406":
                     c.Response.StatusCode = 406;
                     break;
@@ -69,6 +98,7 @@ sealed class FakeOAuthServer : IAsyncDisposable
                     json = $$"""{"issuer":"{{BaseUrl}}","authorization_endpoint":"{{BaseUrl}}/authorize","token_endpoint":"{{BaseUrl}}/token","registration_endpoint":"{{BaseUrl}}/register","scopes_supported":["read","write","offline_access"]}""";
                     break;
                 case "/register":
+                    Registrations++;
                     using (var doc = JsonDocument.Parse(body))
                     {
                         RegisteredRedirect = doc.RootElement.GetProperty("redirect_uris")[0].GetString();

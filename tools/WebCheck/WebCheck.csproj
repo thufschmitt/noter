@@ -11,5 +11,6 @@
     <ProjectReference Include="..\..\Longhand.Web\Longhand.Web.csproj" />
     <Compile Include="..\CoreCheck\Fakes.cs" Link="Fakes.cs" />
     <Compile Include="..\CoreCheck\FakeOAuthServer.cs" Link="FakeOAuthServer.cs" />
+    <Compile Include="..\CoreCheck\FakeGoogle.cs" Link="FakeGoogle.cs" />
   </ItemGroup>
 </Project>

@@ -1163,6 +1163,7 @@ async function loadApps() {
   appsData = await (await fetch('/api/apps')).json();
   renderApps();
   renderNextcloud();
+  renderGoogle();
   return appsData;
 }
 
@@ -1240,10 +1241,10 @@ async function signIn(app) {
   }
 }
 
-async function addApp(name, url, tokenRequired) {
+async function addApp(name, url, tokenRequired, client = {}) {
   try {
     appsSay('Checking how it lets you in…');
-    const { app } = await api('POST', '/api/apps', { name, url, tokenRequired });
+    const { app } = await api('POST', '/api/apps', { name, url, tokenRequired, ...client });
     appsSay(app.access === 'oauth' ? `Added ${app.name}. Sign in to use it.`
       : app.access === 'token' ? `Added ${app.name}. It needs an access token: get one from the service, then tap Add token.`
       : `Added ${app.name}. It needs no sign-in.`);
@@ -1305,6 +1306,78 @@ function renderNextcloud() {
   });
   connect.disabled = !!n.pending;
   box.append(intro, server, connect);
+}
+
+// ----- Google Calendar -----
+
+// Google doesn't let apps register themselves, so this uses an OAuth client the user made in their own Google Cloud project: its ID and
+// secret are typed once. The model reads the calendar; if the box is ticked it may also add, change and delete events.
+let googleDraft = { clientId: null, write: null };
+function renderGoogle() {
+  const box = $('google');
+  const g = appsData.google;
+  box.textContent = '';
+  const redirect = location.origin + '/oauth/callback';
+  if (g.connected) {
+    const line = document.createElement('p');
+    line.className = 'note-text';
+    line.textContent = 'Connected. ' + (g.canWrite ? 'The model can read your events and, when you ask it to, add, change and delete them.' : 'The model can read your events (it can\'t change them).');
+    const buttons = document.createElement('div');
+    buttons.className = 'buttons';
+    buttons.append(
+      button('Check', 'Check', async () => {
+        try {
+          const { calendars } = await api('POST', '/api/google/check');
+          appsSay(calendars.length === 0 ? 'No calendars found.' : 'The model can use: ' + calendars.join(', ') + '.');
+        } catch (e) { appsSay(e.message); }
+      }),
+      button('Disconnect', 'Disconnect', async () => { await api('POST', '/api/google/disconnect', {}); appsSay('Disconnected from Google Calendar.'); loadApps(); }),
+      button('Forget client', 'Disconnect and forget the OAuth client too', async () => { await api('POST', '/api/google/disconnect', { forget: true }); appsSay('Google Calendar and its OAuth client are forgotten.'); loadApps(); }),
+    );
+    box.append(line, buttons);
+    return;
+  }
+  const intro = document.createElement('p');
+  intro.className = 'note-text';
+  intro.textContent = 'Lets the model read your Google Calendar. Google needs an OAuth client of your own: in a Google Cloud project, enable the Google Calendar API, set up the OAuth consent screen (add yourself as a test user), create a "Web application" client, and register the redirect address below with it. Then paste the client\'s ID and secret here and connect; you approve it in your browser. The secret stays on this server, readable only by you.';
+  const where = document.createElement('p');
+  where.className = 'note-text';
+  where.innerHTML = 'Redirect address: <code></code>';
+  where.lastChild.textContent = redirect;
+  const id = document.createElement('input');
+  id.placeholder = 'Client ID (ends in .apps.googleusercontent.com)';
+  id.autocomplete = 'off';
+  id.value = googleDraft.clientId ?? g.clientId ?? '';
+  const secret = document.createElement('input');
+  secret.type = 'password';
+  secret.autocomplete = 'off';
+  secret.placeholder = g.hasSecret ? 'Client secret (kept: leave empty to keep it)' : 'Client secret';
+  const label = document.createElement('label');
+  label.className = 'note-text';
+  const write = document.createElement('input');
+  write.type = 'checkbox';
+  write.checked = googleDraft.write ?? g.canWrite;
+  label.append(write, ' Also let the model add, change and delete events (asks Google for more access; it only does so when you ask it to)');
+  const connect = button('Connect', 'Connect', async () => {
+    const win = window.open('', '_blank');
+    try {
+      googleDraft = { clientId: id.value, write: write.checked };
+      appsSay('Contacting Google…');
+      await api('PUT', '/api/google/client', { clientId: id.value, clientSecret: secret.value, write: write.checked });
+      const { url } = await api('POST', '/api/google/connect');
+      if (win) { win.location = url; appsSay('Approve the connection in the other tab. This page continues when you have.'); }
+      else appsSay('Your browser blocked the window.', url);
+      if (await waitFor(d => d.google.connected)) {
+        googleDraft = { clientId: null, write: null };
+        const { calendars } = await api('POST', '/api/google/check');
+        appsSay(calendars.length === 0 ? 'Connected, but no calendars were found.' : 'Connected. The model can use: ' + calendars.join(', ') + '.');
+      }
+    } catch (e) {
+      if (win) win.close();
+      appsSay(e.message);
+    }
+  });
+  box.append(intro, where, id, secret, label, connect);
 }
 
 // ----- the registry -----
@@ -1403,6 +1476,7 @@ async function searchRegistry(more) {
 $('registrySearch').onclick = () => searchRegistry(false);
 $('registryMore').onclick = () => searchRegistry(true);
 $('registryQuery').addEventListener('keydown', e => { if (e.key === 'Enter') searchRegistry(false); });
+$('appRedirect').textContent = location.origin + '/oauth/callback';
 $('appPreset').onchange = e => {
   const [name, url] = e.target.value.split('|');
   if (name) { $('appName').value = name; $('appUrl').value = url; }
@@ -1410,7 +1484,12 @@ $('appPreset').onchange = e => {
 $('appAdd').onclick = async () => {
   const add = $('appAdd');
   add.disabled = true;
-  if (await addApp($('appName').value, $('appUrl').value.trim(), false)) { $('appName').value = $('appUrl').value = ''; $('appPreset').value = ''; }
+  const client = $('appClientId').value.trim() ? { clientId: $('appClientId').value.trim(), clientSecret: $('appClientSecret').value.trim(), scope: $('appScope').value.trim() } : {};
+  if (await addApp($('appName').value, $('appUrl').value.trim(), false, client)) {
+    $('appName').value = $('appUrl').value = $('appClientId').value = $('appClientSecret').value = $('appScope').value = '';
+    $('appPreset').value = '';
+    $('appClient').open = false;
+  }
   add.disabled = false;
 };
 $('appsButton').onclick = async () => {

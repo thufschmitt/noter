@@ -20,10 +20,11 @@ await using var api = new FakeCodex { AskForTool = false };
 await using var mcp = new FakeOAuthServer();
 await using var registry = new FakeRegistry();
 await using var cloud = new FakeNextcloud();
+await using var googleApi = new FakeGoogle();
 var app = WebApp.Build(new WebOptions
 {
     DataDir = data, Urls = "http://127.0.0.1:0", CodexBaseUrl = api.BaseUrl, CodexRefreshUrl = api.BaseUrl + "/oauth/token", SignIn = api.SignIn.ToJson(),
-    AllowPrivateApps = true, RegistryBaseUrl = registry.BaseUrl, NextcloudPollInterval = TimeSpan.FromMilliseconds(30),
+    AllowPrivateApps = true, RegistryBaseUrl = registry.BaseUrl, NextcloudPollInterval = TimeSpan.FromMilliseconds(30), GoogleEndpoints = googleApi.Endpoints,
 }); 
 await app.StartAsync();
 var url = app.Urls.First().Replace("[::1]", "127.0.0.1");
@@ -248,6 +249,86 @@ try
     Check("tokens are kept in the private file, not with the apps or settings", File.ReadAllText(Path.Combine(data, "secrets.json")).Contains("secret-token-1") && File.ReadAllText(Path.Combine(data, "secrets.json")).Contains("access-1") && !File.ReadAllText(Path.Combine(data, "apps.json")).Contains("secret-token-1") && !File.ReadAllText(Path.Combine(data, "apps.json")).Contains("access-1"));
     if (!OperatingSystem.IsWindows())
         Check("and only the user can read that file", File.GetUnixFileMode(Path.Combine(data, "secrets.json")) == (UnixFileMode.UserRead | UnixFileMode.UserWrite));
+
+    // ----- a server that doesn't register clients: the user's own, with its secret -----
+    Check("a client ID is of no use to a server that wants a token", (await http.SendAsync(ApiReq(HttpMethod.Post, "/api/apps", new { name = "nope", url = mcp.BaseUrl + "/closed", clientId = "gcid" }))).StatusCode == HttpStatusCode.BadRequest);
+    var forced = await Json(await http.SendAsync(ApiReq(HttpMethod.Post, "/api/apps", new { name = "forced", url = mcp.BaseUrl + "/open", clientId = "gcid", clientSecret = "gsecret" })));
+    Check("a client ID says the server signs in, even when it let the probe in", forced.GetProperty("app").GetProperty("access").GetString() == "oauth" && forced.GetProperty("app").GetProperty("ownClient").GetBoolean());
+    await http.SendAsync(ApiReq(HttpMethod.Delete, "/api/apps/forced"));
+    Check("a client ID with blanks is refused", (await http.SendAsync(ApiReq(HttpMethod.Post, "/api/apps", new { name = "nope", url = mcp.BaseUrl + "/gcal", clientId = "g cid" }))).StatusCode == HttpStatusCode.BadRequest);
+    var plainGoogle = await http.SendAsync(ApiReq(HttpMethod.Post, "/api/apps", new { name = "gcal-plain", url = mcp.BaseUrl + "/gcal" }));
+    var plainBegin = await http.SendAsync(ApiReq(HttpMethod.Post, "/api/apps/gcal-plain/signin"));
+    Check("without a client, signing in to it says what to add", plainGoogle.IsSuccessStatusCode && plainBegin.StatusCode == HttpStatusCode.BadRequest && (await plainBegin.Content.ReadAsStringAsync()).Contains("client ID"));
+    await http.SendAsync(ApiReq(HttpMethod.Delete, "/api/apps/gcal-plain"));
+    var gadded = await Json(await http.SendAsync(ApiReq(HttpMethod.Post, "/api/apps", new { name = "google-calendar", url = mcp.BaseUrl + "/gcal", clientId = "gcid", clientSecret = "gsecret", scope = "scope-a scope-b" })));
+    Check("an app added with a client says so, and its secret is not given back", gadded.GetProperty("app").GetProperty("ownClient").GetBoolean() && gadded.GetProperty("app").GetProperty("access").GetString() == "oauth" && !gadded.ToString().Contains("gsecret"));
+    var gbegin = await Json(await http.SendAsync(ApiReq(HttpMethod.Post, "/api/apps/google-calendar/signin")));
+    var gauth = new Uri(gbegin.GetProperty("url").GetString()!);
+    var gquery = System.Web.HttpUtility.ParseQueryString(gauth.Query);
+    Check("signing in goes to the service with that client, its scopes and offline access", gauth.AbsolutePath == "/gauthorize" && gquery["client_id"] == "gcid" && gquery["scope"] == "scope-a scope-b" && gquery["access_type"] == "offline" && gquery["redirect_uri"] == url + "/oauth/callback");
+    var gdone = await http.GetAsync("/oauth/callback?code=abc&state=" + Uri.EscapeDataString(gquery["state"]!));
+    Check("the browser coming back completes it, with the secret", gdone.StatusCode == HttpStatusCode.OK && mcp.LastGoogleForm["client_secret"] == "gsecret" && Apps(await Json(await http.GetAsync("/api/apps"))).Single(a => a.GetProperty("name").GetString() == "google-calendar").GetProperty("ready").GetBoolean());
+    Check("the client's secret is in the private file, not with the apps", File.ReadAllText(Path.Combine(data, "secrets.json")).Contains("gsecret") && !File.ReadAllText(Path.Combine(data, "apps.json")).Contains("gsecret") && File.ReadAllText(Path.Combine(data, "apps.json")).Contains("gcid"));
+    // The tools of the signed-in app reach the model on the next ask.
+    api.FinalText = "HEARD: calendar\n---\nOk.";
+    await using (var gb = await FakeBrowser.ConnectAsync(url))
+    {
+        await gb.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "page"));
+        int before = api.Requests.Count(r => r.Path.EndsWith("/responses"));
+        await gb.SendAsync(new { t = "type", text = "what is on my calendar?" });
+        await gb.UntilAsync(_ => api.Requests.Count(r => r.Path.EndsWith("/responses")) > before, 10000);
+        var sent = api.Requests.Where(r => r.Path.EndsWith("/responses")).Skip(before).FirstOrDefault()?.Body ?? "";
+        Check("the signed-in Google-like app's tools are offered to the model", sent.Contains("google-calendar__list_events") && sent.Contains("\"type\":\"function\""));
+        Check("and the user was not told it is unavailable", !gb.Of("toast").Any(t => t.GetProperty("message").GetString()!.Contains("Not available")));
+    }
+    await http.SendAsync(ApiReq(HttpMethod.Delete, "/api/apps/google-calendar"));
+    Check("removing the app removes the secret", !File.ReadAllText(Path.Combine(data, "secrets.json")).Contains("gsecret"));
+
+    // ----- Google Calendar, through Google's own API -----
+    var g0 = await Json(await http.GetAsync("/api/google"));
+    Check("Google Calendar isn't connected to begin with", !g0.GetProperty("connected").GetBoolean() && g0.GetProperty("clientId").ValueKind == JsonValueKind.Null && (await Json(await http.GetAsync("/api/apps"))).GetProperty("google").GetProperty("connected").ValueKind == JsonValueKind.False);
+    Check("connecting needs the client first", (await http.SendAsync(ApiReq(HttpMethod.Post, "/api/google/connect"))).StatusCode == HttpStatusCode.BadRequest);
+    Check("a client ID with blanks, or none, is refused", (await http.SendAsync(ApiReq(HttpMethod.Put, "/api/google/client", new { clientId = "g cid", clientSecret = "x" }))).StatusCode == HttpStatusCode.BadRequest && (await http.SendAsync(ApiReq(HttpMethod.Put, "/api/google/client", new { clientId = " " }))).StatusCode == HttpStatusCode.BadRequest);
+    var g1 = await Json(await http.SendAsync(ApiReq(HttpMethod.Put, "/api/google/client", new { clientId = "gcid", clientSecret = "gsecret", write = true })));
+    Check("the client is saved, and its secret is not given back", g1.GetProperty("clientId").GetString() == "gcid" && g1.GetProperty("hasSecret").GetBoolean() && g1.GetProperty("canWrite").GetBoolean() && !g1.ToString().Contains("gsecret"));
+    var gcBegin = await Json(await http.SendAsync(ApiReq(HttpMethod.Post, "/api/google/connect")));
+    var gcAuth = new Uri(gcBegin.GetProperty("url").GetString()!);
+    var gq = System.Web.HttpUtility.ParseQueryString(gcAuth.Query);
+    Check("connecting sends the browser to Google with the client, offline access, the scopes that allow changes, and back to this server", gcAuth.AbsolutePath == "/authorize" && gq["client_id"] == "gcid" && gq["access_type"] == "offline" && gq["scope"] == GoogleSignIn.WriteScopes && gq["redirect_uri"] == url + "/oauth/callback");
+    var gback = await http.GetAsync("/oauth/callback?code=abc&state=" + Uri.EscapeDataString(gq["state"]!));
+    Check("the browser coming back completes it, with the secret", gback.StatusCode == HttpStatusCode.OK && (await gback.Content.ReadAsStringAsync()).Contains("Google Calendar") && googleApi.LastTokenForm["client_secret"] == "gsecret" && (await Json(await http.GetAsync("/api/google"))).GetProperty("connected").GetBoolean());
+    var gcheck = await Json(await http.SendAsync(ApiReq(HttpMethod.Post, "/api/google/check")));
+    Check("checking lists the calendars, marking the ones that can't be changed", gcheck.GetProperty("calendars").EnumerateArray().Select(c => c.GetString()).SequenceEqual(new[] { "Personal", "Team", "Holidays (read only)" }));
+    Check("the tokens are in the private file, not with the settings", File.ReadAllText(Path.Combine(data, "secrets.json")).Contains("access-g1") && File.ReadAllText(Path.Combine(data, "secrets.json")).Contains("gsecret") && !File.ReadAllText(Path.Combine(data, "settings.json")).Contains("access-g1") && !File.ReadAllText(Path.Combine(data, "settings.json")).Contains("gsecret"));
+    api.FinalText = "HEARD: calendar\n---\nOk.";
+    await using (var gb = await FakeBrowser.ConnectAsync(url))
+    {
+        await gb.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "page"));
+        int beforeAsk = api.Requests.Count(r => r.Path.EndsWith("/responses"));
+        await gb.SendAsync(new { t = "type", text = "what is on my calendar?" });
+        await gb.UntilAsync(_ => api.Requests.Count(r => r.Path.EndsWith("/responses")) > beforeAsk, 10000);
+        var sentAsk = api.Requests.Where(r => r.Path.EndsWith("/responses")).Skip(beforeAsk).FirstOrDefault()?.Body ?? "";
+        Check("the model is offered Google Calendar, with the tools that change events because that was allowed", sentAsk.Contains("google_calendar_events") && sentAsk.Contains("google_calendar_add_event") && sentAsk.Contains("google_calendar_delete_event"));
+    }
+    var gsame = await Json(await http.SendAsync(ApiReq(HttpMethod.Put, "/api/google/client", new { clientId = "gcid", write = true })));
+    Check("saving the same client again (secret left empty) keeps the secret and the sign-in", gsame.GetProperty("hasSecret").GetBoolean() && gsame.GetProperty("connected").GetBoolean());
+    var gread = await Json(await http.SendAsync(ApiReq(HttpMethod.Put, "/api/google/client", new { clientId = "gcid", write = false })));
+    Check("allowing less forgets the sign-in, which no longer fits", !gread.GetProperty("connected").GetBoolean() && !gread.GetProperty("canWrite").GetBoolean() && gread.GetProperty("hasSecret").GetBoolean());
+    var gagain = System.Web.HttpUtility.ParseQueryString(new Uri((await Json(await http.SendAsync(ApiReq(HttpMethod.Post, "/api/google/connect")))).GetProperty("url").GetString()!).Query);
+    await http.GetAsync("/oauth/callback?code=abc&state=" + Uri.EscapeDataString(gagain["state"]!));
+    await using (var gb = await FakeBrowser.ConnectAsync(url))
+    {
+        await gb.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "page"));
+        int beforeAsk = api.Requests.Count(r => r.Path.EndsWith("/responses"));
+        await gb.SendAsync(new { t = "type", text = "and now?" });
+        await gb.UntilAsync(_ => api.Requests.Count(r => r.Path.EndsWith("/responses")) > beforeAsk, 10000);
+        var sentRead = api.Requests.Where(r => r.Path.EndsWith("/responses")).Skip(beforeAsk).FirstOrDefault()?.Body ?? "";
+        Check("read-only, only reading is offered", sentRead.Contains("google_calendar_events") && !sentRead.Contains("google_calendar_add_event") && !sentRead.Contains("google_calendar_delete_event"));
+    }
+    await http.SendAsync(ApiReq(HttpMethod.Post, "/api/google/disconnect", new { }));
+    Check("disconnecting revokes the token with Google and keeps the client", googleApi.Revoked is not null && googleApi.Revoked.StartsWith("token=") && !(await Json(await http.GetAsync("/api/google"))).GetProperty("connected").GetBoolean() && (await Json(await http.GetAsync("/api/google"))).GetProperty("clientId").GetString() == "gcid");
+    var gforget = await Json(await http.SendAsync(ApiReq(HttpMethod.Post, "/api/google/disconnect", new { forget = true })));
+    Check("forgetting removes the client and its secret too", gforget.GetProperty("clientId").ValueKind == JsonValueKind.Null && !File.ReadAllText(Path.Combine(data, "secrets.json")).Contains("gsecret") && !File.ReadAllText(Path.Combine(data, "secrets.json")).Contains("access-g"));
 
     // ----- the registry -----
     var found = await Json(await http.GetAsync("/api/registry?q=todo"));

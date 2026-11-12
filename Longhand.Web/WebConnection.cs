@@ -461,8 +461,10 @@ public sealed class WebConnection : IPageView, IPageData
     {
         var tools = new List<IAgentTool>();
         if (_store.Nextcloud.Load() is { } account) tools.AddRange(CalendarTools.For(_apps.NextcloudClient, account, _zone));
+        if (_store.Google.Connected) tools.AddRange(GoogleCalendarTools.For(_apps.GoogleClient, _store.Google.CanWrite, _zone));
         var (connectors, expired) = await _apps.ActiveAsync(ct);
-        var (appTools, unreachable) = await McpTool.ForAsync(connectors, ct);
+        var (appTools, failures) = await McpTool.ForWithReasonsAsync(connectors, ct);
+        var unreachable = failures.Select(f => f.Reason.Length > 0 ? $"{f.Name} ({f.Reason})" : f.Name);
         tools.AddRange(appTools);
         var service = new CodexService(signIn, renewed => { _store.SaveSignIn(renewed); return Task.CompletedTask; }, model, tools, _zone, _store.CodexBaseUrl, _store.CodexRefreshUrl);
         return new PreparedAsk(service, _store.Legend(), expired.Concat(unreachable).ToList());

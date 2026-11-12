@@ -10,7 +10,8 @@ public static class ConnectorStore
     static readonly ConnectorBook Book = new(WindowsSettings.Container("mcp"), new WindowsSecrets());
 
     public static IReadOnlyList<ConnectedApp> List() => Book.List();
-    public static void Add(string name, string url, string access = AppAccess.SignIn) => Book.Add(name, url, access);
+    public static void Add(string name, string url, string access = AppAccess.SignIn, OAuthClient? client = null) => Book.Add(name, url, access, client);
+    public static OAuthClient? ClientFor(string name) => Book.ClientFor(name);
     public static void SaveToken(string name, string token) => Book.SaveToken(name, token);
     public static string UniqueName(string wanted) => Book.UniqueName(wanted);
     public static void Remove(string name) => Book.Remove(name);

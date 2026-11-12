@@ -21,6 +21,8 @@ public sealed class WebOptions
     public bool AllowPrivateApps { get; set; }
     /// <summary>Only for checks against a fake of the MCP registry.</summary>
     public string? RegistryBaseUrl { get; set; }
+    /// <summary>Only for checks against a fake of Google's sign-in and Calendar API.</summary>
+    public Longhand.Services.GoogleEndpoints? GoogleEndpoints { get; set; }
     /// <summary>How often to ask Nextcloud whether the sign-in was approved; checks make it short.</summary>
     public TimeSpan NextcloudPollInterval { get; set; } = TimeSpan.FromSeconds(2);
 

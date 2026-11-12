@@ -312,7 +312,7 @@ public sealed class PageSession
         {
             prepared = await _data.PrepareAskAsync(signIn, CurrentModel, ct);
             // Connected apps that can't be used this time are left out; say so, since the model won't have them.
-            if (prepared.Unavailable is { Count: > 0 } missing) _view.Toast("Not available this time: " + string.Join(", ", missing) + " (check them with the apps button).", 6);
+            if (prepared.Unavailable is { Count: > 0 } missing) _view.Toast("Not available this time: " + string.Join("; ", missing) + ". Check them with the apps button.", missing.Any(m => m.Contains('(')) ? 12 : 6);
             var result = await prepared.Model.AskAsync(png, History(), progress =>
             {
                 note.Heard = progress.Heard;

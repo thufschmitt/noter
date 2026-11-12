@@ -23,18 +23,14 @@ public static class CalendarTools
     }
 }
 
-/// <summary>What the calendar tools share: the account, the user's time zone and the clock, and reading their input.</summary>
-public sealed class CalendarContext
+/// <summary>What every calendar tool shares, whichever calendar it is: the user's time zone and the clock, and reading the times and words they are given.</summary>
+public class CalendarClock
 {
-    public Nextcloud Nextcloud { get; }
-    public NextcloudAccount Account { get; }
     public TimeZoneInfo Zone { get; }
     public Func<DateTimeOffset> Now { get; }
 
-    public CalendarContext(Nextcloud nextcloud, NextcloudAccount account, TimeZoneInfo zone, Func<DateTimeOffset> now)
+    public CalendarClock(TimeZoneInfo zone, Func<DateTimeOffset> now)
     {
-        Nextcloud = nextcloud;
-        Account = account;
         Zone = zone;
         Now = now;
     }
@@ -131,6 +127,20 @@ public sealed class CalendarContext
             at = from.ToString("ddd d MMM yyyy HH:mm", culture) + "–" + to.ToString(to.Date == from.Date ? "HH:mm" : "ddd d MMM HH:mm", culture);
         }
         return $"\"{title}\", {at} [{calendar}] {{id: {id}}}";
+    }
+
+}
+
+/// <summary>What the Nextcloud calendar tools share: the account, and reading an event back from the server.</summary>
+public sealed class CalendarContext : CalendarClock
+{
+    public Nextcloud Nextcloud { get; }
+    public NextcloudAccount Account { get; }
+
+    public CalendarContext(Nextcloud nextcloud, NextcloudAccount account, TimeZoneInfo zone, Func<DateTimeOffset> now) : base(zone, now)
+    {
+        Nextcloud = nextcloud;
+        Account = account;
     }
 
     /// <summary>The event behind an id, as it is now on the server, with its version tag.</summary>

@@ -42,12 +42,20 @@ static class McpChecks
         var refused = new McpClient(notes with { Token = "wrong" });
         string? refusal = null;
         try { await refused.ListToolsAsync(default); } catch (InvalidOperationException ex) { refusal = ex.Message; }
-        check("a refused token says to sign in again", refusal?.Contains("Sign in to it again") == true);
+        check("a refused token says to sign in again, and why the server gave", refusal?.Contains("Sign in to it again") == true && refusal.Contains("(Request had insufficient authentication scopes.)"));
+        string? googleRefusal = null;
+        try { await new McpClient(notes with { Token = "gbad" }).ListToolsAsync(default); } catch (InvalidOperationException ex) { googleRefusal = ex.Message; }
+        check("a refusal that says why in the header (and sends the answer anyway) gives the header's reason, not the body", googleRefusal == "Notes refused the sign-in (invalid_token). Sign in to it again in the connected apps.");
+        string? plainRefusal = null;
+        try { await new McpClient(notes with { Token = "other" }).ListToolsAsync(default); } catch (InvalidOperationException ex) { plainRefusal = ex.Message; }
+        check("a refusal with no reason is as before", plainRefusal == "Notes refused the sign-in. Sign in to it again in the connected apps.");
 
         // ----- the tools offered to the model -----
         McpTool.Forget();
         var down = new Connector("Down", "http://127.0.0.1:1/mcp", null);
         var (offered, unreachable) = await McpTool.ForAsync(new[] { notes, down }, default);
+        var (_, failures) = await McpTool.ForWithReasonsAsync(new[] { notes with { Token = "wrong" }, down }, default);
+        check("an app that can't be reached says why, without its own name in front", failures.Count == 2 && failures.Single(f => f.Name == "Notes").Reason.StartsWith("refused the sign-in (Request had insufficient") && failures.Single(f => f.Name == "Down").Reason.Length > 0 && !failures.Single(f => f.Name == "Down").Reason.StartsWith("Down"));
         check("each app's tools are offered under its name; an app that can't be reached is named, not fatal", offered.Select(t => t.Name).SequenceEqual(new[] { "notes__add_note", "notes__search" }) && unreachable.SequenceEqual(new[] { "Down" }));
         check("they say whose they are and what they need", offered[0].Definition.Description.StartsWith("[Notes]") && offered[0].Definition.Parameters.GetProperty("properties").TryGetProperty("text", out _) && offered[0].Status == "asking Notes…");
         int before = server.Requests.Count;

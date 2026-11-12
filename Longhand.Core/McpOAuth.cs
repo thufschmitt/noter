@@ -11,8 +11,14 @@ using System.Threading.Tasks;
 
 namespace Longhand.Services;
 
-/// <summary>What a signed-in MCP server needs to keep working: the tokens and where to refresh them.</summary>
-public sealed record OAuthSession(string Url, string ClientId, string TokenEndpoint, string? Resource, string AccessToken, string? RefreshToken, DateTimeOffset ExpiresAt)
+/// <summary>
+/// An OAuth client the user registered with the service themselves (Google's, for one, doesn't let apps register on their own):
+/// its id, its secret when it has one, and the scopes to ask for when the server doesn't say which (space separated).
+/// </summary>
+public sealed record OAuthClient(string ClientId, string? ClientSecret = null, string? Scope = null);
+
+/// <summary>What a signed-in MCP server needs to keep working: the tokens and where to refresh them (and the client secret, when the client has one).</summary>
+public sealed record OAuthSession(string Url, string ClientId, string TokenEndpoint, string? Resource, string AccessToken, string? RefreshToken, DateTimeOffset ExpiresAt, string? ClientSecret = null)
 {
     public bool NeedsRefresh => DateTimeOffset.UtcNow > ExpiresAt - TimeSpan.FromMinutes(2);
 }
@@ -21,11 +27,11 @@ public sealed record OAuthSession(string Url, string ClientId, string TokenEndpo
 public enum McpAccess { Open, SignIn, Token }
 
 /// <summary>A sign-in that has been set up and is waiting for the user to approve it in the browser.</summary>
-public sealed record SignInRequest(Uri AuthorizeUrl, string State, string Verifier, string Url, string ClientId, string TokenEndpoint, string? Resource, string RedirectUri);
+public sealed record SignInRequest(Uri AuthorizeUrl, string State, string Verifier, string Url, string ClientId, string TokenEndpoint, string? Resource, string RedirectUri, string? ClientSecret = null);
 
 /// <summary>
-/// The OAuth sign-in that MCP servers ask for: find the server's authorization server, register as a public client,
-/// authorize with PKCE, then trade the code for tokens and keep them fresh. Longhand's MCP client then sends the access token.
+/// The OAuth sign-in that MCP servers ask for: find the server's authorization server, register as a public client (or use the
+/// client the user registered themselves), authorize with PKCE, then trade the code for tokens and keep them fresh. Longhand's MCP client then sends the access token.
 /// </summary>
 public sealed class McpOAuth
 {
@@ -56,7 +62,9 @@ public sealed class McpOAuth
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         var code = (int)response.StatusCode;
 
-        if (response.IsSuccessStatusCode) return McpAccess.Open;
+        // Some servers (Google's Calendar) answer the opening handshake to anyone and only ask for a sign-in when a tool is
+        // called. A server that publishes where its sign-in is described is one that wants it, whatever the handshake said.
+        if (response.IsSuccessStatusCode) return await PublishesSignInAsync(mcpUrl, ct) ? McpAccess.SignIn : McpAccess.Open;
         if (code is 401 or 403)
         {
             if (response.Headers.TryGetValues("WWW-Authenticate", out var values) && Param(string.Join(", ", values), "resource_metadata") is not null) return McpAccess.SignIn;
@@ -64,11 +72,15 @@ public sealed class McpOAuth
             return await GetJsonAsync(WellKnown(new Uri(mcpUrl), "oauth-protected-resource"), ct) is not null ? McpAccess.SignIn : McpAccess.Token;
         }
         // 400, 405, 406 and 415 mean "I didn't like this request", not "you can't come in": a real call may well work.
-        if (code is 400 or 405 or 406 or 415) return McpAccess.Open;
+        if (code is 400 or 405 or 406 or 415) return await PublishesSignInAsync(mcpUrl, ct) ? McpAccess.SignIn : McpAccess.Open;
         throw new InvalidOperationException($"The server answered {code}, so it can't be used from here.");
     }
 
-    public async Task<SignInRequest> BeginAsync(string mcpUrl, string redirectUri, CancellationToken ct)
+    async Task<bool> PublishesSignInAsync(string mcpUrl, CancellationToken ct) =>
+        await GetJsonAsync(WellKnown(new Uri(mcpUrl), "oauth-protected-resource"), ct) is { } meta && FirstString(meta, "authorization_servers") is not null;
+
+    /// <param name="client">A client the user registered with the service; without one the app registers itself, which only some services allow.</param>
+    public async Task<SignInRequest> BeginAsync(string mcpUrl, string redirectUri, CancellationToken ct, OAuthClient? client = null)
     {
         var (resourceMetadataUrl, challengeScope) = await ProbeAsync(mcpUrl, ct);
         var origin = new Uri(mcpUrl);
@@ -82,19 +94,21 @@ public sealed class McpOAuth
 
         var authorizeEndpoint = Str(meta, "authorization_endpoint") ?? throw new InvalidOperationException("The sign-in service has no authorization address.");
         var tokenEndpoint = Str(meta, "token_endpoint") ?? throw new InvalidOperationException("The sign-in service has no token address.");
-        var registration = Str(meta, "registration_endpoint")
-            ?? throw new InvalidOperationException("The sign-in service doesn't let apps register themselves, so it can't be used here.");
+        var registration = Str(meta, "registration_endpoint");
+        if (registration is null && client is null)
+            throw new InvalidOperationException("The sign-in service doesn't let apps register themselves. Register an OAuth client with the service yourself and add its client ID (and secret) with the app.");
 
-        var scope = challengeScope ?? (resourceMeta.TryGetProperty("scopes_supported", out var scopes) && scopes.ValueKind == JsonValueKind.Array
+        var scope = (string.IsNullOrWhiteSpace(client?.Scope) ? null : client!.Scope!.Trim()) ?? challengeScope ?? (resourceMeta.TryGetProperty("scopes_supported", out var scopes) && scopes.ValueKind == JsonValueKind.Array
             ? string.Join(' ', scopes.EnumerateArray().Select(s => s.GetString()).Where(s => !string.IsNullOrEmpty(s)))
             : null);
         if (string.IsNullOrWhiteSpace(scope)) scope = null;
         // Refresh tokens are only issued to clients that ask for this scope, when the service offers it.
-        if (scope is not null && meta.TryGetProperty("scopes_supported", out var offered) && offered.ValueKind == JsonValueKind.Array
-            && offered.EnumerateArray().Any(s => s.GetString() == "offline_access") && !scope.Split(' ').Contains("offline_access"))
+        bool offlineScope = meta.TryGetProperty("scopes_supported", out var offered) && offered.ValueKind == JsonValueKind.Array
+            && offered.EnumerateArray().Any(s => s.GetString() == "offline_access");
+        if (scope is not null && offlineScope && !scope.Split(' ').Contains("offline_access"))
             scope += " offline_access";
 
-        var clientId = await RegisterAsync(registration, redirectUri, scope, ct);
+        var clientId = client?.ClientId ?? await RegisterAsync(registration!, redirectUri, scope, ct);
 
         var verifier = RandomUrlSafe(48);
         var challenge = Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
@@ -110,11 +124,18 @@ public sealed class McpOAuth
             new("resource", resource),
         };
         if (scope is not null) query.Add(new("scope", scope));
+        // Services without that scope (Google's) hand out a refresh token only when asked like this; without one the user would be
+        // asked to sign in again every hour. A service that doesn't know these ignores them.
+        if (!offlineScope)
+        {
+            query.Add(new("access_type", "offline"));
+            query.Add(new("prompt", "consent"));
+        }
 
         var url = new UriBuilder(authorizeEndpoint);
         var existing = url.Query.TrimStart('?');
         url.Query = (existing.Length > 0 ? existing + "&" : "") + string.Join("&", query.Select(p => Uri.EscapeDataString(p.Key) + "=" + Uri.EscapeDataString(p.Value)));
-        return new SignInRequest(url.Uri, state, verifier, mcpUrl, clientId, tokenEndpoint, resource, redirectUri);
+        return new SignInRequest(url.Uri, state, verifier, mcpUrl, clientId, tokenEndpoint, resource, redirectUri, client?.ClientSecret);
     }
 
     public async Task<OAuthSession> FinishAsync(SignInRequest request, string callbackQuery, CancellationToken ct)
@@ -136,7 +157,8 @@ public sealed class McpOAuth
             ["code_verifier"] = request.Verifier,
         };
         if (request.Resource is not null) form["resource"] = request.Resource;
-        return ReadTokens(await PostFormAsync(request.TokenEndpoint, form, ct), request.Url, request.ClientId, request.TokenEndpoint, request.Resource, previousRefresh: null);
+        if (!string.IsNullOrEmpty(request.ClientSecret)) form["client_secret"] = request.ClientSecret;
+        return ReadTokens(await PostFormAsync(request.TokenEndpoint, form, ct), request.Url, request.ClientId, request.TokenEndpoint, request.Resource, previousRefresh: null, request.ClientSecret);
     }
 
     public async Task<OAuthSession> RefreshAsync(OAuthSession session, CancellationToken ct)
@@ -149,7 +171,8 @@ public sealed class McpOAuth
             ["client_id"] = session.ClientId,
         };
         if (session.Resource is not null) form["resource"] = session.Resource;
-        return ReadTokens(await PostFormAsync(session.TokenEndpoint, form, ct), session.Url, session.ClientId, session.TokenEndpoint, session.Resource, session.RefreshToken);
+        if (!string.IsNullOrEmpty(session.ClientSecret)) form["client_secret"] = session.ClientSecret;
+        return ReadTokens(await PostFormAsync(session.TokenEndpoint, form, ct), session.Url, session.ClientId, session.TokenEndpoint, session.Resource, session.RefreshToken, session.ClientSecret);
     }
 
     // ---------- discovery ----------
@@ -161,8 +184,8 @@ public sealed class McpOAuth
         request.Headers.Accept.ParseAdd("application/json");
         request.Headers.Accept.ParseAdd("text/event-stream");
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-        if (response.IsSuccessStatusCode) throw new InvalidOperationException("This server doesn't ask for a sign-in.");
-
+        // A server that answers the handshake without a sign-in (Google's) says nothing here: where its sign-in is described is
+        // then found at the well-known address.
         string? metadata = null, scope = null;
         if (response.Headers.TryGetValues("WWW-Authenticate", out var values))
         {
@@ -235,14 +258,14 @@ public sealed class McpOAuth
         return doc.RootElement.Clone();
     }
 
-    static OAuthSession ReadTokens(JsonElement json, string url, string clientId, string tokenEndpoint, string? resource, string? previousRefresh)
+    static OAuthSession ReadTokens(JsonElement json, string url, string clientId, string tokenEndpoint, string? resource, string? previousRefresh, string? clientSecret = null)
     {
         var access = Str(json, "access_token") ?? throw new InvalidOperationException("The sign-in service gave no access token.");
         var refresh = Str(json, "refresh_token") ?? previousRefresh;
         double seconds = 3600;
         if (json.TryGetProperty("expires_in", out var e))
             seconds = e.ValueKind == JsonValueKind.Number ? e.GetDouble() : double.TryParse(e.GetString(), out var parsed) ? parsed : 3600;
-        return new OAuthSession(url, clientId, tokenEndpoint, resource, access, refresh, DateTimeOffset.UtcNow.AddSeconds(seconds));
+        return new OAuthSession(url, clientId, tokenEndpoint, resource, access, refresh, DateTimeOffset.UtcNow.AddSeconds(seconds), clientSecret);
     }
 
     // ---------- small helpers ----------
@@ -272,9 +295,9 @@ public sealed class McpOAuth
     static string? FirstString(JsonElement e, string array) =>
         e.TryGetProperty(array, out var v) && v.ValueKind == JsonValueKind.Array && v.GetArrayLength() > 0 ? v[0].GetString() : null;
 
-    static string RandomUrlSafe(int bytes) => Base64Url(RandomNumberGenerator.GetBytes(bytes));
+    internal static string RandomUrlSafe(int bytes) => Base64Url(RandomNumberGenerator.GetBytes(bytes));
 
-    static string Base64Url(byte[] data) => Convert.ToBase64String(data).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    internal static string Base64Url(byte[] data) => Convert.ToBase64String(data).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
     static string Snippet(string text) => text.Length <= 200 ? text : text[..200] + "…";
 }

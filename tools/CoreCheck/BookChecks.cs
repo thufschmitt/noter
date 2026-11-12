@@ -66,6 +66,37 @@ static class BookChecks
         book.Remove("notes");
         check("removing an app forgets it", book.List().Select(a => a.Name).SequenceEqual(new[] { "keyed", "signin" }));
 
+        // ----- a server that doesn't register clients (Google's Calendar): the user's own client, its secret, offline access -----
+        var gSettings = new MemorySettings();
+        var gSecrets = new MemorySecrets();
+        var gBook = new ConnectorBook(gSettings, gSecrets);
+        var gUrl = fake.BaseUrl + "/gcal";
+        var plain = false;
+        try { await oauth.BeginAsync(gUrl, McpOAuth.RedirectUri, default); } catch (InvalidOperationException ex) { plain = ex.Message.Contains("client ID"); }
+        check("without a client of its own such a server is refused, saying what to add", plain && fake.Registrations == 1);
+        check("a server that answers the handshake to anyone but publishes its sign-in is a sign-in (Google's does), and an open one stays open", await oauth.InspectAsync(gUrl, default) == McpAccess.SignIn && await oauth.InspectAsync(fake.BaseUrl + "/open", default) == McpAccess.Open);
+        var own = new OAuthClient("gcid", "gsecret", "scope-a scope-b");
+        gBook.Add("google-calendar", gUrl, AppAccess.SignIn, own);
+        check("the client is kept: its id and scope with the app, its secret as a secret", gBook.ClientFor("google-calendar") == own && gBook.List().Single().OwnClient && !gSettings.All().Any(v => v.Value.Contains("gsecret")) && gSecrets.Get("mcp-client-secret:google-calendar") == "gsecret");
+        check("an app that registers itself has no client of its own", gBook.ClientFor("nothing") is null && book.ClientFor("signin") is null && !book.List().First(a => a.Name == "signin").OwnClient);
+        var gRequest = await oauth.BeginAsync(gUrl, McpOAuth.RedirectUri, default, gBook.ClientFor("google-calendar"));
+        var gq = McpOAuth.ParseQuery(gRequest.AuthorizeUrl.Query);
+        check("signing in uses that client and registers nothing", gq["client_id"] == "gcid" && fake.Registrations == 1 && gRequest.AuthorizeUrl.AbsolutePath == "/gauthorize" && gq["kept"] == "1");
+        check("it asks for the scopes the user gave, not the server's", gq["scope"] == "scope-a scope-b");
+        check("and for offline access, which Google only gives to those who ask like this", gq["access_type"] == "offline" && gq["prompt"] == "consent" && !gq["scope"].Contains("offline_access"));
+        check("an ordinary server that offers the offline scope isn't sent those", !McpOAuth.ParseQuery(request.AuthorizeUrl.Query).ContainsKey("access_type"));
+        var gSession = await oauth.FinishAsync(gRequest, "?code=abc&state=" + Uri.EscapeDataString(gRequest.State), default);
+        check("the code is traded with the client's secret", gSession.AccessToken == "access-g1" && gSession.RefreshToken == "refresh-g1" && fake.LastGoogleForm["client_secret"] == "gsecret" && fake.LastGoogleForm["client_id"] == "gcid");
+        gBook.SaveSession("google-calendar", gSession);
+        check("signing in keeps the client", gBook.ClientFor("google-calendar") == own && gBook.List().Single().Ready);
+        gBook.SaveSession("google-calendar", gSession with { ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-5) });
+        (active, expired) = await gBook.ActiveAsync(oauth, default);
+        check("renewing sends the secret too, and keeps the refresh token", active.Single().Token == "access-g2" && fake.LastGoogleForm["client_secret"] == "gsecret" && fake.LastGoogleForm["grant_type"] == "refresh_token" && expired.Count == 0 && gSecrets.Get("mcp-refresh:google-calendar") == "refresh-g1");
+        gBook.SignOut("google-calendar");
+        check("signing out keeps the client, so signing in again is one tap", gBook.ClientFor("google-calendar") == own && !gBook.List().Single().Ready);
+        gBook.Remove("google-calendar");
+        check("removing the app forgets the secret", gSecrets.Get("mcp-client-secret:google-calendar") is null && gBook.List().Count == 0);
+
         var settings = new MemorySettings();
         var secrets = new MemorySecrets();
         var cloud = new NextcloudBook(settings, secrets);

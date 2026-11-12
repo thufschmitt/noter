@@ -14,7 +14,8 @@ public static class AppAccess
 }
 
 /// <summary>An MCP server the user added. <c>Ready</c> means it has what it needs to be used (an open server always does).</summary>
-public sealed record ConnectedApp(string Name, string Url, string Access, bool Ready);
+/// <param name="OwnClient">Signs in with an OAuth client the user registered with the service (not one the app registered itself).</param>
+public sealed record ConnectedApp(string Name, string Url, string Access, bool Ready, bool OwnClient = false);
 
 /// <summary>
 /// The connected apps. What identifies the sign-in (server address, client id, token endpoint, expiry) is kept in the settings; the
@@ -32,23 +33,34 @@ public sealed class ConnectorBook
     }
 
     // Mode is null for apps saved before there were other kinds of access: those were all browser sign-ins.
-    sealed record Stored(string Url, string? ClientId, string? TokenEndpoint, string? Resource, DateTimeOffset? ExpiresAt, string? Mode = null);
+    // Scope and OwnClient are for an OAuth client the user registered themselves: its id is kept in ClientId from the start, its secret as a secret.
+    sealed record Stored(string Url, string? ClientId, string? TokenEndpoint, string? Resource, DateTimeOffset? ExpiresAt, string? Mode = null, string? Scope = null, bool OwnClient = false);
 
     static string ModeOf(Stored stored) => stored.Mode ?? AppAccess.SignIn;
 
     static string AccessUser(string name) => "mcp-access:" + name;
     static string RefreshUser(string name) => "mcp-refresh:" + name;
+    static string ClientSecretUser(string name) => "mcp-client-secret:" + name;
 
     public IReadOnlyList<ConnectedApp> List() =>
         _settings.All()
             .Select(v => (Name: v.Key, Stored: Read(v.Value)))
             .Where(v => v.Stored is not null)
             .OrderBy(v => v.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(v => new ConnectedApp(v.Name, v.Stored!.Url, ModeOf(v.Stored!), ModeOf(v.Stored!) == AppAccess.Open || Secret(AccessUser(v.Name)) is not null))
+            .Select(v => new ConnectedApp(v.Name, v.Stored!.Url, ModeOf(v.Stored!), ModeOf(v.Stored!) == AppAccess.Open || Secret(AccessUser(v.Name)) is not null, v.Stored!.OwnClient))
             .ToList();
 
-    public void Add(string name, string url, string access = AppAccess.SignIn) =>
-        _settings.Set(name, JsonSerializer.Serialize(new Stored(url, null, null, null, null, access)));
+    /// <param name="client">An OAuth client the user registered with the service, to sign in with.</param>
+    public void Add(string name, string url, string access = AppAccess.SignIn, OAuthClient? client = null)
+    {
+        _settings.Set(name, JsonSerializer.Serialize(new Stored(url, client?.ClientId, null, null, null, access, string.IsNullOrWhiteSpace(client?.Scope) ? null : client!.Scope!.Trim(), client is not null)));
+        if (!string.IsNullOrEmpty(client?.ClientSecret)) Keep(ClientSecretUser(name), client!.ClientSecret!);
+        else Forget(ClientSecretUser(name));
+    }
+
+    /// <summary>The OAuth client the user registered for this app, or null when the app registers itself.</summary>
+    public OAuthClient? ClientFor(string name) =>
+        Read(_settings.Get(name)) is { OwnClient: true, ClientId: { Length: > 0 } id } stored ? new OAuthClient(id, Secret(ClientSecretUser(name)), stored.Scope) : null;
 
     /// <summary>For a server that wants a token the user got from the service itself. It has no expiry and nothing to refresh.</summary>
     public void SaveToken(string name, string token) => Keep(AccessUser(name), token.Trim());
@@ -64,6 +76,7 @@ public sealed class ConnectorBook
     public void Remove(string name)
     {
         SignOut(name);
+        Forget(ClientSecretUser(name));
         _settings.Remove(name);
     }
 
@@ -75,7 +88,8 @@ public sealed class ConnectorBook
 
     public void SaveSession(string name, OAuthSession session)
     {
-        _settings.Set(name, JsonSerializer.Serialize(new Stored(session.Url, session.ClientId, session.TokenEndpoint, session.Resource, session.ExpiresAt, AppAccess.SignIn)));
+        var before = Read(_settings.Get(name));
+        _settings.Set(name, JsonSerializer.Serialize(new Stored(session.Url, session.ClientId, session.TokenEndpoint, session.Resource, session.ExpiresAt, AppAccess.SignIn, before?.Scope, before?.OwnClient ?? false)));
         Keep(AccessUser(name), session.AccessToken);
         if (session.RefreshToken is not null) Keep(RefreshUser(name), session.RefreshToken);
     }
@@ -96,7 +110,8 @@ public sealed class ConnectorBook
             if (app.Access == AppAccess.Token) { if (access is not null) active.Add(new Connector(app.Name, app.Url, access)); continue; }
             if (stored is null || access is null || stored.ClientId is null || stored.TokenEndpoint is null) continue;
 
-            var session = new OAuthSession(stored.Url, stored.ClientId, stored.TokenEndpoint, stored.Resource, access, Secret(RefreshUser(app.Name)), stored.ExpiresAt ?? DateTimeOffset.MinValue);
+            var session = new OAuthSession(stored.Url, stored.ClientId, stored.TokenEndpoint, stored.Resource, access, Secret(RefreshUser(app.Name)), stored.ExpiresAt ?? DateTimeOffset.MinValue,
+                stored.OwnClient ? Secret(ClientSecretUser(app.Name)) : null);
             if (session.NeedsRefresh)
             {
                 try

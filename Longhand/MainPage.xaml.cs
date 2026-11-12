@@ -775,6 +775,7 @@ public sealed partial class MainPage : Page, IPageView
         ("todoist", "https://ai.todoist.net/mcp"),
     };
 
+
     readonly McpOAuth _oauth = new();
     readonly McpRegistry _registry = new();
 
@@ -890,7 +891,7 @@ public sealed partial class MainPage : Page, IPageView
         }
 
         /// <summary>Adds a server and finds out how it lets you in, so the right button shows up.</summary>
-        async Task AddAppAsync(string wantedName, string url, bool tokenRequired)
+        async Task AddAppAsync(string wantedName, string url, bool tokenRequired, OAuthClient? client = null)
         {
             var name = ConnectorStore.UniqueName(wantedName);
             string access;
@@ -914,7 +915,13 @@ public sealed partial class MainPage : Page, IPageView
                 message.Text = $"Couldn't add {name}: {ex.Message}";
                 return;
             }
-            ConnectorStore.Add(name, url, access);
+            if (client is not null && access == AppAccess.Open) access = AppAccess.SignIn; // the user says it signs in, though the probe was let in
+            if (client is not null && access != AppAccess.SignIn)
+            {
+                message.Text = $"Couldn't add {name}: it doesn't use a browser sign-in, so a client ID is of no use.";
+                return;
+            }
+            ConnectorStore.Add(name, url, access, client);
             message.Text = access switch
             {
                 AppAccess.SignIn => $"Added {name}. Sign in to use it.",
@@ -1045,6 +1052,18 @@ public sealed partial class MainPage : Page, IPageView
         var presets = new ComboBox { PlaceholderText = "Pick a service, or fill in the two boxes", Width = 380, ItemsSource = AppPresets.Select(p => p.Name).ToList() };
         var nameBox = new TextBox { PlaceholderText = "Name", Width = 380 };
         var urlBox = new TextBox { PlaceholderText = "https://server/mcp", Width = 380 };
+        // For services that don't let apps register themselves (Google's): an OAuth client the user created with the service.
+        var clientNote = new TextBlock
+        {
+            Text = "Sign-in client, only for services that don't let apps register themselves. Create an OAuth client with the service, register " + McpOAuth.RedirectUri + " as its redirect address, and paste its ID and secret here. The secret is kept in Credential Manager.",
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 12,
+            Opacity = 0.75,
+            Width = 380,
+        };
+        var clientIdBox = new TextBox { PlaceholderText = "Client ID", Width = 380 };
+        var clientSecretBox = new PasswordBox { PlaceholderText = "Client secret (if it has one)", Width = 380 };
+        var scopeBox = new TextBox { PlaceholderText = "Scopes, separated by spaces (empty: what the server asks for)", Width = 380 };
         presets.SelectionChanged += (_, _) =>
         {
             if (presets.SelectedIndex < 0) return;
@@ -1064,11 +1083,125 @@ public sealed partial class MainPage : Page, IPageView
                 return;
             }
             add.IsEnabled = false;
-            await AddAppAsync(name, url, tokenRequired: false);
-            nameBox.Text = urlBox.Text = "";
+            var id = clientIdBox.Text.Trim();
+            if (id.Length > 0 && (id.Any(char.IsWhiteSpace) || id.Length > 300))
+            {
+                message.Text = "That client ID doesn't look right.";
+                add.IsEnabled = true;
+                return;
+            }
+            OAuthClient? client = id.Length == 0 ? null : new OAuthClient(id, clientSecretBox.Password.Trim() is { Length: > 0 } secret ? secret : null, scopeBox.Text.Trim());
+            await AddAppAsync(name, url, tokenRequired: false, client);
+            nameBox.Text = urlBox.Text = clientIdBox.Text = clientSecretBox.Password = scopeBox.Text = "";
             presets.SelectedIndex = -1;
             add.IsEnabled = true;
         };
+
+        // ----- Google Calendar: through Google's own API, with an OAuth client the user made in their own Google Cloud project -----
+        var google = new StackPanel { Spacing = 8, Width = 380 };
+        var googleIdBox = new TextBox { PlaceholderText = "Client ID (ends in .apps.googleusercontent.com)", Width = 380 };
+        var googleSecretBox = new PasswordBox { PlaceholderText = "Client secret", Width = 380 };
+        var googleWrite = new CheckBox
+        {
+            Content = new TextBlock { Text = "Also let the model add, change and delete events (asks Google for more access; it only does so when you ask it to)", TextWrapping = TextWrapping.Wrap, FontSize = 12, Width = 330 },
+        };
+
+        void RenderGoogle()
+        {
+            google.Children.Clear();
+            google.Children.Add(new TextBlock { Text = "Google Calendar", FontWeight = Windows.UI.Text.FontWeights.SemiBold });
+            var book = GoogleStore.Book;
+            if (book.Connected)
+            {
+                google.Children.Add(new TextBlock
+                {
+                    Text = "Connected. " + (book.CanWrite ? "The model can read your events and, when you ask it to, add, change and delete them." : "The model can read your events (it can't change them)."),
+                    TextWrapping = TextWrapping.Wrap,
+                    FontSize = 12,
+                    Opacity = 0.75,
+                });
+                var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+                var check = new Button { Content = "Check" };
+                check.Click += async (_, _) =>
+                {
+                    try
+                    {
+                        var calendars = await new GoogleCalendar(ct => book.AccessTokenAsync(_oauth, ct)).ListCalendarsAsync(cts.Token);
+                        message.Text = calendars.Count == 0 ? "No calendars found." : "The model can use: " + string.Join(", ", calendars.Select(c => c.Writable ? c.Name : c.Name + " (read only)")) + ".";
+                    }
+                    catch (OperationCanceledException) { }
+                    catch (Exception ex) { message.Text = ex.Message; }
+                };
+                async Task Disconnect(bool forget)
+                {
+                    if (book.TokenToRevoke() is { } token)
+                    {
+                        try { await GoogleCalendar.RevokeAsync(token, ct: cts.Token); }
+                        catch (Exception) { /* forgotten here either way; it can be removed in the Google account's security page */ }
+                    }
+                    if (forget) book.Forget(); else book.SignOut();
+                    message.Text = forget ? "Google Calendar and its OAuth client are forgotten." : "Disconnected from Google Calendar.";
+                    RenderGoogle();
+                }
+                var disconnect = new Button { Content = "Disconnect" };
+                disconnect.Click += async (_, _) => await Disconnect(false);
+                var forgetButton = new Button { Content = "Forget client" };
+                forgetButton.Click += async (_, _) => await Disconnect(true);
+                buttons.Children.Add(check);
+                buttons.Children.Add(disconnect);
+                buttons.Children.Add(forgetButton);
+                google.Children.Add(buttons);
+                return;
+            }
+            google.Children.Add(new TextBlock
+            {
+                Text = "Lets the model read your Google Calendar. Google needs an OAuth client of your own: in a Google Cloud project, enable the Google Calendar API, set up the OAuth consent screen (add yourself as a test user), create a \"Web application\" client, and register " + McpOAuth.RedirectUri + " as its redirect address. Then paste the client's ID and secret here and connect; you approve it in your browser. The secret is kept in Credential Manager.",
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = 12,
+                Opacity = 0.75,
+            });
+            if (book.Client() is { } saved)
+            {
+                if (googleIdBox.Text.Length == 0) googleIdBox.Text = saved.ClientId;
+                googleWrite.IsChecked = book.CanWrite;
+                googleSecretBox.PlaceholderText = string.IsNullOrEmpty(saved.ClientSecret) ? "Client secret" : "Client secret (kept: leave empty to keep it)";
+            }
+            google.Children.Add(googleIdBox);
+            google.Children.Add(googleSecretBox);
+            google.Children.Add(googleWrite);
+            var connect = new Button { Content = "Connect" };
+            connect.Click += async (_, _) =>
+            {
+                connect.IsEnabled = false;
+                try
+                {
+                    var id = googleIdBox.Text.Trim();
+                    if (id.Length == 0 || id.Length > 300 || id.Any(char.IsWhiteSpace))
+                        throw new InvalidOperationException("Paste the client ID of the OAuth client you made in Google Cloud (it ends in .apps.googleusercontent.com).");
+                    // A secret left blank next to the same client ID is the one already kept.
+                    var kept = book.Client() is { } current && current.ClientId == id ? current.ClientSecret : null;
+                    var secret = googleSecretBox.Password.Trim() is { Length: > 0 } typed ? typed : kept;
+                    book.SaveClient(new OAuthClient(id, secret), googleWrite.IsChecked == true);
+                    var request = GoogleSignIn.Begin(book.Client()!, McpOAuth.RedirectUri, book.CanWrite);
+                    message.Text = "Approve the connection in your browser. This page continues when you have.";
+                    var query = await OAuthBroker.AuthorizeAsync(request.AuthorizeUrl, request.State, cts.Token);
+                    book.SaveSession(await _oauth.FinishAsync(request, query, cts.Token));
+                    var calendars = await new GoogleCalendar(ct => book.AccessTokenAsync(_oauth, ct)).ListCalendarsAsync(cts.Token);
+                    message.Text = calendars.Count == 0 ? "Connected, but no calendars were found." : "Connected. The model can use: " + string.Join(", ", calendars.Select(c => c.Writable ? c.Name : c.Name + " (read only)")) + ".";
+                    googleSecretBox.Password = "";
+                }
+                catch (OperationCanceledException)
+                {
+                    message.Text = "";
+                }
+                catch (Exception ex)
+                {
+                    message.Text = "Couldn't connect to Google Calendar: " + ex.Message;
+                }
+                RenderGoogle();
+            };
+            google.Children.Add(connect);
+        }
 
         // ----- Nextcloud calendar: signs in through the browser, so there is nothing to paste -----
         var nextcloud = new StackPanel { Spacing = 8, Width = 380 };
@@ -1157,6 +1290,7 @@ public sealed partial class MainPage : Page, IPageView
             }
         }
         RenderNextcloud();
+        RenderGoogle();
 
         var panel = new StackPanel { Spacing = 12 };
         panel.Children.Add(new TextBlock
@@ -1166,6 +1300,7 @@ public sealed partial class MainPage : Page, IPageView
             MaxWidth = 380,
         });
         panel.Children.Add(nextcloud);
+        panel.Children.Add(google);
         panel.Children.Add(new TextBlock { Text = "Other apps (MCP servers)", FontWeight = Windows.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 0) });
         panel.Children.Add(list);
         panel.Children.Add(message);
@@ -1187,6 +1322,10 @@ public sealed partial class MainPage : Page, IPageView
         panel.Children.Add(presets);
         panel.Children.Add(nameBox);
         panel.Children.Add(urlBox);
+        panel.Children.Add(clientNote);
+        panel.Children.Add(clientIdBox);
+        panel.Children.Add(clientSecretBox);
+        panel.Children.Add(scopeBox);
         panel.Children.Add(add);
         Render();
 
@@ -1202,7 +1341,7 @@ public sealed partial class MainPage : Page, IPageView
 
     async Task SignInAsync(ConnectedApp app, CancellationToken ct)
     {
-        var request = await _oauth.BeginAsync(app.Url, McpOAuth.RedirectUri, ct);
+        var request = await _oauth.BeginAsync(app.Url, McpOAuth.RedirectUri, ct, ConnectorStore.ClientFor(app.Name));
         var query = await OAuthBroker.AuthorizeAsync(request.AuthorizeUrl, request.State, ct);
         ConnectorStore.SaveSession(app.Name, await _oauth.FinishAsync(request, query, ct));
     }

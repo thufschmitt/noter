@@ -26,6 +26,7 @@ public sealed class WebStore
         Secrets = new FileSecrets(PathOf("secrets.json"));
         Connectors = new ConnectorBook(new FileSettings(PathOf("apps.json")), Secrets);
         Nextcloud = new NextcloudBook(Settings, Secrets);
+        Google = new GoogleCalendarBook(Settings, Secrets);
     }
 
     public FileSettings Settings { get; }
@@ -33,6 +34,8 @@ public sealed class WebStore
     /// <summary>The MCP servers the user added (their tokens are in <see cref="Secrets"/>, never in apps.json).</summary>
     public ConnectorBook Connectors { get; }
     public NextcloudBook Nextcloud { get; }
+    /// <summary>The Google Calendar sign-in (the user's own OAuth client, the tokens, whether the model may change events).</summary>
+    public GoogleCalendarBook Google { get; }
     public WebOptions Options => _options;
 
     public string Dir => _options.DataDir;

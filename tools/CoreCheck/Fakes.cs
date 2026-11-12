@@ -304,7 +304,15 @@ sealed class FakeMcp : FakeServer
     protected override async Task Handle(Request r, HttpListenerResponse response)
     {
         if (r.Method != "POST" || r.Path != "/mcp") { await Write(response, 404, "text/plain", ""); return; }
-        if (!r.Headers.TryGetValue("Authorization", out var auth) || auth != "Bearer " + Token) { await Write(response, 401, "text/plain", ""); return; }
+        if (!r.Headers.TryGetValue("Authorization", out var auth) || auth != "Bearer " + Token)
+        {
+            // Like Google's: a JSON body saying why. An empty token gets a plain 401, as before.
+            // Like Google's for a token it doesn't accept: 401, the reason in WWW-Authenticate, and a body that is the successful answer.
+            if (auth == "Bearer gbad") { response.Headers["WWW-Authenticate"] = "Bearer realm=\"https://accounts.example/\", error=\"invalid_token\""; await Write(response, 401, "application/json", "{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{\"padding\":\"" + new string((char)120, 30000) + "\"}}"); }
+            else if (auth == "Bearer wrong") await Write(response, 403, "application/json", """{"error":{"code":403,"message":"Request had insufficient authentication scopes.","status":"PERMISSION_DENIED"}}""");
+            else await Write(response, 401, "text/plain", "");
+            return;
+        }
         var m = System.Text.Json.Nodes.JsonNode.Parse(r.Body)!;
         var method = (string?)m["method"];
         var id = m["id"]?.ToJsonString() ?? "null";

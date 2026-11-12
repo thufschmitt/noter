@@ -189,6 +189,13 @@ await evaluate(`document.getElementById('registryQuery').value = 'todo'; documen
 check('registry results list a usable server and count the others', await until(`document.querySelectorAll('#registryResults .hit').length === 1 && document.getElementById('registryNote').textContent.includes('1 more can\\'t be used')`));
 await sleep(300);
 await shot('6c-apps');
+check('the Google Calendar section asks for the user\'s own client, shows the redirect address, and offers to let the model change events', await evaluate(`(() => { const g = document.getElementById('google'); const inputs = [...g.querySelectorAll('input')]; return g.textContent.includes('Redirect address') && g.querySelector('code').textContent === location.origin + '/oauth/callback' && inputs.some(i => i.placeholder.startsWith('Client ID')) && inputs.some(i => i.type === 'password') && inputs.some(i => i.type === 'checkbox' && !i.checked) && [...g.querySelectorAll('button')].some(b => b.textContent === 'Connect'); })()`));
+check('the checkbox sits beside its words, which are plain', await evaluate(`(() => { const l = document.querySelector('#google label'), c = getComputedStyle(l); return c.display === 'flex' && c.fontWeight === '400'; })()`));
+await evaluate(`document.getElementById('google').scrollIntoView({ block: 'center' })`);
+await sleep(200);
+await shot('6d-google-section');
+check('connecting without a client ID says what to paste, and opens nothing', await (async () => { await evaluate(`[...document.querySelectorAll('#google button')].find(b => b.textContent === 'Connect').click()`); return await until(`document.getElementById('appsMessage').textContent.includes('client ID')`, 5000); })());
+check('the old MCP sign-in client section is still there, without a Google preset', await evaluate(`!!document.getElementById('appClient') && ![...document.getElementById('appPreset').options].some(o => /google/i.test(o.text))`));
 await evaluate(`document.getElementById('appName').value = 'Local Notes'; document.getElementById('appUrl').value = 'http://127.0.0.1:18081/open'; document.getElementById('appAdd').click()`);
 check('an app added by address appears as needing no sign-in', await until(`document.getElementById('appList').textContent.includes('local-notes') && document.getElementById('appList').textContent.includes('No sign-in needed')`));
 await evaluate(`document.getElementById('appsClose').click()`);

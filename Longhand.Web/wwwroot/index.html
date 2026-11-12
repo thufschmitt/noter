@@ -49,6 +49,8 @@
   <p class="note-text">The model can always search the web. Connected apps let it use your own services too. Sign in once in your browser; the sign-in is kept by the server this page came from.</p>
   <h3>Nextcloud calendar</h3>
   <div id="nextcloud"></div>
+  <h3>Google Calendar</h3>
+  <div id="google"></div>
   <h3>Other apps (MCP servers)</h3>
   <div id="appList"></div>
   <p id="appsMessage" class="note-text"></p>
@@ -62,6 +64,14 @@
   <select id="appPreset"><option value="">Pick a service, or fill in the two boxes</option><option value="todoist|https://ai.todoist.net/mcp">todoist</option></select>
   <input id="appName" placeholder="Name">
   <input id="appUrl" placeholder="https://server/mcp">
+  <details id="appClient">
+    <summary>Sign-in client (only for services that don't let apps register themselves)</summary>
+    <p class="note-text">Create an OAuth client with the service, register this address as its redirect address, and paste its ID and secret here. The secret is kept on this server, readable only by you.</p>
+    <p class="note-text">Redirect address: <code id="appRedirect"></code></p>
+    <input id="appClientId" placeholder="Client ID" autocomplete="off">
+    <input id="appClientSecret" placeholder="Client secret (if it has one)" type="password" autocomplete="off">
+    <input id="appScope" placeholder="Scopes, separated by spaces (leave empty to use what the server asks for)" autocomplete="off">
+  </details>
   <div class="buttons"><button id="appAdd" type="button">Add</button></div>
   <div class="buttons end"><button id="appsClose" type="button" class="accent">Done</button></div>
 </dialog>

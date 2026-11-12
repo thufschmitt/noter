@@ -18,6 +18,7 @@
     <Compile Include="..\..\Longhand\Services\SymbolStore.cs" />
     <Compile Include="..\..\Longhand\Services\NextcloudStore.cs" />
     <Compile Include="..\..\Longhand\Services\OAuthBroker.cs" />
+    <Compile Include="..\..\Longhand\Services\GoogleStore.cs" />
     <Compile Include="..\..\Longhand\Services\PageStore.cs" />
     <Compile Include="..\..\Longhand\Services\WindowsPageData.cs" />
   </ItemGroup>

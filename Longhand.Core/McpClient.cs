@@ -153,13 +153,62 @@ public sealed class McpClient
         // 202 Accepted is the answer; anything else for a notification is ignored, as servers differ.
     }
 
+    /// <summary>
+    /// Why a request was refused: what the server says in its <c>WWW-Authenticate</c> header (<c>error="invalid_token"</c>), then the
+    /// message in the body (<c>{"error":{"message":…}}</c>, as Google and JSON-RPC servers send it, or its first words when it is plain
+    /// text). A body that is really a successful answer (Google sends the tool list with its 401) says nothing and is left out.
+    /// Empty when there is nothing to say.
+    /// </summary>
+    static async Task<string> ErrorDetailAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        var parts = new List<string>();
+        foreach (var challenge in response.Headers.WwwAuthenticate)
+        {
+            var error = Regex.Match(challenge.Parameter ?? "", "error=\"([^\"]*)\"");
+            var description = Regex.Match(challenge.Parameter ?? "", "error_description=\"([^\"]*)\"");
+            if (error.Success) parts.Add(error.Groups[1].Value);
+            if (description.Success) parts.Add(description.Groups[1].Value);
+        }
+        var body = await BodyDetailAsync(response, ct);
+        if (body.Length > 0 && !parts.Any(p => body.Contains(p, StringComparison.OrdinalIgnoreCase))) parts.Add(body);
+        return string.Join(": ", parts);
+    }
+
+    static async Task<string> BodyDetailAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        try
+        {
+            var text = await response.Content.ReadAsStringAsync(ct);
+            if (text.Length > 2_000_000) text = text[..2_000_000]; // a tool list can be long: it is read whole to see that it is one
+            try
+            {
+                var node = JsonNode.Parse(text);
+                if (node?["result"] is JsonObject result && node["error"] is null && result["isError"]?.GetValue<bool>() != true) return "";
+                var message = (string?)node?["error"]?["message"] ?? (string?)node?["message"] ?? (string?)node?["error_description"] ?? (node?["error"] as JsonValue)?.ToString()
+                    ?? (string?)node?["result"]?["content"]?[0]?["text"];
+                if (!string.IsNullOrWhiteSpace(message)) text = message;
+            }
+            catch (JsonException) { }
+            text = Regex.Replace(Regex.Replace(text, "<[^>]+>", " "), @"\s+", " ").Trim();
+            return text.Length > 240 ? text[..240] + "…" : text;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or OperationCanceledException && !ct.IsCancellationRequested)
+        {
+            return "";
+        }
+    }
+
     async Task<JsonNode> RequestAsync(string method, JsonObject parameters, CancellationToken ct)
     {
         var id = Interlocked.Increment(ref _nextId);
         using var request = Post(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id, ["method"] = method, ["params"] = parameters });
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-            throw new InvalidOperationException($"{_connector.Name} refused the sign-in. Sign in to it again in the connected apps.");
+        {
+            // What the server says is what tells a token that has run out from one the server won't accept (a client it doesn't trust, a missing scope).
+            var why = await ErrorDetailAsync(response, ct);
+            throw new InvalidOperationException($"{_connector.Name} refused the sign-in" + (why.Length > 0 ? $" ({why})" : "") + ". Sign in to it again in the connected apps.");
+        }
         if (response.StatusCode == HttpStatusCode.NotFound && _session is not null)
         {
             // The server forgot the session: the caller starts a new one and tries again.
@@ -168,7 +217,11 @@ public sealed class McpClient
             _started = false;
             throw new SessionLost();
         }
-        if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"{_connector.Name} answered {(int)response.StatusCode}.");
+        if (!response.IsSuccessStatusCode)
+        {
+            var why = await ErrorDetailAsync(response, ct);
+            throw new InvalidOperationException($"{_connector.Name} answered {(int)response.StatusCode}" + (why.Length > 0 ? $": {why}" : "") + ".");
+        }
         if (response.Headers.TryGetValues("Mcp-Session-Id", out var sessions)) _session ??= sessions.FirstOrDefault();
 
         JsonNode? message = null;
@@ -230,8 +283,19 @@ public sealed class McpTool : IAgentTool
     /// </summary>
     public static async Task<(List<IAgentTool> Tools, List<string> Unreachable)> ForAsync(IReadOnlyList<Connector> connectors, CancellationToken ct, HttpClient? http = null)
     {
+        var (tools, failures) = await ForWithReasonsAsync(connectors, ct, http);
+        return (tools, failures.Select(f => f.Name).ToList());
+    }
+
+    /// <summary>
+    /// Like <see cref="ForAsync"/>, but says why each app that couldn't be reached couldn't be: what the server answered, so the user
+    /// can tell a sign-in that has run out from a server that turns the app away.
+    /// </summary>
+    public static async Task<(List<IAgentTool> Tools, List<(string Name, string Reason)> Failures)> ForWithReasonsAsync(IReadOnlyList<Connector> connectors, CancellationToken ct, HttpClient? http = null)
+    {
         var tools = new List<IAgentTool>();
-        var unreachable = new List<string>();
+        var unreachable = new List<(string Name, string Reason)>();
+        var reasons = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
         var taken = new HashSet<string>(StringComparer.Ordinal);
         var lists = await Task.WhenAll(connectors.Select(async c =>
         {
@@ -246,14 +310,19 @@ public sealed class McpTool : IAgentTool
                 Cache[key] = (client, list, DateTimeOffset.UtcNow);
                 return (c, client, list, Ok: true);
             }
-            catch (Exception) when (!ct.IsCancellationRequested)
+            catch (Exception ex) when (!ct.IsCancellationRequested)
             {
+                // The reason, without the app's name in front (the list names it).
+                var reason = ex is OperationCanceledException ? "it took too long to answer" : ex.Message;
+                foreach (var prefix in new[] { c.Name + ": ", c.Name + " " })
+                    if (reason.StartsWith(prefix, StringComparison.Ordinal)) { reason = reason[prefix.Length..]; break; }
+                reasons[c.Name] = reason;
                 return (c, (McpClient?)null, new List<McpToolInfo>(), Ok: false);
             }
         }));
         foreach (var (connector, client, list, ok) in lists)
         {
-            if (!ok || client is null) { unreachable.Add(connector.Name); continue; }
+            if (!ok || client is null) { unreachable.Add((connector.Name, reasons.GetValueOrDefault(connector.Name, ""))); continue; }
             foreach (var info in list)
             {
                 var name = ToolName(connector.Name, info.Name);
