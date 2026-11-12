@@ -32,16 +32,12 @@ public sealed partial class MainPage : Page, IPageView
     }
 
     static NoteVisual Visual(NoteModel note) => (NoteVisual)note.View!;
-    /// <summary>A drawing of Claude's, as the picture <see cref="BlockRenderer"/> made of it.</summary>
-    static Image PictureOf(DrawingModel drawing) => (Image)drawing.View!;
+    /// <summary>A layout or drawing of Claude's, as the native controls it is built from (MainPage.Drawings.cs).</summary>
+    static DrawingVisual VisualOf(DrawingModel drawing) => (DrawingVisual)drawing.View!;
 
     /// <summary>The page itself: what is on it, asking, saving, conversations. This class is its screen.</summary>
     readonly PageSession _session;
     readonly DispatcherTimer _toastTimer = new() { Interval = TimeSpan.FromSeconds(4) };
-    readonly BlockRenderer _blocks;
-    /// <summary>Waits for the width to settle before laying blocks out again at it.</summary>
-    readonly DispatcherTimer _reflowTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
-    double _blocksWidth;
     double _sheetWidth = 800, _rulesDrawnTo, _rulesWidth;
 
     // Shared brushes: changing their Color on a theme switch recolours everything that uses them.
@@ -55,16 +51,22 @@ public sealed partial class MainPage : Page, IPageView
     public MainPage()
     {
         InitializeComponent();
-        _blocks = new BlockRenderer(Root);
         _session = new PageSession(this, new WindowsPageData(() => Ink.InkPresenter.StrokeContainer, _oauth, _nextcloud));
 
         var presenter = Ink.InkPresenter;
         presenter.InputDeviceTypes = CoreInputDeviceTypes.Pen | CoreInputDeviceTypes.Mouse;
         presenter.StrokesCollected += OnStrokesCollected;
         presenter.StrokesErased += OnStrokesErased;
+        // The barrel button (or a mouse's right button) leaves the pen's input alone, and the page draws a lasso with it to select
+        // parts of a layout (MainPage.Editing.cs).
+        presenter.InputProcessingConfiguration.RightDragAction = InkInputRightDragAction.LeaveUnprocessed;
+        presenter.UnprocessedInput.PointerPressed += OnLassoPressed;
+        presenter.UnprocessedInput.PointerMoved += OnLassoMoved;
+        presenter.UnprocessedInput.PointerReleased += OnLassoReleased;
+        Sheet.Tapped += Sheet_Tapped;
+        BuildEditOverlay();
 
         _toastTimer.Tick += (_, _) => { _toastTimer.Stop(); ToastBox.Visibility = Visibility.Collapsed; };
-        _reflowTimer.Tick += (_, _) => { _reflowTimer.Stop(); RefreshDrawings(); };
         BuildConversationsFlyout();
 
         var newConversation = new Windows.UI.Xaml.Input.KeyboardAccelerator
@@ -101,6 +103,7 @@ public sealed partial class MainPage : Page, IPageView
     async void OnLoaded(object sender, RoutedEventArgs e)
     {
         ApplyTheme(recolorInk: false);
+        Window.Current.CoreWindow.KeyDown += OnWindowKeyDown;
         await _session.StartAsync();
         LayoutSheet();
     }
@@ -159,12 +162,7 @@ public sealed partial class MainPage : Page, IPageView
             Position(n);
         }
         UpdateSheetHeight();
-        // Blocks are pictures laid out at the old width, scaled for now; once the width settles they are laid out at the new one.
-        if (TextWidth != _blocksWidth && _session.Notes.Any(n => n.Drawings.Count > 0))
-        {
-            _reflowTimer.Stop();
-            _reflowTimer.Start();
-        }
+        ScheduleFrameUpdate();
     }
 
     double ContentBottom() => _session.ContentBottom();
@@ -218,14 +216,7 @@ public sealed partial class MainPage : Page, IPageView
         // A reply that is only a drawing has no line of words above it.
         int least = n.Drawings.Count > 0 && block.Text.Length == 0 ? 0 : 1;
         n.Lines = Math.Max(least, (int)Math.Round(block.DesiredSize.Height / LineHeight));
-        foreach (var d in n.Drawings)
-        {
-            var (w, h) = Blocks.Fit(d.Aspect, TextWidth);
-            var image = PictureOf(d);
-            image.Width = w;
-            image.Height = h;
-            d.Lines = (int)Math.Ceiling(h / LineHeight);
-        }
+        foreach (var d in n.Drawings) d.Lines = SizeDrawing(VisualOf(d));
     }
 
     void Position(NoteModel n)
@@ -237,11 +228,12 @@ public sealed partial class MainPage : Page, IPageView
         double top = n.Y + n.Lines * LineHeight;
         foreach (var d in n.Drawings)
         {
-            var image = PictureOf(d);
-            Canvas.SetLeft(image, MarginX);
-            Canvas.SetTop(image, top);
+            var host = VisualOf(d).Host;
+            Canvas.SetLeft(host, MarginX);
+            Canvas.SetTop(host, top);
             top += d.Lines * LineHeight;
         }
+        ScheduleFrameUpdate(); // what is selected may have moved with the page
     }
 
     void EnsureVisible(double bottom)
@@ -252,8 +244,17 @@ public sealed partial class MainPage : Page, IPageView
 
     // ---------- ink events ----------
 
-    void OnStrokesCollected(InkPresenter sender, InkStrokesCollectedEventArgs args) =>
+    void OnStrokesCollected(InkPresenter sender, InkStrokesCollectedEventArgs args)
+    {
+        // A tap on a part of a layout selects it and leaves no dot; anything else is ink, and writing puts the selection away.
+        if (Safe(() => TapSelects(args.Strokes), false)) return;
+        Safe(() =>
+        {
+            NoteInk(args.Strokes);
+            ClearSelection();
+        });
         _session.StrokesCollected(args.Strokes.Select(s => s.Id).ToList());
+    }
 
     void OnStrokesErased(InkPresenter sender, InkStrokesErasedEventArgs args) =>
         _session.StrokesErased(args.Strokes.Select(s => s.Id).ToList(), args.Strokes.Select(s => s.Clone()).ToList());
@@ -317,47 +318,12 @@ public sealed partial class MainPage : Page, IPageView
     void Undo_Click(object sender, RoutedEventArgs e) => _session.Undo();
 
     // ---------- drawings ----------
+    // (what they are built from, and how they are sized, is in MainPage.Drawings.cs)
 
-    static string Hex6(Color c) => $"#{c.R:X2}{c.G:X2}{c.B:X2}";
-
-    /// <summary>
-    /// Renders a block at the page's text width in the current ink colour, unless its picture already is that; its shape then
-    /// sets its size on the page. A block that can't be rendered keeps the picture it had (or none) and says so once.
-    /// </summary>
-    async Task RenderBlockAsync(DrawingModel d)
-    {
-        var image = PictureOf(d);
-        var key = $"{TextWidth:0}|{Hex6(_claudeInk.Color)}";
-        if (image.Tag as string == key) return;
-        var rendered = await _blocks.RenderAsync(d.Markup, TextWidth, Hex6(_claudeInk.Color));
-        if (rendered is null)
-        {
-            if (image.Tag is null) ShowToast("A drawing or layout couldn't be shown.");
-            image.Tag ??= "";
-            return;
-        }
-        var bitmap = new BitmapImage();
-        using (var stream = new InMemoryRandomAccessStream())
-        {
-            using (var writer = new DataWriter(stream))
-            {
-                writer.WriteBytes(rendered.Png);
-                await writer.StoreAsync();
-                writer.DetachStream();
-            }
-            stream.Seek(0);
-            await bitmap.SetSourceAsync(stream);
-        }
-        image.Source = bitmap;
-        image.Tag = key;
-        _blocksWidth = TextWidth;
-        d.Aspect = rendered.Width / rendered.Height;
-    }
-
-    /// <summary>Lays the page out again, rendering blocks afresh (after a change of theme or width).</summary>
+    /// <summary>Lays the page out again with the drawings built afresh (after a change of theme, which changes the palette).</summary>
     void RefreshDrawings()
     {
-        _blocksWidth = TextWidth;
+        RebuildDrawings();
         _ = _session.RelayoutAsync();
     }
 
@@ -669,41 +635,36 @@ public sealed partial class MainPage : Page, IPageView
         var visual = Visual(note);
         NoteLayer.Children.Remove(visual.Block);
         NoteLayer.Children.Remove(visual.Tick);
-        foreach (var d in note.Drawings) NoteLayer.Children.Remove(PictureOf(d));
+        foreach (var d in note.Drawings) RemoveDrawing(d);
     }
 
     void IPageView.DrawingAdded(NoteModel note, DrawingModel drawing)
     {
-        var image = new Image { Stretch = Stretch.Uniform };
-        Windows.UI.Xaml.Automation.AutomationProperties.SetName(image, drawing.Alt);
-        drawing.View = image;
-        NoteLayer.Children.Add(image); // rendered when the note is measured
+        var visual = new DrawingVisual { Note = note, Drawing = drawing };
+        drawing.View = visual;
+        BuildVisual(visual); // sized when the note is measured
     }
 
     void IPageView.DrawingsCleared(NoteModel note)
     {
-        foreach (var d in note.Drawings) NoteLayer.Children.Remove(PictureOf(d));
+        foreach (var d in note.Drawings) RemoveDrawing(d);
     }
 
-    /// <summary>The model redrew a drawing in place (or undo brought the old one back): its picture is made again when the note is measured next.</summary>
+    /// <summary>The model redrew a drawing in place, the user edited it, or undo brought an older one back: it is built again from its markup (the truth). The note is measured next, which makes room for it.</summary>
     void IPageView.DrawingChanged(NoteModel note, DrawingModel drawing)
     {
-        var image = PictureOf(drawing);
-        image.Tag = null;
-        Windows.UI.Xaml.Automation.AutomationProperties.SetName(image, drawing.Alt);
+        var visual = VisualOf(drawing);
+        BuildVisual(visual);
+        ScheduleFrameUpdate();
     }
 
-    /// <summary>
-    /// Not yet: here a layout is a picture, so selecting, moving, turning and deleting its parts (edit, drop) needs a native
-    /// selection layer over it and the boxes of its parts from the renderer (the layout's tree and those boxes are all the drop logic
-    /// needs), which hasn't been built or tried on a Windows device. The model is told, so it doesn't offer what can't be done.
-    /// </summary>
-    bool IPageView.CanEdit => false;
+    /// <summary>Layouts are native controls here, so their parts can be selected, moved, turned, resized and deleted (MainPage.Editing.cs).</summary>
+    bool IPageView.CanEdit => true;
 
-    async Task IPageView.MeasureAsync(NoteModel note)
+    Task IPageView.MeasureAsync(NoteModel note)
     {
-        foreach (var d in note.Drawings.ToList()) await RenderBlockAsync(d);
         Remeasure(note);
+        return Task.CompletedTask;
     }
 
     void IPageView.Place(NoteModel note) => Position(note);
@@ -734,8 +695,8 @@ public sealed partial class MainPage : Page, IPageView
                 shown.Add(new PageReply(new Rect(MarginX, n.Y + TextNudge, block.ActualWidth, block.ActualHeight), scale => RenderElementAsync(block, scale)));
             foreach (var d in n.Drawings)
             {
-                var image = PictureOf(d);
-                shown.Add(new PageReply(new Rect(MarginX, Canvas.GetTop(image), image.ActualWidth, image.ActualHeight), scale => RenderElementAsync(image, scale)));
+                var visual = VisualOf(d);
+                shown.Add(new PageReply(new Rect(MarginX, Canvas.GetTop(visual.Host), visual.Host.ActualWidth, visual.Host.ActualHeight), scale => RenderDrawingAsync(visual, scale)));
             }
         }
         return await InkSnapshot.RenderPngAsync(strokes, new PageContext(earlier, shown));

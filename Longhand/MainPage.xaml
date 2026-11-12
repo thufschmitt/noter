@@ -37,6 +37,9 @@
                 <Canvas x:Name="RuleLayer" IsHitTestVisible="False" />
                 <Canvas x:Name="NoteLayer" IsHitTestVisible="False" />
                 <InkCanvas x:Name="Ink" />
+                <!-- The frame, knobs, drag preview and lasso for editing a layout. It sits above the ink, so the pen grabs them
+                     instead of writing; where it has nothing, the pen writes. -->
+                <Canvas x:Name="EditLayer" />
             </Grid>
         </ScrollViewer>
 

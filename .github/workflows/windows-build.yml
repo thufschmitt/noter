@@ -30,6 +30,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Windows app code, type-checked off Windows
+        # MainPage and the Services against the UWP projections, with the XAML compiler's output stubbed (the Windows build below is
+        # what really compiles it); this finds a compile error without waiting for a Windows runner.
+        run: dotnet build tools/XamlCheck/XamlCheck.csproj
       - name: Server, over a real WebSocket
         run: dotnet run --project tools/WebCheck/WebCheck.csproj
       - name: Page, in Chrome
@@ -137,7 +141,7 @@ jobs:
         run: |
           mkdir upload
           find dist -name '*.msix' -exec cp {} upload/ \;
-          # The framework packages each build depends on (WinUI 2), named by architecture since they share a file name.
+          # The framework packages each build depends on (the Visual C++ runtime), named by architecture since they share a file name.
           for arch in x64 arm64; do
             find dist -ipath "*/Dependencies/$arch/*.appx" | while read -r dep; do
               cp "$dep" "upload/$(basename "${dep%.appx}")_$arch.appx"

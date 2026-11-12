@@ -31,11 +31,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- WinUI 2, for WebView2: Claude's HTML blocks are rendered to pictures with it (Services/BlockRenderer.cs). -->
-    <PackageReference Include="Microsoft.UI.Xaml" Version="2.8.7" />
-  </ItemGroup>
-
-  <ItemGroup>
     <ProjectReference Include="..\Longhand.Core\Longhand.Core.csproj" />
   </ItemGroup>
 </Project>

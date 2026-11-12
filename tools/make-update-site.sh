@@ -47,7 +47,7 @@ for arch in x64 arm64; do
   [ -n "$msix" ] || { echo "No $arch .msix under $dist" >&2; exit 1; }
   package=$(basename "$msix")
 
-  # The framework packages the app needs (WinUI 2, for its WebView2) are installed with it from the Release, where the
+  # The framework packages the app needs (the Visual C++ runtime) are installed with it from the Release, where the
   # release step puts them as <name>_<arch>.appx. Their identity is read from their own manifests.
   dependencies=""
   while IFS= read -r dep; do

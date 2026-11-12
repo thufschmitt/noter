@@ -77,6 +77,18 @@ public static class Layout
     };
     static readonly Regex HexColor = new(@"^#(?:[0-9a-f]{3}|[0-9a-f]{6})$", RegexOptions.Compiled);
 
+    /// <summary>The colour a <c>color</c> or <c>bg</c> value stands for, on a light or on a dark page; null when there is none.</summary>
+    public static (byte R, byte G, byte B)? ResolveColor(string? value, bool dark)
+    {
+        if (string.IsNullOrEmpty(value)) return null;
+        var hex = Palette.TryGetValue(value, out var named) ? (dark ? named.Dark : named.Light) : value;
+        if (!hex.StartsWith('#')) return null;
+        hex = hex[1..];
+        if (hex.Length == 3) hex = string.Concat(hex.Select(c => new string(c, 2)));
+        if (hex.Length != 6 || !int.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var n)) return null;
+        return ((byte)(n >> 16), (byte)(n >> 8), (byte)n);
+    }
+
     /// <summary>A palette name or a hex colour in its canonical (lower case) form; null for anything else (nothing that could carry CSS or a URL gets through).</summary>
     static string? NormalizeColor(string value)
     {
@@ -146,7 +158,7 @@ public static class Layout
         return (from, to);
     }
 
-    static bool IsTimeline(LNode n) => n.Tag == "col" && n.Has("timeline");
+    public static bool IsTimeline(LNode n) => n.Tag == "col" && n.Has("timeline");
 
     /// <summary>When an item in a timeline column starts and ends, in minutes since midnight (an item with no end lasts an hour); null when it has no start or isn't in a timeline column.</summary>
     public static (int Start, int End)? TimesOf(LNode item)
@@ -184,7 +196,7 @@ public static class Layout
     }
 
     /// <summary>Which side-by-side lane each item takes, and how many lanes share its time: items that overlap split the width.</summary>
-    static Dictionary<LNode, (int Lane, int Lanes)> LanesOf(IEnumerable<(LNode Item, int Start, int End)> items)
+    public static Dictionary<LNode, (int Lane, int Lanes)> LanesOf(IEnumerable<(LNode Item, int Start, int End)> items)
     {
         var result = new Dictionary<LNode, (int, int)>();
         var cluster = new List<(LNode Item, int Lane)>();

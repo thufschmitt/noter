@@ -31,6 +31,7 @@
             echo "  dotnet run --project Longhand.Web            # the web version, on http://127.0.0.1:5080"
             echo "  nix run .#dev                                # the same, restarting and reloading the browser as you edit"
             echo "  dotnet run --project tools/CoreCheck         # shared logic checks"
+            echo "  dotnet build tools/XamlCheck                 # the Windows app's code, type-checked here"
             echo "  dotnet run --project tools/WebCheck          # server checks"
             echo "  tools/BrowserCheck/run.sh chromium           # real-browser checks"
           '';
@@ -65,6 +66,7 @@
             root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
             cd "$root"
             dotnet run --project tools/CoreCheck
+            dotnet build tools/XamlCheck
             dotnet run --project tools/WebCheck
             ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "tools/BrowserCheck/run.sh chromium"}
           '';

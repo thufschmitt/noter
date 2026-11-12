@@ -153,6 +153,7 @@ await StarChecks.RunAsync(Check);
 await McpChecks.RunAsync(Check);
 await PageChecks.RunAsync(Check);
 await EditChecks.RunAsync(Check);
+NativeChecks.Run(Check);
 await BookChecks.RunAsync(Check);
 await GoogleChecks.RunAsync(Check);
 

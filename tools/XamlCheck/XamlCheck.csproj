@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Type-checks the Windows app's own code (MainPage and the Services) on any OS, against the UWP projections; never executed.
+       The XAML compiler only runs on Windows, so the parts it generates (a field for each x:Name, InitializeComponent) are stubbed:
+       the stub is written from MainPage.xaml before every build, so it can't drift from it. Catches the compile errors that the
+       Windows build on CI would otherwise be the first to find. -->
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <UseUwp>true</UseUwp>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <RootNamespace>Longhand</RootNamespace>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <GeneratedStub>$(MSBuildProjectDirectory)/obj/MainPage.generated.cs</GeneratedStub>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\Longhand\MainPage*.cs" />
+    <Compile Include="..\..\Longhand\Services\*.cs" />
+    <Compile Include="$(GeneratedStub)" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\Longhand.Core\Longhand.Core.csproj" />
+  </ItemGroup>
+  <Target Name="WriteXamlStub" BeforeTargets="BeforeCompile;CoreCompile" Inputs="..\..\Longhand\MainPage.xaml" Outputs="$(GeneratedStub)">
+    <Exec Command="node &quot;$(MSBuildProjectDirectory)/stub.mjs&quot; &quot;$(MSBuildProjectDirectory)/../../Longhand/MainPage.xaml&quot; &quot;$(GeneratedStub)&quot;" />
+  </Target>
+</Project>
