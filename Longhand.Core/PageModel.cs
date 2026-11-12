@@ -19,26 +19,35 @@ public static class PageLayout
     public static double RuleAtOrBelow(double y) => Top + Math.Max(0, Math.Ceiling((y - Top) / LineHeight)) * LineHeight;
 }
 
+/// <summary>What the user did to one element of a saved drawing that the model hasn't heard about yet.</summary>
+/// <param name="Drawing">Index into the note's drawings.</param>
+/// <param name="First">[x, y, w, h] before the first edit, or null.</param>
+public sealed record SavedEdit(int Drawing, string Id, double[]? First, bool Deleted, double Degrees);
+
 /// <summary>A note the model wrote on the page, as saved to disk.</summary>
-public sealed record SavedNote(double Y, string Text, string Heard, bool IsHint, List<string>? Drawings = null, bool Typed = false);
+public sealed record SavedNote(double Y, string Text, string Heard, bool IsHint, List<string>? Drawings = null, bool Typed = false, List<SavedEdit>? Edits = null);
 
 /// <summary>Where a stroke sits on the page. The page only ever needs heights: it is one vertical strip.</summary>
 public readonly record struct StrokeSpan(uint Id, double Top, double Bottom);
 
 /// <summary>
-/// One of the blocks shown under the words of Claude's note: a sanitized HTML figure (a table, laid-out text, or a drawing as
-/// inline SVG). <c>View</c> is the platform's picture of it.
+/// One of the drawings shown under the words of Claude's note: sanitized SVG. <c>View</c> is the platform's picture of it.
 /// </summary>
 public sealed class DrawingModel
 {
-    /// <summary>The figure, from <see cref="Html.Sanitize"/>.</summary>
+    /// <summary>The drawing, from <see cref="Svg.Sanitize"/>, with the user's edits written in.</summary>
     public required string Markup;
-    /// <summary>Width over height when laid out at the page's text width. Set by the platform when it measures the block.</summary>
+    /// <summary>Width over height when laid out at the page's text width. Set by the platform when it measures the drawing.</summary>
     public double Aspect = 4.0 / 3.0;
     public string Alt = "";
     /// <summary>The rule lines it takes up. Set by the platform when it measures the note.</summary>
     public int Lines;
     public object? View;
+    /// <summary>Where every element with an id is, in the drawing's own coordinates. Reported by the platform, which has the font and the renderer.</summary>
+    public Dictionary<string, Box> Boxes = new();
+    /// <summary>What the user changed since the model last heard, by element id.</summary>
+    public Dictionary<string, Svg.EditEntry> Edits = new();
+    public bool Editable => Svg.IsEditable(Markup);
 }
 
 /// <summary>One of Claude's notes on the page (or the hint). <c>View</c> is whatever the platform draws it with.</summary>

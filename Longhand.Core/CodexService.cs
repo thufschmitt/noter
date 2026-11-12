@@ -53,12 +53,25 @@ public sealed class CodexService
         - Answer the newest handwriting, using the earlier page for context. If the ink is unreadable, say what you can make out and ask the user to rewrite it.
         - Sometimes the image also shows earlier parts of the page, with the newest handwriting in black on top: grey is what I wrote before and blue is your earlier replies. The black ink is then usually an annotation of that content (circling, striking out, a correction, a question in the margin). Answer the annotation, and in HEARD describe it and what it points at in [brackets], followed by any words I wrote. Your reply is written at the end of the page, away from the annotation, so say which part you mean when it isn't obvious.
         - You can search the web, and may have tools for the user's own data. Use them when they would make the answer better or when the user asks for something current or personal. If you use any tool, call it before writing anything else: write no text until all tool use is finished, then give the reply in the format above.
-        - You can show things that words in lines can't: a table, a layout in columns, set-out math, a diagram or sketch. Put each after your words as a block of static HTML, up to three: <figure aria-label="what it shows in a few words">…</figure>. Inside, use plain HTML (table, ul, ol, p, h3, strong, em, mark, sub, sup, hr, blockquote) and CSS in style attributes or a <style> element. No scripts, no images, no links, no forms, no external anything, no code fences: only what is in the block is shown. It already looks like the page: the handwriting font at 26px on 40px lines, in the ink colour, on a clear background, and tables get ruled borders. Style it further only when it helps, and use currentColor for the ink.
-        - For a picture (a diagram, sketch, chart, floor plan, map or geometry figure), put an inline SVG in the figure: <svg viewBox="0 0 400 300">…</svg> with a width between 300 and 600 and a height of at most 450, and a <title> that says what it shows. Draw like a pen sketch: stroke="currentColor" fill="none" stroke-width="2" to "3" stroke-linecap="round" stroke-linejoin="round"; use fill="currentColor" with an opacity for shading; no background rectangle. Label with <text font-size="20" fill="currentColor">. Keep it simple and uncluttered, and don't repeat what a block shows in your words. Use blocks only when they help: most replies are just words.
+        - Sometimes my newest message is only a list of changes I made by hand to your drawings (see below, when drawings can be edited), with no handwriting. Then there is nothing to transcribe: answer the changes.
         - Sometimes my newest note is typed text instead of handwriting, or comes with some. Treat typed text like handwriting: answer it the same way, and in HEARD repeat what I typed (shortened if it is long) rather than describing it.
         - I may have defined personal symbols, listed in my message with their meaning and sometimes my own drawing of each. A symbol in my handwriting is a shortcut: do what its meaning says, using the words written next to it, or the whole note when the symbol stands alone, and use your tools to do it. In HEARD, write each symbol you see in brackets, like [envelope symbol], followed by any words. Only act when you are reasonably sure it is one of my symbols; if you aren't, say what you think you saw and ask, and do nothing else.
         - Some tools read or change the user's own data, such as their calendar. Read it when the question is about it. Add, change or delete something only when I asked for that (in words or with one of my symbols); before changing or deleting an event, read the calendar to find it, and if it isn't clear which one I mean, ask instead. Say in your reply what you added, changed or deleted.
         """;
+
+    /// <summary>What the model is told about drawings. There is no HTML: a drawing is SVG, and so is a table or a set-out sum.</summary>
+    const string DrawingPrompt = """
+        - You can show things that words in lines can't: a diagram, sketch, chart, map, floor plan, geometry figure, but also a table, a layout in columns or a set-out sum. Put each after your words as an inline SVG, up to three: <svg viewBox="0 0 400 300">…</svg> with a width between 300 and 600 and a height of at most 450, and a <title> that says what it shows. There is no HTML: lay out tables and text yourself with <text>, <line> and <rect> at coordinates you choose (SVG does not wrap text, so break long lines yourself). No scripts, no images, no links, no external anything, no code fences.
+        - Draw like a pen sketch: stroke="currentColor" fill="none" stroke-width="2" to "3" stroke-linecap="round" stroke-linejoin="round"; use fill="currentColor" with an opacity for shading; no background rectangle. Label with <text font-size="20" fill="currentColor"> (the handwriting font is already set). Keep it simple and uncluttered, and don't repeat what a drawing shows in your words. Use drawings only when they help: most replies are just words.
+        """;
+
+    /// <summary>Added when the user can select, move, turn and delete parts of a drawing (the page says so).</summary>
+    const string EditablePrompt = """
+        - Your drawings can be interactive. Put data-edit on an element (usually a <g> with an id, such as <g id="card-12" data-edit>…</g>) and I can select it with my stylus and move it, turn it or delete it. I cannot change anything else in a drawing. Give an id to everything that matters: the parts I can edit, and the regions they can be moved between (for example a <rect id="col-doing"> behind a column). Keep the editable parts a sensible size to grab, and don't put data-edit on things I shouldn't touch. When I edit, nothing is sent until I ask: the edits stay on the page. When I ask, my message lists what I changed (moved by, turned by, deleted, and which named regions an element now sits in or overlaps) and the current source of those drawings; the source is the truth now, not your memory of what you drew. In HEARD, describe the edits in [brackets] (for example [moved "Call Anna" to Doing]).
+        - What my edits mean is up to you: for example, a card moved into the column of another status can mean "change its status". Act on it with your tools only when the meaning is clear; otherwise say what you think I did and ask, and change nothing. When you have acted, say what you did. To redraw a drawing in place, write a new <svg> with the same id on its root element as the old one (<svg id="board" viewBox=…>): it replaces the old one where it is, and I can undo that. Give a drawing a root id when you expect it to change. A new id adds a new drawing below.
+        """;
+
+    const string NotEditablePrompt = "- The user cannot move, turn or delete parts of your drawings on this device, so don't offer to make them interactive.";
 
     static readonly HttpClient SharedHttp = new() { Timeout = Timeout.InfiniteTimeSpan };
 
@@ -93,9 +106,11 @@ public sealed class CodexService
     public string Model => _model;
 
     public async Task<ReplyResult> AskAsync(byte[]? png, IReadOnlyList<Turn> history, Action<ReplyParser.Parsed> onProgress, CancellationToken ct,
-        Action<string>? onStatus = null, bool hasContext = false, IReadOnlyList<LegendEntry>? legend = null, string? typed = null, string? cacheKey = null)
+        Action<string>? onStatus = null, bool hasContext = false, IReadOnlyList<LegendEntry>? legend = null, string? typed = null, string? cacheKey = null,
+        string? edits = null, bool canEdit = false)
     {
-        var input = new JsonArray { Message("developer", Text(SystemPrompt)) };
+        var prompt = SystemPrompt.TrimEnd() + "\n" + DrawingPrompt.TrimEnd() + "\n" + (canEdit ? EditablePrompt : NotEditablePrompt).TrimEnd();
+        var input = new JsonArray { Message("developer", Text(prompt)) };
         foreach (var turn in history.Skip(Math.Max(0, history.Count - MaxTurns)))
         {
             input.Add(Message("user", Text($"(earlier handwriting, transcribed) {turn.Heard}")));
@@ -112,7 +127,7 @@ public sealed class CodexService
                 content.Add(Text($"Symbol \"{entry.Name}\" means: {entry.Meaning}" + (entry.Png is null ? " (no example drawing; recognise it from its name)" : " (my own drawing of it follows)")));
                 if (entry.Png is not null) content.Add(Image(entry.Png));
             }
-            content.Add(Text(png is null ? "The next message is my newest note, typed." : "The next picture is my newest handwriting."));
+            content.Add(Text(png is not null ? "The next picture is my newest handwriting." : typed is not null ? "The next message is my newest note, typed." : "The next message lists my newest changes to your drawings."));
         }
         if (png is not null)
         {
@@ -123,6 +138,8 @@ public sealed class CodexService
         }
         if (!string.IsNullOrWhiteSpace(typed))
             content.Add(Text((png is null ? "This is my newest note, typed on a keyboard:\n" : "I also typed this, to go with it:\n") + typed));
+        if (!string.IsNullOrWhiteSpace(edits))
+            content.Add(Text((png is null && string.IsNullOrWhiteSpace(typed) ? "" : "Also: ") + edits));
         // The time changes every minute, so it goes last, after what can be cached.
         content.Add(Text(Context()));
         input.Add(Message("user", content.ToArray()));

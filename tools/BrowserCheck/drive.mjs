@@ -18,7 +18,19 @@ const evaluate = async expr => (await call('Runtime.evaluate', { expression: exp
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const shot = async name => fs.writeFileSync(`${outDir}/${name}.png`, Buffer.from((await call('Page.captureScreenshot', { format: 'png' })).result.data, 'base64'));
 const until = async (expr, ms = 15000) => { for (let t = 0; t < ms; t += 100) { if (await evaluate(expr)) return true; await sleep(100); } return false; };
-const mouse = (type, x, y) => call('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1, pointerType: 'mouse' });
+const mouse = (type, x, y, pointerType = 'mouse') => call('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1, pointerType });
+// The barrel button of a pen, or the right button of a mouse: the lasso.
+const barrel = (type, x, y) => call('Input.dispatchMouseEvent', { type, x, y, button: 'right', buttons: type === 'mouseReleased' ? 0 : 2, clickCount: 1, pointerType: 'mouse' });
+const key = async (k, code, vk) => { await call('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code, windowsVirtualKeyCode: vk }); await call('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk }); };
+// A drawing's part, where it is on the screen (scrolled into view first).
+const onScreen = async (selector) => JSON.parse(await evaluate(`(() => {
+  const d = [...notes.values()].flatMap(n => [...n.drawings.values()])[0], root = svgRoot(d), el = root.querySelector(${JSON.stringify(selector)});
+  const b = boxOf(root, el), [px, py] = rootToPage(d, b[0] + b[2] / 2, b[1] + b[3] / 2);
+  scroller.scrollTop = Math.max(0, d.top - 80);
+  const r = inkCanvas.getBoundingClientRect();
+  return JSON.stringify([r.left + px, r.top + py - scroller.scrollTop]);
+})()`));
+const knob = async (which) => JSON.parse(await evaluate(`(() => { const f = selectionFrame(), r = inkCanvas.getBoundingClientRect(); const p = ${which === 'delete' ? '[f.right, f.top]' : '[f.cx, f.top - 30]'}; return JSON.stringify([r.left + p[0], r.top + p[1] - scroller.scrollTop]); })()`));
 async function stroke(points) {
   await mouse('mousePressed', ...points[0]);
   for (const p of points.slice(1)) { await mouse('mouseMoved', ...p); await sleep(8); }
@@ -62,29 +74,82 @@ const replyTop = await evaluate(`parseFloat([...document.querySelectorAll('.note
 await stroke([[ox + 90, replyTop + 20], [ox + 400, replyTop + 24], [ox + 500, replyTop + 20]]);
 await until(`!document.getElementById('ask').disabled`);
 await evaluate(`document.getElementById('ask').click()`);
-check('a block arrives with the second reply', await until(`document.querySelectorAll('iframe.drawing').length === 1`, 20000));
+check('a drawing arrives with the second reply', await until(`document.querySelectorAll('iframe.drawing').length === 1`, 20000));
 await sleep(1500);
-check('the block is rendered and sized to its content', await evaluate(`(() => { const f = document.querySelector('iframe.drawing'); const d = f.contentDocument; return parseFloat(f.style.width) > 300 && parseFloat(f.style.height) > 200 && d.querySelectorAll('td').length === 2 && d.querySelector('svg text').getBBox().width > 10; })()`));
-check('nothing in the block ran, and it runs nothing', await evaluate(`window.hacked === undefined && !document.querySelector('iframe.drawing').contentDocument.querySelector('script') && document.querySelector('iframe.drawing').getAttribute('sandbox') === 'allow-same-origin'`));
-check('the block is in the ink colour, on a clear background', await evaluate(`(() => { const d = document.querySelector('iframe.drawing').contentDocument; return getComputedStyle(d.body).color === 'rgb(44, 79, 196)' && getComputedStyle(d.body).backgroundColor === 'rgba(0, 0, 0, 0)'; })()`));
+check('the drawing is rendered and sized to its content', await evaluate(`(() => { const f = document.querySelector('iframe.drawing'); const d = f.contentDocument; return parseFloat(f.style.width) > 300 && parseFloat(f.style.height) > 200 && d.querySelectorAll('[data-edit]').length === 2 && d.querySelector('svg text').getBBox().width > 10; })()`));
+check('nothing in the drawing ran, and it runs nothing', await evaluate(`window.hacked === undefined && !document.querySelector('iframe.drawing').contentDocument.querySelector('script') && document.querySelector('iframe.drawing').getAttribute('sandbox') === 'allow-same-origin'`));
+check('the drawing is in the ink colour, on a clear background', await evaluate(`(() => { const d = document.querySelector('iframe.drawing').contentDocument; return getComputedStyle(d.body).color === 'rgb(44, 79, 196)' && getComputedStyle(d.body).backgroundColor === 'rgba(0, 0, 0, 0)'; })()`));
 check('the words above the block are only the words', await evaluate(`[...document.querySelectorAll('.note')].some(n => n.textContent === 'Here is your week, with a sketch.')`));
 await shot('4-block');
 
-// Annotate the block: the picture sent to Claude shows it.
+// ----- editing the board: tap to select, drag to move, turn, delete, lasso -----
+await evaluate(`window.firstDrawing = () => [...notes.values()].flatMap(n => [...n.drawings.values()])[0]`);
+await sleep(1200); // a tap right after writing is part of the writing; wait it out
+const strokesBefore = await evaluate(`strokes.size`);
+let [cx, cy] = await onScreen('#card-1');
+await mouse('mousePressed', cx, cy, 'pen'); await mouse('mouseReleased', cx, cy, 'pen');
+check('tapping a part with the pen selects it, with no dot of ink', await until(`selection && selection.els.length === 1 && selection.els[0].id === 'card-1' && !document.getElementById('selection').hidden`) && await evaluate(`strokes.size`) === strokesBefore);
+await shot('4b-selected');
+await mouse('mousePressed', cx, cy); for (let i = 1; i <= 10; i++) { await mouse('mouseMoved', cx + i * 15, cy + i * 4); await sleep(10); } await mouse('mouseReleased', cx + 150, cy + 40);
+check('dragging inside the frame moves the part', await evaluate(`/^translate\\(/.test(svgRoot(firstDrawing()).querySelector('#card-1').getAttribute('transform'))`));
+check('the move makes the page askable, though nothing was written', await until(`!document.getElementById('ask').disabled`, 5000));
+let [rx, ry] = await knob('rotate');
+const frame = JSON.parse(await evaluate(`JSON.stringify(selectionFrame())`));
+const [fcx, fcy] = await onScreen('#card-1');
+await mouse('mousePressed', rx, ry); for (let i = 1; i <= 8; i++) { const a = -Math.PI / 2 + (i * 5 * Math.PI) / 180, R = Math.hypot(rx - fcx, ry - fcy); await mouse('mouseMoved', fcx + R * Math.cos(a), fcy + R * Math.sin(a)); await sleep(10); } await mouse('mouseReleased', rx, ry);
+check('dragging the knob turns the part', await evaluate(`svgRoot(firstDrawing()).querySelector('#card-1').getAttribute('transform').startsWith('matrix(')`));
+await shot('4c-moved-and-turned');
+const [dx, dy] = await knob('delete');
+await mouse('mousePressed', dx, dy); await mouse('mouseReleased', dx, dy);
+check('the cross deletes the part', await until(`!svgRoot(firstDrawing()).querySelector('#card-1') && !selection`));
+await evaluate(`document.getElementById('undo').click()`);
+check('undo brings the part back (the server shows the drawing again)', await until(`(() => { const r = svgRoot(firstDrawing()); return r && r.querySelector('#card-1') && r.querySelector('#card-1').getAttribute('transform').startsWith('matrix('); })()`, 8000));
+await sleep(500);
+// The lasso: the pen's barrel button held, circling both cards.
+const [c1x, c1y] = await onScreen('#card-1'), [c2x, c2y] = await onScreen('#card-2');
+const loop = [[Math.min(c1x, c2x) - 150, Math.min(c1y, c2y) - 90], [Math.max(c1x, c2x) + 150, Math.min(c1y, c2y) - 90], [Math.max(c1x, c2x) + 150, Math.max(c1y, c2y) + 90], [Math.min(c1x, c2x) - 150, Math.max(c1y, c2y) + 90]];
+await barrel('mousePressed', ...loop[0]);
+for (let i = 1; i <= 4; i++) for (let k = 1; k <= 5; k++) { const a = loop[i - 1], b = loop[i % 4]; await barrel('mouseMoved', a[0] + (b[0] - a[0]) * k / 5, a[1] + (b[1] - a[1]) * k / 5); await sleep(8); }
+await barrel('mouseReleased', ...loop[0]);
+check('circling with the barrel button selects what is inside', await until(`selection && selection.els.length === 2`));
+await shot('4d-lasso');
+await key('Escape', 'Escape', 27);
+check('Escape puts the selection away', await until(`!selection && document.getElementById('selection').hidden`));
+// Writing, then a dot at once beside it, is writing: the dot is not a tap on the part under it.
+[cx, cy] = await onScreen('#card-2');
+const inkBefore = await evaluate(`strokes.size`);
+await stroke([[cx - 40, cy - 6], [cx - 20, cy + 4], [cx, cy - 4]]);
+await mouse('mousePressed', cx + 14, cy, 'pen'); await mouse('mouseReleased', cx + 14, cy, 'pen');
+check('a dot right after other ink stays ink', await until(`strokes.size === ${inkBefore + 2}`) && await evaluate(`!selection`));
+await sleep(1200);
+await mouse('mousePressed', cx, cy - 50, 'pen'); await mouse('mouseReleased', cx, cy - 50, 'pen');
+await evaluate(`clearSelection()`);
+await until(`!document.getElementById('ask').disabled`);
+// Ask: what was moved and turned goes to the model with the writing over it; the drawing it sends back replaces this one.
+await evaluate(`document.getElementById('ask').click()`);
+check('the model answers the edits', await until(`[...document.querySelectorAll('.note')].some(n => n.textContent === 'Moved it.')`, 20000));
+const sentEdits = fs.existsSync(`${outDir}/request-3.json`) ? fs.readFileSync(`${outDir}/request-3.json`, 'utf8') : '';
+check('the request told it what changed, and carried the drawing as it is now', sentEdits.includes('I changed your drawings by hand') && /card-1: moved by/.test(sentEdits) && sentEdits.includes('turned') && sentEdits.includes('Its source now:') && !sentEdits.includes('card-2: deleted'));
+check('and the drawing was replaced where it was, by the one with the same id', await until(`document.querySelectorAll('iframe.drawing').length === 1 && !svgRoot(firstDrawing()).querySelector('#card-1').hasAttribute('transform') && svgRoot(firstDrawing()).querySelector('#card-1 rect').getAttribute('x') === '220'`, 8000));
+await shot('4e-replaced');
+check('the picture sent with the edits showed the drawing', fs.readdirSync(outDir).some(f => f.startsWith('sent-3-')));
+
+// Annotate the drawing: the picture sent to the model shows it.
 const block = await evaluate(`(() => { const f = document.querySelector('iframe.drawing'); return { top: parseFloat(f.style.top), h: parseFloat(f.style.height) }; })()`);
 await stroke([[ox + 120, block.top + 30], [ox + 200, block.top + block.h / 2], [ox + 260, block.top + 40]]);
 await until(`!document.getElementById('ask').disabled`);
 await evaluate(`document.getElementById('ask').click()`);
-check('annotating the block gets a reply', await until(`document.querySelectorAll('iframe.drawing').length === 2`, 20000));
+check('annotating the drawing gets a reply', await until(`document.querySelectorAll('iframe.drawing').length === 2`, 20000));
 // The page is saved a moment after the reply; the server then sends the conversation list again. Reload only after that.
 await evaluate(`window.listBeforeSave = conversationState`);
 check('the page is saved after the reply', await until(`conversationState !== window.listBeforeSave`, 5000));
 await sleep(300);
 
 // Reload: the conversation comes back.
+const inkAtReload = await evaluate(`strokes.size`);
 await call('Page.navigate', { url: pageUrl });
-check('reloading restores the replies and the blocks', await until(`document.querySelectorAll('.note:not(.hint)').length === 3 && document.querySelectorAll('iframe.drawing').length === 2`));
-check('and the ink', await until(`typeof strokes !== 'undefined' && strokes.size === 5`));
+check('reloading restores the replies and the drawings', await until(`document.querySelectorAll('.note:not(.hint)').length === 4 && document.querySelectorAll('iframe.drawing').length === 2`));
+check('and the ink', await until(`typeof strokes !== 'undefined' && strokes.size === ${inkAtReload}`));
 await sleep(800);
 await shot('5-reloaded');
 

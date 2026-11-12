@@ -130,42 +130,75 @@ static class AgentChecks
             check("the streamed reply never showed drawing markup", progress.All(p => !p.Body.Contains('<')) && progress.Any(p => p.Drawings is { Count: 1 }));
         }
 
-        // ----- blocks in replies: HTML figures, drawings among them -----
-        var split = Html.Extract("Here is a house.\n<svg viewBox=\"0 0 40 30\"><rect width=\"10\" height=\"10\"/></svg>\nIt has a door.", finished: true);
-        check("a bare drawing is taken out of the words", split.Text == "Here is a house.\n\nIt has a door." && split.Blocks.Count == 1 && !split.Open);
-        var table = Html.Extract("Your week:\n<figure aria-label=\"week\"><table><tr><td>Mon</td></tr></table><svg><g/></svg></figure>\nEnjoy.", finished: true);
-        check("a figure is one block, whatever it holds", table.Text == "Your week:\n\nEnjoy." && table.Blocks.Count == 1 && table.Blocks[0].EndsWith("</figure>"));
-        var fenced = Html.Extract("Look:\n```html\n<figure><p>x</p></figure>\n```\nDone", finished: true);
-        check("code fences around a block are dropped", fenced.Text == "Look:\n\nDone" && fenced.Blocks.Count == 1);
-        var streaming = Html.Extract("Here:\n<figure><table><tr><td>Mo", finished: false);
-        check("an unfinished block is held back", streaming.Open && streaming.Text == "Here:" && streaming.Blocks.Count == 0);
-        check("a possible start of a block is held back while streaming", Html.Extract("Here: <fig", finished: false).Text == "Here:" && Html.Extract("Here: <sv", finished: false).Text == "Here:" && Html.Extract("a < b", finished: false).Text == "a < b");
-        var nested = Html.Extract("<figure><figure><p>x</p></figure></figure>after", finished: true);
-        check("nested figures stay in one block", nested.Blocks.Count == 1 && nested.Text == "after");
+        // ----- drawings in replies: SVG only -----
+        var split = Svg.Extract("Here is a house.\n<svg viewBox=\"0 0 40 30\"><rect width=\"10\" height=\"10\"/></svg>\nIt has a door.", finished: true);
+        check("a drawing is taken out of the words", split.Text == "Here is a house.\n\nIt has a door." && split.Blocks.Count == 1 && !split.Open);
+        var wrapped = Svg.Extract("Your week:\n<figure aria-label=\"week\"><svg viewBox=\"0 0 4 3\"><g/></svg></figure>\nEnjoy.", finished: true);
+        check("an old <figure> wrapper is dropped, the drawing in it stays", wrapped.Text == "Your week:\n\nEnjoy." && wrapped.Blocks.Count == 1 && wrapped.Blocks[0].StartsWith("<svg") && wrapped.Blocks[0].EndsWith("</svg>"));
+        var fenced = Svg.Extract("Look:\n```svg\n<svg viewBox=\"0 0 4 3\"><g/></svg>\n```\nDone", finished: true);
+        check("code fences around a drawing are dropped", fenced.Text == "Look:\n\nDone" && fenced.Blocks.Count == 1);
+        var streaming = Svg.Extract("Here:\n<svg viewBox=\"0 0 4 3\"><text>Mo", finished: false);
+        check("an unfinished drawing is held back", streaming.Open && streaming.Text == "Here:" && streaming.Blocks.Count == 0);
+        check("a possible start of a drawing is held back while streaming", Svg.Extract("Here: <sv", finished: false).Text == "Here:" && Svg.Extract("Here: <fig", finished: false).Text == "Here:" && Svg.Extract("a < b", finished: false).Text == "a < b");
+        var nested = Svg.Extract("<svg viewBox=\"0 0 4 3\"><svg><g/></svg></svg>after", finished: true);
+        check("nested svgs stay in one drawing", nested.Blocks.Count == 1 && nested.Text == "after");
         var parsed = ReplyParser.Parse("HEARD: draw a cat\n---\nA cat:\n<svg viewBox=\"0 0 4 3\"><path d=\"M0 0\"/></svg>", finished: true);
-        check("the parser keeps blocks out of the cleaned words", parsed.Body == "A cat:" && parsed.Drawings is { Count: 1 } && parsed.Heard == "draw a cat");
+        check("the parser keeps drawings out of the cleaned words", parsed.Body == "A cat:" && parsed.Drawings is { Count: 1 } && parsed.Heard == "draw a cat");
 
-        var bare = Html.Sanitize("<svg viewBox=\"0 0 4 3\"><title>A cat</title><path d=\"M0 0\" stroke=\"currentColor\"/></svg>");
-        check("a bare drawing (as saved before) becomes a figure, kept as drawn", bare is not null && bare.StartsWith("<figure>") && bare.Contains("viewBox=\"0 0 4 3\"") && bare.Contains("stroke=\"currentColor\""));
-        var unsafeBlock = Html.Sanitize("<figure><table><tr><td onclick=\"x()\" style=\"color:red;background:url(http://e/x.png)\">a</td></tr></table>"
-            + "<script>alert(1)</script><img src=\"http://e/i.png\"><a href=\"http://e\">link</a><form><input></form><iframe src=\"http://e\"></iframe>"
-            + "<style>@import url(http://e/s.css); td { background: url(//e/p.png) }</style><div style=\"background:url(//e/q.png)\">q</div>"
-            + "<svg><image href=\"http://e/p.png\"/><use href=\"http://e/s.svg#a\"/></svg></figure>")!;
-        check("scripts, handlers, images, links, forms and frames are taken out", !unsafeBlock.Contains("script") && !unsafeBlock.Contains("onclick") && !unsafeBlock.Contains("<img") && !unsafeBlock.Contains("href") && !unsafeBlock.Contains("<input") && !unsafeBlock.Contains("iframe") && !unsafeBlock.Contains("<image") && !unsafeBlock.Contains("<use"));
-        check("nothing in it can be fetched", !unsafeBlock.Contains("http") && !unsafeBlock.Contains("//e/") && !unsafeBlock.Contains("@import"));
-        check("what is safe stays: the table, its words and its colour", unsafeBlock.Contains("<td") && unsafeBlock.Contains(">a</td>") && unsafeBlock.Contains("color") && unsafeBlock.Contains(">link<") && unsafeBlock.Contains(">q<"));
-        check("same-document references are fine", Html.Sanitize("<figure><svg><defs><marker id=\"a\"/></defs><path d=\"M0 0\" marker-end=\"url(#a)\"/></svg></figure>")!.Contains("url(#a)"));
-        check("an empty, a huge or a non-figure block is refused", Html.Sanitize("<figure><script>x</script></figure>") is null && Html.Sanitize("<figure>" + new string('x', Html.MaxBytes) + "</figure>") is null && Html.Sanitize("<div>x</div>") is null);
+        var bare = Svg.Sanitize("<svg viewBox=\"0 0 4 3\"><title>A cat</title><path d=\"M0 0\" stroke=\"currentColor\"/></svg>");
+        check("a drawing is kept as drawn, and can stand alone as an image", bare is not null && bare.StartsWith("<svg") && bare.Contains("viewBox=\"0 0 4 3\"") && bare.Contains("stroke=\"currentColor\"") && bare.Contains("xmlns=\"http://www.w3.org/2000/svg\""));
+        var legacy = Svg.Sanitize("<figure><svg viewBox=\"0 0 4 3\"><title>A cat</title><path d=\"M0 0\"/></svg></figure>");
+        check("a drawing saved in the old <figure> is unwrapped", legacy is not null && legacy.StartsWith("<svg") && !legacy.Contains("figure"));
+        var unsafeBlock = Svg.Sanitize("<svg viewBox=\"0 0 4 3\" onload=\"x()\"><script>alert(1)</script><image href=\"http://e/p.png\"/><use href=\"http://e/s.svg#a\"/>"
+            + "<a href=\"http://e\"><text>link</text></a><text>words</text><foreignObject><div>html</div></foreignObject><style>@import url(http://e/s.css)</style>"
+            + "<rect style=\"fill:red;background:url(http://e/q.png)\" onclick=\"x()\" width=\"2\" height=\"2\"/></svg>")!;
+        check("scripts, handlers, images, links, html and styles are taken out", !unsafeBlock.Contains("script") && !unsafeBlock.Contains("onclick") && !unsafeBlock.Contains("onload") && !unsafeBlock.Contains("<image") && !unsafeBlock.Contains("href") && !unsafeBlock.Contains("<use") && !unsafeBlock.Contains("foreignObject") && !unsafeBlock.Contains("<div") && !unsafeBlock.Contains("<style"));
+        check("nothing in it can be fetched", !unsafeBlock.Replace("http://www.w3.org/2000/svg", "").Contains("http") && !unsafeBlock.Contains("@import"));
+        check("what is safe stays: the shapes and their words", unsafeBlock.Contains("<rect") && unsafeBlock.Contains(">words<"));
+        check("same-document references are fine", Svg.Sanitize("<svg><defs><marker id=\"a\"/></defs><path d=\"M0 0\" marker-end=\"url(#a)\"/></svg>")!.Contains("url(#a)"));
+        check("an empty, a huge or a non-svg block is refused", Svg.Sanitize("<svg><script>x</script></svg>") is null && Svg.Sanitize("<svg>" + new string('x', Svg.MaxBytes) + "</svg>") is null && Svg.Sanitize("<div>x</div>") is null && Svg.Sanitize("<figure><table><tr><td>a</td></tr></table></figure>") is null);
 
-        check("the title comes from the label, then the caption, then the drawing's title", Html.Title("<figure aria-label=\" Your  week \"><figcaption>c</figcaption></figure>") == "Your week"
-            && Html.Title("<figure><figcaption>Prices</figcaption><table></table></figure>") == "Prices" && Html.Title("<figure><svg><title>A red house</title></svg></figure>") == "A red house"
-            && Html.Title("<figure><table><tr><td>1</td></tr></table></figure>") == "a table");
-        var asText = Html.Text("<figure><h3>Plan</h3><table><tr><th>Day</th><th>Task</th></tr><tr><td>Mon</td><td><b>gym</b> &amp; run</td></tr></table><ul><li>eggs</li><li>milk</li></ul><style>td{color:red}</style><svg><title>Map</title><text>x</text></svg></figure>");
-        check("the text version reads like the block", asText == "Plan\n\nDay | Task\nMon | gym & run\n\n– eggs\n– milk\n\n[drawing: Map]");
-        var doc = Html.Document("<figure><p>hi</p></figure>");
-        check("the document lets nothing run or load, and has the ink to fill in", doc.Contains("default-src 'none'") && !doc.Contains("script-src") && doc.Contains(Html.InkToken) && doc.Contains("<p>hi</p>"));
-        var (w, h) = Html.Fit(0.5, 560, 480);
-        check("a tall block is limited in height, keeping its shape", Math.Abs(h - 480) < 1e-9 && Math.Abs(w - 240) < 1e-9 && Html.Fit(2, 560, 480) == (560, 280) && Html.Fit(0.1, 600).Height == Html.MaxHeight);
+        // ----- parts the user can edit -----
+        var board = Svg.Sanitize("<svg id=\"board\" data-edit viewBox=\"0 0 400 200\"><title>Kanban</title>"
+            + "<rect id=\"col-todo\" x=\"0\" y=\"0\" width=\"200\" height=\"200\" fill=\"none\" stroke=\"currentColor\"/><rect id=\"col-doing\" x=\"200\" y=\"0\" width=\"200\" height=\"200\" fill=\"none\" stroke=\"currentColor\"/>"
+            + "<g id=\"card-1\" data-edit><rect id=\"card-1-bg\" x=\"20\" y=\"20\" width=\"100\" height=\"40\"/><text x=\"30\" y=\"45\">Call Anna</text></g>"
+            + "<g data-edit><rect x=\"20\" y=\"80\" width=\"100\" height=\"40\"/></g><g data-edit onclick=\"x()\"><circle cx=\"50\" cy=\"150\" r=\"10\"/></g></svg>")!;
+        check("data-edit survives, the root is not itself editable, and editable parts without an id get one", board.Contains("data-edit=\"\"") && Svg.IsEditable(board) && Svg.EditableIds(board).SequenceEqual(new[] { "card-1", "item-1", "item-2" }) && !board.Contains("onclick") && !board.StartsWith("<svg id=\"board\" data-edit"));
+        check("the root id names the drawing", Svg.FigureId(board) == "board" && Svg.FigureId(bare!) is null && !Svg.IsEditable(bare!));
+        check("the title and the history text come from the drawing", Svg.Title(board) == "Kanban" && Svg.Text(board) == "[drawing: id \"board\", Kanban, editable]" && Svg.Text(bare!) == "[drawing: A cat]" && Svg.Title("<svg aria-label=\" A  map \"><title>T</title></svg>") == "A map");
+
+        var moved = Svg.ApplyEdits(board, new[] { new DrawingChange("card-1", "move", "translate(210 0)") })!;
+        check("a move is written into the drawing as a transform", moved.Contains("id=\"card-1\"") && moved.Contains("transform=\"translate(210 0)\"") && Svg.IsEditable(moved));
+        var turned = Svg.ApplyEdits(moved, new[] { new DrawingChange("card-1", "rotate", "matrix(0.9659 0.2588 -0.2588 0.9659 200 -50)", 15) })!;
+        check("a later turn replaces the transform", turned.Contains("matrix(0.9659 0.2588 -0.2588 0.9659 200 -50)") && !turned.Contains("translate(210 0)"));
+        var deleted = Svg.ApplyEdits(board, new[] { new DrawingChange("card-1", "delete"), new DrawingChange("item-1", "delete") })!;
+        check("deleting removes the part and what is in it", !deleted.Contains("Call Anna") && !deleted.Contains("card-1") && deleted.Contains("col-todo") && Svg.EditableIds(deleted).SequenceEqual(new[] { "item-2" }));
+        check("only editable parts can be changed", Svg.ApplyEdits(board, new[] { new DrawingChange("col-todo", "move", "translate(1 1)") }) is null
+            && Svg.ApplyEdits(board, new[] { new DrawingChange("board", "delete") }) is null && Svg.ApplyEdits(board, new[] { new DrawingChange("nope", "delete") }) is null
+            && Svg.ApplyEdits(board, new[] { new DrawingChange("card-1-bg", "move", "translate(1 1)") }) is null);
+        check("a transform is only numbers, and a change is all or nothing", Svg.ApplyEdits(board, new[] { new DrawingChange("card-1", "move", "translate(1 1); evil()") }) is null
+            && Svg.ApplyEdits(board, new[] { new DrawingChange("card-1", "move", "url(http://e)") }) is null && Svg.ApplyEdits(board, new[] { new DrawingChange("card-1", "move", null) }) is null
+            && Svg.ApplyEdits(board, new[] { new DrawingChange("card-1", "move", "translate(5 5)"), new DrawingChange("col-todo", "delete") }) is null && Svg.ApplyEdits(board, new[] { new DrawingChange("card-1", "explode") }) is null);
+
+        var boxes = new Dictionary<string, Box>
+        {
+            ["col-todo"] = new(0, 0, 200, 200), ["col-doing"] = new(200, 0, 200, 200),
+            ["card-1"] = new(230, 20, 100, 40), ["card-1-bg"] = new(230, 20, 100, 40), ["item-2"] = new(40, 140, 20, 20),
+        };
+        var edits = new Dictionary<string, Svg.EditEntry> { ["card-1"] = new() { First = new Box(20, 20, 100, 40) } };
+        var said = Svg.DescribeEdits(board, edits, boxes)!;
+        check("a move is described with how far it went and which named region it is now in", said.Contains("card-1: moved by (+210, +0), from x 20, y 20 to x 230, y 20") && said.Contains("its centre is now inside #col-doing") && !said.Contains("#col-todo") && !said.Contains("card-1-bg"));
+        var spinning = new Dictionary<string, Svg.EditEntry> { ["item-2"] = new() { First = new Box(40, 140, 20, 20), Degrees = 30 }, ["card-1"] = new() { First = new Box(20, 20, 100, 40), Deleted = true } };
+        var spun = Svg.DescribeEdits(board, spinning, boxes)!;
+        check("a turn and a deletion are described", spun.Contains("item-2: turned 30° clockwise") && spun.Contains("card-1: deleted (it was at x 20, y 20, 100×40)"));
+        check("a part moved away and back is not reported", Svg.DescribeEdits(board, new Dictionary<string, Svg.EditEntry> { ["card-1"] = new() { First = new Box(230, 20, 100, 40) } }, boxes) is null);
+        check("turning back counts as nothing too, and overlaps are named", new Svg.EditEntry { First = new Box(0, 0, 1, 1), Degrees = 360 }.IsNet(new Box(0, 0, 1, 1)) == false
+            && Svg.DescribeEdits(board, new Dictionary<string, Svg.EditEntry> { ["item-2"] = new() { First = new Box(0, 0, 20, 20) } }, new Dictionary<string, Box> { ["item-2"] = new(185, 10, 20, 20), ["col-todo"] = new(0, 0, 200, 200), ["col-doing"] = new(200, 0, 200, 200) })!.Contains("its centre is now inside #col-todo; it overlaps #col-doing"));
+
+        var doc = Svg.Document("<svg viewBox=\"0 0 4 3\"><g/></svg>");
+        check("the document lets nothing run or load, and has the ink to fill in", doc.Contains("default-src 'none'") && !doc.Contains("script-src") && doc.Contains(Svg.InkToken) && doc.Contains("<svg viewBox"));
+        var (w, h) = Svg.Fit(0.5, 560, 480);
+        check("a tall drawing is limited in height, keeping its shape", Math.Abs(h - 480) < 1e-9 && Math.Abs(w - 240) < 1e-9 && Svg.Fit(2, 560, 480) == (560, 280) && Svg.Fit(0.1, 600).Height == Svg.MaxHeight);
     }
 
     static IReadOnlyDictionary<string, JsonElement> Args(string json) =>

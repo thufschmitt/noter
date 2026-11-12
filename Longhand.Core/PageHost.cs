@@ -31,6 +31,10 @@ public interface IPageView
     void NoteRemoved(NoteModel note);
     void DrawingAdded(NoteModel note, DrawingModel drawing);
     void DrawingsCleared(NoteModel note);
+    /// <summary>The drawing's <see cref="DrawingModel.Markup"/> was replaced (by the model, or by undoing an edit): show it again. It will be measured next.</summary>
+    void DrawingChanged(NoteModel note, DrawingModel drawing);
+    /// <summary>Whether the user can select, move, turn and delete the editable parts of a drawing here. The model is told, so it doesn't offer what can't be done.</summary>
+    bool CanEdit { get; }
     /// <summary>Works out how many rule lines the note's words and each drawing take (sets <see cref="NoteModel.Lines"/> and <see cref="DrawingModel.Lines"/>).</summary>
     Task MeasureAsync(NoteModel note);
     /// <summary>Puts the note's pieces where its <see cref="NoteModel.Y"/> says.</summary>

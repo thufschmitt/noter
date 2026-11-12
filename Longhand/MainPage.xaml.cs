@@ -32,7 +32,7 @@ public sealed partial class MainPage : Page, IPageView
     }
 
     static NoteVisual Visual(NoteModel note) => (NoteVisual)note.View!;
-    /// <summary>A block of Claude's (a table, laid-out text or a drawing), as the picture <see cref="BlockRenderer"/> made of it.</summary>
+    /// <summary>A drawing of Claude's, as the picture <see cref="BlockRenderer"/> made of it.</summary>
     static Image PictureOf(DrawingModel drawing) => (Image)drawing.View!;
 
     /// <summary>The page itself: what is on it, asking, saving, conversations. This class is its screen.</summary>
@@ -220,7 +220,7 @@ public sealed partial class MainPage : Page, IPageView
         n.Lines = Math.Max(least, (int)Math.Round(block.DesiredSize.Height / LineHeight));
         foreach (var d in n.Drawings)
         {
-            var (w, h) = Html.Fit(d.Aspect, TextWidth);
+            var (w, h) = Svg.Fit(d.Aspect, TextWidth);
             var image = PictureOf(d);
             image.Width = w;
             image.Height = h;
@@ -332,7 +332,7 @@ public sealed partial class MainPage : Page, IPageView
         var rendered = await _blocks.RenderAsync(d.Markup, TextWidth, Hex6(_claudeInk.Color));
         if (rendered is null)
         {
-            if (image.Tag is null) ShowToast("A table or drawing couldn't be shown.");
+            if (image.Tag is null) ShowToast("A drawing couldn't be shown.");
             image.Tag ??= "";
             return;
         }
@@ -594,6 +594,21 @@ public sealed partial class MainPage : Page, IPageView
     {
         foreach (var d in note.Drawings) NoteLayer.Children.Remove(PictureOf(d));
     }
+
+    /// <summary>The model redrew a drawing in place (or undo brought the old one back): its picture is made again when the note is measured next.</summary>
+    void IPageView.DrawingChanged(NoteModel note, DrawingModel drawing)
+    {
+        var image = PictureOf(drawing);
+        image.Tag = null;
+        Windows.UI.Xaml.Automation.AutomationProperties.SetName(image, drawing.Alt);
+    }
+
+    /// <summary>
+    /// Not yet: here a drawing is a picture, so selecting, moving, turning and deleting its parts (data-edit) needs a native
+    /// selection layer over it and the parts' boxes from the renderer, which hasn't been built or tried on a Windows device.
+    /// The model is told, so it doesn't offer what can't be done.
+    /// </summary>
+    bool IPageView.CanEdit => false;
 
     async Task IPageView.MeasureAsync(NoteModel note)
     {

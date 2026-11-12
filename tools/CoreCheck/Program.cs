@@ -134,6 +134,7 @@ await CalendarWriteChecks.RunAsync(Check);
 await StarChecks.RunAsync(Check);
 await McpChecks.RunAsync(Check);
 await PageChecks.RunAsync(Check);
+await EditChecks.RunAsync(Check);
 await BookChecks.RunAsync(Check);
 
 Console.WriteLine(failures == 0 ? "All checks passed." : $"{failures} check(s) failed.");

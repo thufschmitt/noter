@@ -16,7 +16,7 @@ public static class ReplyParser
     static readonly Regex HeardOnly = new(@"^\s*HEARD:\s*([^\n]*)\n?([\s\S]*)$");
 
     /// <param name="Body">The words of the reply.</param>
-    /// <param name="Drawings">Complete blocks in the reply (HTML figures, drawings among them), in order.</param>
+    /// <param name="Drawings">Complete SVG drawings in the reply, in order.</param>
     /// <param name="Drawing">True while a block is being written but isn't complete yet.</param>
     public readonly record struct Parsed(bool Ready, string Heard, string Body, IReadOnlyList<string>? Drawings = null, bool Drawing = false);
 
@@ -36,10 +36,10 @@ public static class ReplyParser
         return Reply("", full.Trim(), finished);
     }
 
-    /// <summary>Splits the reply into its words and its blocks. Only the words are cleaned: markdown rules would mangle HTML.</summary>
+    /// <summary>Splits the reply into its words and its drawings. Only the words are cleaned: markdown rules would mangle SVG.</summary>
     static Parsed Reply(string heard, string body, bool finished)
     {
-        var split = Html.Extract(body, finished);
+        var split = Svg.Extract(body, finished);
         return new Parsed(true, heard, Clean(split.Text), split.Blocks, split.Open);
     }
 

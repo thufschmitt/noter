@@ -97,3 +97,9 @@ body.typing #toast { bottom: 150px; }
 #apps .buttons input { flex: 1; min-width: 0; }
 #apps input, #apps select { margin-top: 6px; }
 #apps a { color: var(--accent); }
+
+/* The frame around the selected parts of a drawing: drawn here, but pressed through the ink layer (see grabAt in app.js). */
+#selection { position: absolute; box-sizing: border-box; border: 1.5px dashed var(--claude); border-radius: 4px; pointer-events: none; z-index: 2; }
+#selection .knob { position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px; box-sizing: border-box; border-radius: 50%; display: grid; place-items: center; background: var(--paper); border: 1.5px solid var(--claude); color: var(--claude); font: 700 16px/1 system-ui, sans-serif; }
+#selection .knob.rotate { left: 50%; top: -30px; }
+#selection .knob.delete { left: 100%; top: 0; }

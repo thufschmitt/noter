@@ -60,6 +60,7 @@ function layout() {
   sheetWidth = w;
   sheet.style.width = w + 'px';
   for (const n of notes.values()) n.el.style.width = textWidth() + 'px';
+  updateSelection();
   const h = scroller.clientHeight, dpr = devicePixelRatio || 1;
   inkCanvas.width = Math.round(w * dpr);
   inkCanvas.height = Math.round(h * dpr);
@@ -158,21 +159,36 @@ function eraseAt(x, y, erased) {
 
 inkCanvas.addEventListener('pointerdown', e => {
   if (active) return;
+  const p = pagePoint(e);
   if (e.pointerType === 'touch' && !touchWrite) {
-    active = { id: e.pointerId, mode: 'pan', lastY: e.clientY };
+    // A finger scrolls; on the handles of a selected part it edits instead; a tap on a part selects it.
+    const grab = selection && grabAt(p);
+    if (grab) { startEdit(e, grab, p); return; }
+    active = { id: e.pointerId, mode: 'pan', lastY: e.clientY, p, t0: performance.now(), travelled: 0 };
     inkCanvas.setPointerCapture(e.pointerId);
     return;
   }
-  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  // The pen's barrel button, or a mouse's right button, makes the pen a lasso for the parts of drawings that can be edited.
+  const lasso = (e.buttons & 2) !== 0 && (e.buttons & 32) === 0 && !erasing;
+  if (e.pointerType === 'mouse' && e.button !== 0 && !lasso) return;
   inkCanvas.setPointerCapture(e.pointerId);
+  if (lasso) {
+    active = { id: e.pointerId, mode: 'lasso', pts: [p] };
+    e.preventDefault();
+    return;
+  }
   const wipe = erasing || (e.pointerType === 'pen' && (e.buttons & 32));
-  const p = pagePoint(e);
+  if (!wipe) {
+    const grab = selection && grabAt(p);
+    if (grab) { startEdit(e, grab, p); e.preventDefault(); return; }
+    if (selection) clearSelection(); // writing elsewhere puts the selection away
+  }
   if (wipe) {
     active = { id: e.pointerId, mode: 'erase', erased: [] };
     eraseAt(p[0], p[1], active.erased);
     redraw();
   } else {
-    active = { id: e.pointerId, mode: 'draw', pts: [p] };
+    active = { id: e.pointerId, mode: 'draw', pts: [p], t0: performance.now() };
     viewTransform();
     paintStroke(inkCtx, [p], inkColor());
   }
@@ -183,13 +199,17 @@ inkCanvas.addEventListener('pointermove', e => {
   if (!active || active.id !== e.pointerId) return;
   if (active.mode === 'pan') {
     scroller.scrollTop -= e.clientY - active.lastY;
+    active.travelled += Math.abs(e.clientY - active.lastY);
     active.lastY = e.clientY;
     return;
   }
+  if (active.mode === 'edit') { moveEdit(active, pagePoint(e)); return; }
   for (const ev of (e.getCoalescedEvents ? e.getCoalescedEvents() : [e])) {
     const p = pagePoint(ev);
     if (active.mode === 'erase') {
       eraseAt(p[0], p[1], active.erased);
+    } else if (active.mode === 'lasso') {
+      active.pts.push(p);
     } else {
       const last = active.pts[active.pts.length - 1];
       if (Math.hypot(p[0] - last[0], p[1] - last[1]) < 0.5) continue;
@@ -199,15 +219,37 @@ inkCanvas.addEventListener('pointermove', e => {
     }
   }
   if (active.mode === 'erase') redraw();
+  if (active.mode === 'lasso') { redraw(); paintLasso(active.pts); }
 });
+
+// A tap is a pen or mouse press that hardly moves and is over quickly.
+const isTap = pts => pts.every(q => Math.hypot(q[0] - pts[0][0], q[1] - pts[0][1]) < 5);
+// A dot right after other ink and next to it is part of the writing (the dot of an i, a full stop), not a tap on something.
+function followsInk(t0, p) {
+  return lastInk && t0 - lastInk.t < 1000 && lastInk.pts.some(q => Math.hypot(q[0] - p[0], q[1] - p[1]) < 70);
+}
+let lastInk = null;
 
 function finishPointer(e) {
   if (!active || active.id !== e.pointerId) return;
   const done = active;
   active = null;
-  if (done.mode === 'draw') {
+  if (done.mode === 'edit') {
+    finishEdit(done, pagePoint(e));
+  } else if (done.mode === 'lasso') {
+    lassoSelect(done.pts);
+    redraw();
+  } else if (done.mode === 'pan') {
+    if (done.travelled < 6 && performance.now() - done.t0 < 400) tapAt(done.p);
+  } else if (done.mode === 'draw') {
+    const now = performance.now();
+    if (now - done.t0 < 400 && isTap(done.pts) && !followsInk(done.t0, done.pts[0]) && tapAt(done.pts[0], true)) {
+      redraw(); // the tap selected something: it leaves no dot
+      return;
+    }
     const stroke = { id: ++maxId, pts: done.pts.length === 1 ? [done.pts[0], [done.pts[0][0] + 0.1, done.pts[0][1]]] : done.pts };
     strokes.set(stroke.id, stroke);
+    lastInk = { t: now, pts: done.pts.slice(-40) };
     send({ t: 'stroke', stroke });
     updateHeight();
     redraw();
@@ -218,6 +260,269 @@ function finishPointer(e) {
 inkCanvas.addEventListener('pointerup', finishPointer);
 inkCanvas.addEventListener('pointercancel', finishPointer);
 inkCanvas.addEventListener('contextmenu', e => e.preventDefault());
+
+// ---------- editing Claude's drawings ----------
+
+// A drawing is an SVG in a frame that runs nothing. The page reaches into the frame (it is the same origin) to measure the parts
+// the model marked data-edit and to move them. The user's edits are applied here at once and reported to the server, which writes
+// them into the drawing; nothing goes to the model until the user asks.
+//
+// Tap a part with the pen (or click it) to select it: a frame appears with a knob to turn it and a cross to delete it, and dragging
+// inside the frame moves it. Hold the pen's barrel button (or the mouse's right button) and circle parts to select several.
+
+const EDIT_SELECTOR = '[data-edit]';
+let selection = null; // { d, els: [SVG elements in d's frame] }
+
+const svgRoot = d => (d.el.contentDocument ? d.el.contentDocument.querySelector('svg') : null);
+const frameScale = d => (d.nw > 0 && d.w < d.nw - 0.5 ? d.w / d.nw : 1);
+const wrapAngle = a => ((((a + 180) % 360) + 360) % 360) - 180;
+
+// Page pixels <-> the drawing's own coordinates (its viewBox units).
+function pageToRoot(d, px, py) {
+  const s = frameScale(d), m = svgRoot(d).getScreenCTM();
+  const p = new DOMPoint((px - MARGIN_X) / s, (py - d.top) / s).matrixTransform(m.inverse());
+  return [p.x, p.y];
+}
+function rootToPage(d, x, y) {
+  const s = frameScale(d), p = new DOMPoint(x, y).matrixTransform(svgRoot(d).getScreenCTM());
+  return [MARGIN_X + p.x * s, d.top + p.y * s];
+}
+
+// Where a part is, as [x, y, w, h] in the drawing's own coordinates (what its transforms have done to it included).
+function boxOf(root, el) {
+  let bb;
+  try { bb = el.getBBox(); } catch (e) { return null; }
+  const m = root.getScreenCTM().inverse().multiply(el.getScreenCTM());
+  const pts = [[bb.x, bb.y], [bb.x + bb.width, bb.y], [bb.x, bb.y + bb.height], [bb.x + bb.width, bb.y + bb.height]]
+    .map(([x, y]) => new DOMPoint(x, y).matrixTransform(m));
+  const xs = pts.map(p => p.x), ys = pts.map(p => p.y), x = Math.min(...xs), y = Math.min(...ys), r = v => Math.round(v * 100) / 100;
+  if (![x, y, ...xs, ...ys].every(Number.isFinite)) return null;
+  return [r(x), r(y), r(Math.max(...xs) - x), r(Math.max(...ys) - y)];
+}
+
+// Every part of the drawing that has an id: the server does the arithmetic on these (which part now sits over which).
+function drawingBoxes(d) {
+  const root = svgRoot(d), boxes = {};
+  if (!root) return boxes;
+  for (const el of root.querySelectorAll('[id]')) {
+    if (el === root) continue;
+    const b = boxOf(root, el);
+    if (b) boxes[el.id] = b;
+  }
+  return boxes;
+}
+
+function eachDrawing(fn) {
+  for (const n of notes.values()) for (const d of n.drawings.values()) if (d.edit && d.w > 0) fn(d, n);
+}
+
+// The smallest editable part under a point of the page.
+function editableAt(px, py) {
+  let best = null;
+  eachDrawing(d => {
+    if (px < MARGIN_X - 8 || px > MARGIN_X + d.w + 8 || py < d.top - 8 || py > d.top + d.h + 8) return;
+    const root = svgRoot(d);
+    if (!root) return;
+    const [x, y] = pageToRoot(d, px, py), tol = 6 / (frameScale(d) * (root.getScreenCTM().a || 1));
+    for (const el of root.querySelectorAll(EDIT_SELECTOR)) {
+      const b = boxOf(root, el);
+      if (!b || x < b[0] - tol || x > b[0] + b[2] + tol || y < b[1] - tol || y > b[1] + b[3] + tol) continue;
+      if (!best || b[2] * b[3] < best.area) best = { d, el, area: b[2] * b[3] };
+    }
+  });
+  return best;
+}
+
+// ----- the selection and its frame -----
+
+const selEl = document.createElement('div');
+selEl.id = 'selection';
+selEl.hidden = true;
+selEl.innerHTML = '<div class="knob rotate" title="Turn">↻</div><div class="knob delete" title="Delete">×</div>';
+notesLayer.append(selEl);
+
+function select(d, els) {
+  // A part inside another selected part moves with it already.
+  els = els.filter(a => !els.some(b => b !== a && b.contains(a)));
+  if (els.length === 0) { clearSelection(); return; }
+  selection = { d, els };
+  updateSelection();
+}
+
+function clearSelection() {
+  selection = null;
+  selEl.hidden = true;
+}
+
+// The frame around the selected parts, in page pixels, and the same box in the drawing's own coordinates.
+function selectionFrame() {
+  if (!selection) return null;
+  const { d, els } = selection, root = svgRoot(d);
+  if (!root || !d.w) return null;
+  let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity, ul = Infinity, ut = Infinity, ur = -Infinity, ub = -Infinity;
+  for (const el of els) {
+    const bx = el.isConnected ? boxOf(root, el) : null;
+    if (!bx) continue;
+    ul = Math.min(ul, bx[0]); ut = Math.min(ut, bx[1]); ur = Math.max(ur, bx[0] + bx[2]); ub = Math.max(ub, bx[1] + bx[3]);
+    for (const [x, y] of [[bx[0], bx[1]], [bx[0] + bx[2], bx[1]], [bx[0], bx[1] + bx[3]], [bx[0] + bx[2], bx[1] + bx[3]]]) {
+      const [px, py] = rootToPage(d, x, y);
+      l = Math.min(l, px); t = Math.min(t, py); r = Math.max(r, px); b = Math.max(b, py);
+    }
+  }
+  if (!isFinite(l)) return null;
+  const PAD = 6;
+  return { left: l - PAD, top: t - PAD, right: r + PAD, bottom: b + PAD, cx: (l + r) / 2, center: [(ul + ur) / 2, (ut + ub) / 2] };
+}
+
+function updateSelection() {
+  const f = selectionFrame();
+  if (!f) { clearSelection(); return; }
+  Object.assign(selEl.style, { left: f.left + 'px', top: f.top + 'px', width: f.right - f.left + 'px', height: f.bottom - f.top + 'px' });
+  selEl.hidden = false;
+}
+
+// What a press at a page point lands on: the delete cross, the turn knob, or the inside of the frame (to move).
+function grabAt(p) {
+  const f = selectionFrame();
+  if (!f) return null;
+  if (Math.hypot(p[0] - f.right, p[1] - f.top) <= 15) return 'delete';
+  if (Math.hypot(p[0] - f.cx, p[1] - (f.top - 30)) <= 15) return 'rotate';
+  if (p[0] >= f.left && p[0] <= f.right && p[1] >= f.top && p[1] <= f.bottom) return 'move';
+  return null;
+}
+
+// A tap at a page point: selects the part under it (true), or, for a touch, puts the selection away.
+function tapAt(p, keepIfNothing) {
+  const hit = editableAt(p[0], p[1]);
+  if (hit) { select(hit.d, [hit.el]); return true; }
+  if (!keepIfNothing) clearSelection();
+  return false;
+}
+
+// ----- the lasso -----
+
+function paintLasso(pts) {
+  if (pts.length < 2) return;
+  viewTransform();
+  inkCtx.save();
+  inkCtx.setLineDash([6, 5]);
+  inkCtx.lineWidth = 1.5;
+  inkCtx.strokeStyle = claudeColor();
+  inkCtx.beginPath();
+  inkCtx.moveTo(pts[0][0], pts[0][1]);
+  for (const q of pts) inkCtx.lineTo(q[0], q[1]);
+  inkCtx.closePath();
+  inkCtx.stroke();
+  inkCtx.restore();
+}
+
+function insidePolygon(x, y, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+// The editable parts that the loop mostly encloses (in one drawing: the one with the most).
+function lassoSelect(poly) {
+  if (poly.length < 3 || isTap(poly)) { // a barrel press without a loop selects what is under it
+    tapAt(poly[0]);
+    return;
+  }
+  let best = null;
+  eachDrawing(d => {
+    const root = svgRoot(d);
+    if (!root) return;
+    const els = [];
+    for (const el of root.querySelectorAll(EDIT_SELECTOR)) {
+      const b = boxOf(root, el);
+      if (!b) continue;
+      let inside = 0;
+      for (let i = 0; i < 5; i++) for (let j = 0; j < 5; j++) {
+        const [px, py] = rootToPage(d, b[0] + (b[2] * (i + 0.5)) / 5, b[1] + (b[3] * (j + 0.5)) / 5);
+        if (insidePolygon(px, py, poly)) inside++;
+      }
+      if (inside >= 13) els.push(el);
+    }
+    if (els.length > 0 && (!best || els.length > best.els.length)) best = { d, els };
+  });
+  if (best) select(best.d, best.els); else clearSelection();
+}
+
+// ----- moving, turning and deleting -----
+
+const near = (a, b) => Math.abs(a - b) < 1e-6;
+// The frame's own matrices (SVGMatrix) only multiply with each other: copy them into this page's DOMMatrix first.
+const mat = m => new DOMMatrix([m.a, m.b, m.c, m.d, m.e, m.f]);
+const num = v => String(+v.toFixed(3));
+function transformText(m) {
+  if (![m.a, m.b, m.c, m.d, m.e, m.f].every(Number.isFinite)) return null;
+  if (near(m.a, 1) && near(m.b, 0) && near(m.c, 0) && near(m.d, 1)) return `translate(${num(m.e)} ${num(m.f)})`;
+  return `matrix(${num(m.a)} ${num(m.b)} ${num(m.c)} ${num(m.d)} ${num(m.e)} ${num(m.f)})`;
+}
+
+function startEdit(e, kind, p) {
+  inkCanvas.setPointerCapture(e.pointerId);
+  const { d, els } = selection, root = svgRoot(d), f = selectionFrame();
+  const items = els.map(el => {
+    const parent = el.parentNode, own = el.transform.baseVal;
+    const m = own.numberOfItems > 0 ? own.consolidate().matrix : null;
+    return {
+      el,
+      had: el.getAttribute('transform'),
+      orig: m ? mat(m) : new DOMMatrix(),
+      toRoot: mat(root.getScreenCTM().inverse().multiply(parent.getScreenCTM())), // the part's parent space -> the drawing's
+    };
+  });
+  const start = pageToRoot(d, p[0], p[1]);
+  active = { id: e.pointerId, mode: 'edit', kind, d, items, start, center: f.center, angle: Math.atan2(start[1] - f.center[1], start[0] - f.center[0]), degrees: 0, moved: false };
+}
+
+function moveEdit(a, p) {
+  if (a.kind === 'delete') return;
+  const cur = pageToRoot(a.d, p[0], p[1]);
+  let x;
+  if (a.kind === 'move') {
+    x = new DOMMatrix().translate(cur[0] - a.start[0], cur[1] - a.start[1]);
+  } else {
+    const angle = Math.atan2(cur[1] - a.center[1], cur[0] - a.center[0]);
+    a.degrees += wrapAngle(((angle - a.angle) * 180) / Math.PI);
+    a.angle = angle;
+    x = new DOMMatrix().translate(a.center[0], a.center[1]).rotate(a.degrees).translate(-a.center[0], -a.center[1]);
+  }
+  for (const it of a.items) {
+    const text = transformText(it.toRoot.inverse().multiply(x).multiply(it.toRoot).multiply(it.orig));
+    if (text) it.el.setAttribute('transform', text);
+  }
+  a.moved = a.moved || Math.hypot(cur[0] - a.start[0], cur[1] - a.start[1]) > 0.5 || Math.abs(a.degrees) > 0.2;
+  updateSelection();
+}
+
+function finishEdit(a, p) {
+  if (a.kind === 'delete') {
+    if (selection && grabAt(p) === 'delete') deleteSelection();
+    return;
+  }
+  if (!a.moved) {
+    for (const it of a.items) { // nothing happened: put the attribute back exactly as it was
+      if (it.had === null) it.el.removeAttribute('transform'); else it.el.setAttribute('transform', it.had);
+    }
+    return;
+  }
+  const changes = a.items.map(it => ({ id: it.el.id, op: a.kind, transform: it.el.getAttribute('transform'), deg: a.kind === 'rotate' ? a.degrees : 0 }));
+  send({ t: 'edit', note: a.d.note, drawing: a.d.id, changes, boxes: drawingBoxes(a.d) });
+  updateSelection();
+}
+
+function deleteSelection() {
+  if (!selection) return;
+  const { d, els } = selection, changes = els.map(el => ({ id: el.id, op: 'delete' }));
+  for (const el of els) el.remove();
+  clearSelection();
+  send({ t: 'edit', note: d.note, drawing: d.id, changes, boxes: drawingBoxes(d) });
+}
 
 // ---------- Claude's notes ----------
 
@@ -238,6 +543,7 @@ function addNote(m) {
 }
 
 function removeNote(n) {
+  if (selection && n.drawings.has(selection.d.id)) clearSelection();
   n.el.remove();
   n.tick.remove();
   for (const d of n.drawings.values()) d.el.remove();
@@ -274,6 +580,7 @@ async function blockAspect(d, width) {
 
 const handlers = {
   clear() {
+    clearSelection();
     strokes.clear();
     for (const n of notes.values()) removeNote(n);
     notes.clear();
@@ -303,13 +610,23 @@ const handlers = {
     el.setAttribute('scrolling', 'no');
     el.tabIndex = -1;
     notesLayer.append(el);
-    const d = { id: m.id, doc: m.doc, text: m.text, el, top: 0, w: 0, h: 0, nw: 0, nh: 0 };
+    const d = { id: m.id, note: m.note, doc: m.doc, text: m.text, edit: m.edit, el, top: 0, w: 0, h: 0, nw: 0, nh: 0 };
     n.drawings.set(m.id, d);
+    showBlock(d);
+  },
+  // The drawing was replaced (by the model, or by undoing an edit): show it again. The server measures it next.
+  drawingChanged(m) {
+    const n = notes.get(m.note), d = n && n.drawings.get(m.id);
+    if (!d) return;
+    if (selection && selection.d === d) clearSelection();
+    Object.assign(d, { doc: m.doc, text: m.text, edit: m.edit });
+    d.el.title = m.alt;
     showBlock(d);
   },
   drawingsCleared(m) {
     const n = notes.get(m.note);
     if (!n) return;
+    if (selection && n.drawings.has(selection.d.id)) clearSelection();
     for (const d of n.drawings.values()) d.el.remove();
     n.drawings.clear();
   },
@@ -330,6 +647,7 @@ const handlers = {
       Object.assign(d.el.style, { top: p.top + 'px', width: p.nw + 'px', height: p.nh + 'px', transform: p.w < p.nw - 0.5 ? `scale(${p.w / p.nw})` : '' });
     }
     updateHeight();
+    updateSelection();
   },
   page(m) {
     strokes.clear();
@@ -369,12 +687,14 @@ const handlers = {
       n.el.style.width = m.width + 'px';
       n.el.textContent = m.text;
       const lines = Math.round(n.el.getBoundingClientRect().height / LINE);
-      const aspects = {};
+      const aspects = {}, boxes = {};
       for (const id of m.blocks || []) {
         const d = n.drawings.get(id);
-        if (d) aspects[id] = await blockAspect(d, m.width);
+        if (!d) continue;
+        aspects[id] = await blockAspect(d, m.width);
+        if (d.edit) boxes[id] = drawingBoxes(d);
       }
-      reply(m, { lines, aspects });
+      reply(m, { lines, aspects, boxes });
     } catch (e) {
       fail(m);
     }
@@ -469,15 +789,19 @@ async function makeSnapshot(m) {
   return canvas.toDataURL('image/png').split(',')[1];
 }
 
-// A block in the picture: its document, in the light ink, drawn as an SVG image so it looks as it does on the page. A browser
-// that won't let a page read back such a picture gets the block's text in a box instead.
+// A drawing in the picture: the SVG as it is now (edits included), in the light ink, drawn as an image so it looks as it does on the page.
+// A browser that won't let a page read back such a picture gets the drawing's text in a box instead.
 async function paintBlock(c, d, x, y) {
   try {
-    const parsed = new DOMParser().parseFromString(inked(d.doc, '#2C4FC4'), 'text/html');
-    parsed.querySelectorAll('meta').forEach(e => e.remove());
-    const xhtml = new XMLSerializer().serializeToString(parsed.documentElement);
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${d.nw}" height="${d.nh}"><foreignObject x="0" y="0" width="100%" height="100%">${xhtml}</foreignObject></svg>`;
-    const img = await loadImage('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg));
+    const root = svgRoot(d);
+    if (!root) throw new Error('not shown');
+    const size = root.getBoundingClientRect(), copy = root.cloneNode(true);
+    copy.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    copy.setAttribute('width', size.width);
+    copy.setAttribute('height', size.height);
+    if (!copy.hasAttribute('viewBox')) copy.setAttribute('viewBox', `0 0 ${size.width} ${size.height}`);
+    copy.setAttribute('style', `color:#2C4FC4;overflow:visible;font-family:${HAND.replace(/"/g, "'")}`);
+    const img = await loadImage('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(new XMLSerializer().serializeToString(copy)));
     const probe = document.createElement('canvas');
     probe.width = probe.height = 1;
     probe.getContext('2d').drawImage(img, 0, 0, 1, 1);
@@ -574,6 +898,8 @@ $('typeInput').addEventListener('keydown', e => {
 document.addEventListener('keydown', e => {
   if (e.target.closest && e.target.closest('dialog, input, textarea')) return;
   if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); send({ t: 'undo' }); }
+  else if (selection && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); deleteSelection(); }
+  else if (selection && e.key === 'Escape') clearSelection();
   else if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); send({ t: 'ask' }); }
 });
 

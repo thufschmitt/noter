@@ -13,8 +13,8 @@ namespace Longhand.Services;
 public sealed record RenderedBlock(byte[] Png, double Width, double Height);
 
 /// <summary>
-/// Renders Claude's HTML blocks (tables, laid-out text, drawings) to pictures, with one hidden WebView2 that runs no scripts.
-/// Blocks are static, so a picture shows them fully, costs no more than a drawing did, and goes into the snapshot Claude reads
+/// Renders Claude's SVG drawings to pictures, with one hidden WebView2 that runs no scripts.
+/// Drawings are static here, so a picture shows them fully, costs no more than a drawing did, and goes into the snapshot Claude reads
 /// like anything else on the page. Through the DevTools protocol it lays the block out at the page's text width, reads how tall
 /// it is, and captures all of it on a clear background.
 /// </summary>
@@ -44,7 +44,7 @@ public sealed class BlockRenderer
             core.NavigationCompleted += Done;
             try
             {
-                core.NavigateToString(Html.Document(markup).Replace(Html.InkToken, ink));
+                core.NavigateToString(Svg.Document(markup).Replace(Svg.InkToken, ink));
                 if (await Task.WhenAny(loaded.Task, Task.Delay(LoadTimeout)) != loaded.Task || !loaded.Task.Result) return null;
             }
             finally
@@ -86,7 +86,7 @@ public sealed class BlockRenderer
         _host.Children.Insert(0, _view);
         await _view.EnsureCoreWebView2Async();
         var core = _view.CoreWebView2;
-        // Blocks are static: nothing in them runs, and the document's own policy lets nothing load.
+        // Drawings are static: nothing in them runs, and the document's own policy lets nothing load.
         core.Settings.IsScriptEnabled = false;
         core.Settings.AreDefaultContextMenusEnabled = false;
         core.Settings.AreDevToolsEnabled = false;

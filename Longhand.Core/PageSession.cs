@@ -20,6 +20,8 @@ public sealed class PageSession
     abstract record UndoStep;
     sealed record AddedStroke(uint StrokeId) : UndoStep;
     sealed record ErasedStrokes(object Token) : UndoStep;
+    /// <summary>A drawing as it was before the user edited it, or before the model replaced it.</summary>
+    sealed record EditedDrawing(NoteModel Note, DrawingModel Drawing, string Markup, Dictionary<string, Svg.EditEntry> Edits, Dictionary<string, Box> Boxes) : UndoStep;
 
     /// <summary>One answer being written, so the layout updates that follow it can be merged.</summary>
     sealed class Answer
@@ -30,6 +32,8 @@ public sealed class PageSession
         /// <summary>The note the user typed, which this answers (it sits just above), and the room it takes.</summary>
         public NoteModel? Typed;
         public double TypedOccupied;
+        /// <summary>The edits this answer responds to, taken off the drawings when it was asked (put back if it never arrives).</summary>
+        public List<(DrawingModel Drawing, Dictionary<string, Svg.EditEntry> Edits)> TakenEdits = new();
         public bool Pumping, Again;
         public Task Pump = Task.CompletedTask;
     }
@@ -79,7 +83,13 @@ public sealed class PageSession
         return bottom;
     }
 
-    void UpdateState() => _view.StateChanged(new PageState(_busy, _busy || _pending.Count > 0));
+    /// <summary>True when the user has changed a drawing since the model last heard (and not changed it back).</summary>
+    public bool HasEdits => _notes.Any(n => n.Drawings.Any(HasNetEdits));
+
+    static bool HasNetEdits(DrawingModel d) =>
+        d.Edits.Any(e => e.Value.IsNet(!e.Value.Deleted && d.Boxes.TryGetValue(e.Key, out var b) ? b : null));
+
+    void UpdateState() => _view.StateChanged(new PageState(_busy, _busy || _pending.Count > 0 || HasEdits));
 
     /// <summary>The page was resized, so every note is measured again at the new width.</summary>
     public async Task RelayoutAsync()
@@ -132,11 +142,11 @@ public sealed class PageSession
     /// <summary>
     /// Whether a stroke is the star that asks Claude: a five-point star drawn in one go (<see cref="StarGesture"/>), standing
     /// apart from the writing and from Claude's replies (a star on or touching them belongs to them), with something written
-    /// that waits to be asked. Anything else is ink like any other.
+    /// (or a drawing edited) that waits to be asked. Anything else is ink like any other.
     /// </summary>
     bool IsAskStar(uint id)
     {
-        if (_busy || _pending.Count == 0) return false;
+        if (_busy || (_pending.Count == 0 && !HasEdits)) return false;
         if (_view.StrokePoints(id) is not { } points || !StarGesture.IsStar(points)) return false;
         const double Gap = 4;
         var star = Box(points);
@@ -164,6 +174,17 @@ public sealed class PageSession
                 break;
             case ErasedStrokes erased:
                 _view.RestoreStrokes(erased.Token);
+                break;
+            case EditedDrawing edit:
+                if (_notes.Contains(edit.Note) && edit.Note.Drawings.Contains(edit.Drawing))
+                {
+                    edit.Drawing.Markup = edit.Markup;
+                    edit.Drawing.Alt = Svg.Title(edit.Markup);
+                    edit.Drawing.Edits = edit.Edits;
+                    edit.Drawing.Boxes = edit.Boxes;
+                    _view.DrawingChanged(edit.Note, edit.Drawing);
+                    _ = RelayoutChangedAsync(edit.Note);
+                }
                 break;
         }
         UpdateState();
@@ -203,7 +224,7 @@ public sealed class PageSession
 
     async Task AskCoreAsync(string? typed)
     {
-        if (_busy || (_pending.Count == 0 && typed is null)) return;
+        if (_busy || (_pending.Count == 0 && typed is null && !HasEdits)) return;
 
         var conversation = _currentId;
         var signIn = _data.SignIn ?? await _view.RequestSignInAsync();
@@ -217,7 +238,7 @@ public sealed class PageSession
 
         var ids = new HashSet<uint>(_pending);
         var spans = _view.Strokes().Where(s => ids.Contains(s.Id)).ToList();
-        if (spans.Count == 0 && typed is null)
+        if (spans.Count == 0 && typed is null && !HasEdits)
         {
             _pending.Clear();
             UpdateState();
@@ -255,6 +276,14 @@ public sealed class PageSession
         }
         if (_switching || conversation != _currentId) return;
         _pending.Clear();
+        // What the user did to the drawings goes along; the drawings count as heard from here on.
+        var editReport = TakeEdits(out var takenEdits);
+        if (png is null && typed is null && editReport is null)
+        {
+            // Only edits that cancel out: nothing to say.
+            UpdateState();
+            return;
+        }
 
         // What was typed goes on the page first, below the writing, and the answer follows it.
         NoteModel? typedNote = null;
@@ -272,7 +301,7 @@ public sealed class PageSession
         // writes below it while it streams is pushed down out of the way.
         var note = await AddNoteAsync(EndOfPage(), "…", isHint: false, done: false);
         note.Text = "";
-        var answer = new Answer { Note = note, Ids = ids, Occupied = note.Span, Typed = typedNote, TypedOccupied = typedOccupied };
+        var answer = new Answer { Note = note, Ids = ids, Occupied = note.Span, Typed = typedNote, TypedOccupied = typedOccupied, TakenEdits = takenEdits };
         ShiftBelow(note.Y, answer.Occupied, note, ids);
         _view.EnsureVisible(note.Bottom);
 
@@ -303,15 +332,20 @@ public sealed class PageSession
                 note.Shown = status;
                 _view.NoteChanged(note);
                 RequestGrow(answer);
-            }, hasContext: context is not null, legend: prepared.Legend, typed: typed, cacheKey: conversation);
+            }, hasContext: context is not null, legend: prepared.Legend, typed: typed, cacheKey: conversation, edits: editReport, canEdit: _view.CanEdit);
 
             note.Heard = result.Heard;
             AddNewDrawings(note, result.Drawings);
+            // A drawing with the id of one already on the page replaces that one, where it is.
+            int replaced = result.Outcome == ReplyOutcome.Done ? await ReplaceFiguresAsync(note, result.Drawings) : 0;
             note.Text = result.Outcome switch
             {
                 ReplyOutcome.Refused when result.Body.Length == 0 && note.Drawings.Count == 0 => "I can't help with that one.",
                 ReplyOutcome.Truncated => result.Body + " …",
-                _ => result.Body.Length > 0 || note.Drawings.Count > 0 ? result.Body : "I couldn't come up with a reply. Try writing it again?",
+                _ when result.Body.Length > 0 => result.Body,
+                _ when note.Drawings.Count > 0 => "",
+                _ when replaced > 0 => "Updated the drawing above.",
+                _ => "I couldn't come up with a reply. Try writing it again?",
             };
             note.Done = true;
             note.Shown = note.Text;
@@ -355,7 +389,7 @@ public sealed class PageSession
         .ToList();
 
     static Turn ToTurn(NoteModel n) =>
-        new(n.Heard.Length > 0 ? n.Heard : "(unclear handwriting)", (n.Text + string.Concat(n.Drawings.Select(d => "\n" + Html.Text(d.Markup)))).Trim());
+        new(n.Heard.Length > 0 ? n.Heard : "(unclear handwriting)", (n.Text + string.Concat(n.Drawings.Select(d => "\n" + Svg.Text(d.Markup)))).Trim());
 
     /// <summary>The first free rule below all the ink and all the replies.</summary>
     double EndOfPage()
@@ -460,6 +494,10 @@ public sealed class PageSession
             if (!_discardOnCancel) _view.RestoreTyped(typed.Text);
         }
         foreach (var s in _view.Strokes()) if (a.Ids.Contains(s.Id)) _pending.Add(s.Id);
+        foreach (var (drawing, edits) in a.TakenEdits)
+            foreach (var (id, entry) in edits)
+                if (!drawing.Edits.ContainsKey(id)) drawing.Edits[id] = entry;
+        a.TakenEdits = new();
     }
 
     // ---------- notes ----------
@@ -499,23 +537,134 @@ public sealed class PageSession
         _view.ContentChanged();
     }
 
-    /// <summary>Adds one of Claude's SVG drawings under the note's words. False when the drawing isn't safe or sensible to show.</summary>
+    /// <summary>Adds one of the model's SVG drawings under the note's words. False when the drawing isn't safe or sensible to show.</summary>
     bool AddDrawing(NoteModel note, string raw)
     {
-        if (note.Drawings.Count >= Html.MaxBlocks || Html.Sanitize(raw) is not { } block) return false;
-        // The view works out its shape when it lays the block out at the page's width.
-        var drawing = new DrawingModel { Markup = block, Alt = Html.Title(block) };
+        if (note.Drawings.Count >= Svg.MaxBlocks || Svg.Sanitize(raw) is not { } block) return false;
+        // The view works out its shape when it lays the drawing out at the page's width.
+        var drawing = new DrawingModel { Markup = block, Alt = Svg.Title(block) };
         note.Drawings.Add(drawing);
         _view.DrawingAdded(note, drawing);
         return true;
     }
 
-    /// <summary>Takes in the drawings of a reply that haven't been added yet.</summary>
+    /// <summary>Takes in the drawings of a reply that haven't been added yet. Those that replace a drawing already on the page wait for <see cref="ReplaceFiguresAsync"/>.</summary>
     void AddNewDrawings(NoteModel note, IReadOnlyList<string>? drawings)
     {
         if (drawings is null) return;
         for (; note.DrawingsSeen < drawings.Count; note.DrawingsSeen++)
-            if (!AddDrawing(note, drawings[note.DrawingsSeen])) _view.Toast("A table or drawing in the answer couldn't be shown.");
+        {
+            var raw = drawings[note.DrawingsSeen];
+            if (Svg.Sanitize(raw) is { } clean && FindFigure(note, Svg.FigureId(clean)) is not null) continue;
+            if (!AddDrawing(note, raw)) _view.Toast("A drawing in the answer couldn\'t be shown.");
+        }
+    }
+
+    /// <summary>The drawing on the page (in another, finished note) whose root has this id.</summary>
+    (NoteModel Note, DrawingModel Drawing)? FindFigure(NoteModel except, string? id)
+    {
+        if (id is null) return null;
+        foreach (var n in _notes)
+        {
+            if (n == except || !n.Done) continue;
+            foreach (var d in n.Drawings)
+                if (Svg.FigureId(d.Markup) == id) return (n, d);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// A drawing in the reply whose id is one already on the page replaces that drawing, where it is (its edits are history now,
+    /// and undo brings the old one back). Returns how many were replaced.
+    /// </summary>
+    async Task<int> ReplaceFiguresAsync(NoteModel note, IReadOnlyList<string> drawings)
+    {
+        int replaced = 0;
+        foreach (var raw in drawings)
+        {
+            if (Svg.Sanitize(raw) is not { } clean || FindFigure(note, Svg.FigureId(clean)) is not { } target) continue;
+            var d = target.Drawing;
+            _undo.Push(new EditedDrawing(target.Note, d, d.Markup, CopyEdits(d.Edits), new Dictionary<string, Box>(d.Boxes)));
+            d.Markup = clean;
+            d.Alt = Svg.Title(clean);
+            d.Edits = new();
+            d.Boxes = new();
+            _view.DrawingChanged(target.Note, d);
+            await RelayoutChangedAsync(target.Note);
+            replaced++;
+        }
+        return replaced;
+    }
+
+    static Dictionary<string, Svg.EditEntry> CopyEdits(Dictionary<string, Svg.EditEntry> edits) => edits.ToDictionary(p => p.Key, p => p.Value.Copy());
+
+    /// <summary>Measures a note again after one of its drawings changed, and makes room (or closes up) below it.</summary>
+    async Task RelayoutChangedAsync(NoteModel note)
+    {
+        double before = note.Span;
+        try { await LayoutAsync(note); }
+        catch (Exception) { return; } // a view that can\'t measure keeps the last layout
+        if (!_notes.Contains(note)) return;
+        if (note.Span != before) ShiftBelow(note.Y + before, note.Span - before, note, new HashSet<uint>());
+    }
+
+    // ---------- the user's edits to drawings ----------
+
+    /// <summary>
+    /// The user moved, turned or deleted parts of a drawing. The screen has already shown it; this writes it into the drawing,
+    /// remembers it for the next Ask (nothing is sent now) and lets Ctrl+Z take it back.
+    /// </summary>
+    /// <param name="boxes">Where every element with an id is now, measured by the screen, in the drawing\'s own coordinates.</param>
+    /// <returns>False when the edit wasn\'t allowed; the screen is then told to show the drawing as it is.</returns>
+    public bool EditDrawing(NoteModel note, DrawingModel drawing, IReadOnlyList<DrawingChange> changes, IReadOnlyDictionary<string, Box> boxes)
+    {
+        if (!_notes.Contains(note) || !note.Drawings.Contains(drawing)) return false;
+        var applied = note.Done && changes.Count > 0 ? Svg.ApplyEdits(drawing.Markup, changes) : null;
+        if (applied is null)
+        {
+            _view.DrawingChanged(note, drawing);
+            return false;
+        }
+        _undo.Push(new EditedDrawing(note, drawing, drawing.Markup, CopyEdits(drawing.Edits), new Dictionary<string, Box>(drawing.Boxes)));
+        foreach (var c in changes)
+        {
+            if (!drawing.Edits.TryGetValue(c.Id, out var entry))
+            {
+                entry = new Svg.EditEntry { First = drawing.Boxes.TryGetValue(c.Id, out var was) ? was : null };
+                drawing.Edits[c.Id] = entry;
+            }
+            if (c.Op == "delete") entry.Deleted = true;
+            else if (c.Op == "rotate") entry.Degrees += c.Degrees;
+        }
+        drawing.Markup = applied;
+        drawing.Boxes = new Dictionary<string, Box>(boxes);
+        UpdateState();
+        ScheduleSave();
+        return true;
+    }
+
+    /// <summary>
+    /// What the model is told of the edits since it last heard: for each edited drawing, the list of changes with their geometry
+    /// and the drawing\'s current source. Takes the edits off the drawings (null when there is nothing to tell).
+    /// </summary>
+    string? TakeEdits(out List<(DrawingModel Drawing, Dictionary<string, Svg.EditEntry> Edits)> taken)
+    {
+        taken = new();
+        var sb = new System.Text.StringBuilder();
+        foreach (var note in _notes.OrderBy(n => n.Y))
+            foreach (var d in note.Drawings)
+            {
+                if (d.Edits.Count == 0) continue;
+                taken.Add((d, d.Edits));
+                var list = Svg.DescribeEdits(d.Markup, d.Edits, d.Boxes);
+                d.Edits = new();
+                if (list is null) continue;
+                var name = Svg.FigureId(d.Markup) is { } id ? $"\"{id}\"" : $"\"{d.Alt}\"";
+                sb.Append($"Drawing {name}:\n{list}\nIts source now:\n{d.Markup}\n\n");
+            }
+        if (sb.Length == 0) return null;
+        return "I changed your drawings by hand since your last reply. (Nothing was changed anywhere else: it is up to you whether it means something should change elsewhere.) "
+            + "Positions are in each drawing\'s own coordinates (its viewBox, x to the right and y down).\n\n" + sb.ToString().TrimEnd();
     }
 
     void ClearDrawings(NoteModel note)
@@ -553,6 +702,14 @@ public sealed class PageSession
                 note.Heard = n.Heard;
                 foreach (var svg in n.Drawings ?? new List<string>()) AddDrawing(note, svg);
                 note.DrawingsSeen = note.Drawings.Count;
+                foreach (var e in n.Edits ?? new List<SavedEdit>())
+                    if (e.Drawing >= 0 && e.Drawing < note.Drawings.Count)
+                        note.Drawings[e.Drawing].Edits[e.Id] = new Svg.EditEntry
+                        {
+                            First = e.First is { Length: 4 } f ? new Box(f[0], f[1], f[2], f[3]) : null,
+                            Deleted = e.Deleted,
+                            Degrees = e.Degrees,
+                        };
                 await LayoutAsync(note);
             }
         else if (_view.Strokes().Count == 0)
@@ -706,6 +863,15 @@ public sealed class PageSession
         if (!_switching) await SaveAsync();
     }
 
+    static List<SavedEdit>? SavedEdits(NoteModel n)
+    {
+        var list = new List<SavedEdit>();
+        for (int i = 0; i < n.Drawings.Count; i++)
+            foreach (var (id, e) in n.Drawings[i].Edits)
+                list.Add(new SavedEdit(i, id, e.First is { } b ? new[] { b.X, b.Y, b.W, b.H } : null, e.Deleted, e.Degrees));
+        return list.Count > 0 ? list : null;
+    }
+
     public async Task SaveAsync()
     {
         await _saveLock.WaitAsync();
@@ -715,7 +881,7 @@ public sealed class PageSession
             _dirty = false;
             var id = _currentId;
             var notes = _notes.Where(n => n.Done)
-                .Select(n => new SavedNote(n.Y, n.Text, n.Heard, n.IsHint, n.Drawings.Count > 0 ? n.Drawings.Select(d => d.Markup).ToList() : null, n.IsTyped))
+                .Select(n => new SavedNote(n.Y, n.Text, n.Heard, n.IsHint, n.Drawings.Count > 0 ? n.Drawings.Select(d => d.Markup).ToList() : null, n.IsTyped, SavedEdits(n)))
                 .ToList();
             await _data.SavePageAsync(id, notes);
 

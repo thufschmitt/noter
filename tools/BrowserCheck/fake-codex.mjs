@@ -18,9 +18,21 @@ http.createServer((req, res) => {
         if (c.type === 'input_image') fs.writeFileSync(outDir + '/sent-' + calls + '-' + (++n) + '.png', Buffer.from(c.image_url.split(',')[1], 'base64'));
     } catch (e) { console.log('parse', e.message); }
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200"><title>A house</title><path d="M50 100 L200 20 L350 100 V180 H50 Z" stroke="currentColor" fill="none" stroke-width="3" stroke-linejoin="round"/><text x="150" y="150" font-family="Ink Free, sans-serif" font-size="20" fill="currentColor">home</text></svg>';
+    fs.writeFileSync(outDir + '/request-' + calls + '.json', body);
+    const board = '<svg id="week" viewBox="0 0 400 200"><title>Your week</title>'
+      + '<rect id="col-todo" x="0" y="0" width="200" height="200" fill="none" stroke="currentColor" stroke-width="2"/>'
+      + '<rect id="col-doing" x="200" y="0" width="200" height="200" fill="none" stroke="currentColor" stroke-width="2"/>'
+      + '<text x="10" y="26" font-size="20" fill="currentColor">To do</text><text x="210" y="26" font-size="20" fill="currentColor">Doing</text>'
+      + '<g id="card-1" data-edit><rect x="20" y="40" width="160" height="50" rx="8" fill="none" stroke="currentColor" stroke-width="2"/><text x="32" y="72" font-size="20" fill="currentColor">Call Anna</text></g>'
+      + '<g id="card-2" data-edit><rect x="20" y="110" width="160" height="50" rx="8" fill="none" stroke="currentColor" stroke-width="2"/><text x="32" y="142" font-size="20" fill="currentColor">Gym</text></g>'
+      + '<script>parent.hacked = true</script></svg>';
     const text = calls === 1
       ? 'HEARD: hello notebook\n---\nHi there! This is the model answering in the notebook, on the ruled lines, in blue handwriting.'
-      : 'HEARD: [a scribble] and a question\n---\nHere is your week, with a sketch.\n<figure aria-label="Your week"><table><tr><th>Day</th><th>Plan</th></tr><tr><td>Mon</td><td>gym</td></tr></table>' + svg + '<script>parent.hacked = true</script></figure>';
+      : body.includes('changed your drawings by hand')
+        ? 'HEARD: [moved the cards]\n---\nMoved it.\n' + board.replace('id="card-1" data-edit><rect x="20"', 'id="card-1" data-edit><rect x="220"')
+        : calls === 2
+          ? 'HEARD: [a scribble] and a question\n---\nHere is your week, with a sketch.\n' + board
+          : 'HEARD: [a scribble] and a question\n---\nHere is your week, with a sketch.\n' + svg;
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     res.write(sse({ type: 'response.created', response: { id: 'resp_' + calls } }));
     res.write(sse({ type: 'response.output_item.added', item: { type: 'message', id: 'msg_' + calls, role: 'assistant', content: [] } }));

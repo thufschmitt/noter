@@ -65,11 +65,20 @@ sealed class FakeView : IPageView
     public void NoteRemoved(NoteModel note) => Visible.Remove(note);
     public void DrawingAdded(NoteModel note, DrawingModel drawing) { }
     public void DrawingsCleared(NoteModel note) { }
+    public readonly List<DrawingModel> Changed = new();
+    public void DrawingChanged(NoteModel note, DrawingModel drawing) => Changed.Add(drawing);
+    public bool CanEdit { get; set; } = true;
+    /// <summary>What the screen would report for the parts of each drawing it measures.</summary>
+    public Func<DrawingModel, Dictionary<string, Box>>? Boxes;
     public async Task MeasureAsync(NoteModel note)
     {
         await Task.Yield(); // a real view may take its time
         note.Lines = Math.Max(note.Drawings.Count > 0 && note.Shown.Length == 0 ? 0 : 1, (int)Math.Ceiling(note.Shown.Length / CharsPerLine));
-        foreach (var d in note.Drawings) d.Lines = 6;
+        foreach (var d in note.Drawings)
+        {
+            d.Lines = 6;
+            if (Boxes is not null && d.Editable) d.Boxes = Boxes(d);
+        }
     }
     public void Place(NoteModel note) { }
     public void ContentChanged() { }
