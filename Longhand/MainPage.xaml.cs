@@ -12,6 +12,7 @@ using Windows.UI.Core;
 using Windows.UI.Input.Inking;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
+using Windows.UI.Xaml.Input;
 using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Media.Imaging;
 using Windows.UI.Xaml.Shapes;
@@ -63,7 +64,10 @@ public sealed partial class MainPage : Page, IPageView
         presenter.UnprocessedInput.PointerPressed += OnLassoPressed;
         presenter.UnprocessedInput.PointerMoved += OnLassoMoved;
         presenter.UnprocessedInput.PointerReleased += OnLassoReleased;
+        presenter.UnprocessedInput.PointerLost += OnLassoLost;
         Sheet.Tapped += Sheet_Tapped;
+        // Handled or not: the page follows the pointer to know whether the pen is over what takes hold of a selected part.
+        Sheet.AddHandler(PointerMovedEvent, new PointerEventHandler(Sheet_PointerMoved), true);
         BuildEditOverlay();
 
         _toastTimer.Tick += (_, _) => { _toastTimer.Stop(); ToastBox.Visibility = Visibility.Collapsed; };

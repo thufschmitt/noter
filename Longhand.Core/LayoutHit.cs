@@ -18,12 +18,12 @@ public readonly record struct HitRect(double Left, double Top, double Right, dou
 /// <summary>
 /// What turns a pointer into a change of a layout, as plain arithmetic on rectangles: which container a drop lands in and at which
 /// place, which time it lands on a timeline, which parts a lasso takes. The Windows page uses it over real controls; the web page
-/// has the same rules in <c>app.js</c> (the numbers here are what its checks expect).
+/// has the same rules in <c>app.js</c> (the checks here pin the numbers down; the web page's browser checks pin its own).
 /// </summary>
 public static class LayoutHit
 {
-    /// <summary>A time brought to the nearest step of <see cref="Layout.SnapMinutes"/>.</summary>
-    public static int Snap(double minutes) => (int)Math.Round(minutes / Layout.SnapMinutes) * Layout.SnapMinutes;
+    /// <summary>A time brought to the nearest step of <see cref="Layout.SnapMinutes"/>; halfway goes up, as the web page's Math.round does.</summary>
+    public static int Snap(double minutes) => (int)Math.Round(minutes / Layout.SnapMinutes, MidpointRounding.AwayFromZero) * Layout.SnapMinutes;
 
     /// <summary>The time (in minutes since midnight, not snapped) at a height, on a grid that starts at <paramref name="gridTop"/> with <paramref name="fromMinutes"/> at its top.</summary>
     public static double MinutesAt(double y, double gridTop, int fromMinutes, double pxPerHour = Layout.PxPerHour) =>
@@ -85,7 +85,7 @@ public static class LayoutHit
 
     /// <summary>True when every point of a stroke stays within <paramref name="size"/> of its first: a tap, not a line.</summary>
     public static bool IsTap(IReadOnlyList<(double X, double Y)> points, double size = 5) =>
-        points.Count > 0 && points.All(p => Math.Abs(p.X - points[0].X) < size && Math.Abs(p.Y - points[0].Y) < size);
+        points.Count > 0 && points.All(p => double.Hypot(p.X - points[0].X, p.Y - points[0].Y) < size);
 
     // ----- where a timeline puts things -----
 

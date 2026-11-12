@@ -91,7 +91,7 @@ static class NativeChecks
             && Layout.ResolveColor("#abc", false) is (0xAA, 0xBB, 0xCC) && Layout.ResolveColor("mauve", false) is null && Layout.ResolveColor(null, false) is null && Layout.ResolveColor("", true) is null);
 
         // ----- dropping on a layout: the arithmetic -----
-        check("times snap to a quarter of an hour", LayoutHit.Snap(7) == 0 && LayoutHit.Snap(8) == 15 && LayoutHit.Snap(547) == 540 && LayoutHit.Snap(548) == 555 && LayoutHit.Snap(-4) == 0);
+        check("times snap to a quarter of an hour", LayoutHit.Snap(7) == 0 && LayoutHit.Snap(8) == 15 && LayoutHit.Snap(547) == 540 && LayoutHit.Snap(548) == 555 && LayoutHit.Snap(-4) == 0 && LayoutHit.Snap(7.5) == 15 && LayoutHit.Snap(37.5) == 45);
         check("a height on the grid is a time", Near(LayoutHit.MinutesAt(164, 100, 480), 480 + 60) && Near(LayoutHit.MinutesAt(100, 100, 480), 480) && Near(LayoutHit.MinutesAt(132, 100, 480), 510));
         check("it starts at nine when its top edge is an hour down a grid that starts at eight", LayoutHit.StartFor(164, 100, 480, 60) == 540 && LayoutHit.StartFor(-500, 100, 480, 60) == 0 && LayoutHit.StartFor(5000, 100, 480, 30) == 1410 && LayoutHit.StartFor(5000, 100, 480, 0) == 1425);
         check("an end follows the pointer, a step at a time, never before the start or past the day", LayoutHit.EndFor(228, 100, 480, 540) == 600);
@@ -106,7 +106,8 @@ static class NativeChecks
         var loop = new[] { (0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0) };
         check("a point is in a polygon or it is not", LayoutHit.InsidePolygon(50, 50, loop) && !LayoutHit.InsidePolygon(150, 50, loop) && !LayoutHit.InsidePolygon(50, -1, loop) && LayoutHit.InsidePolygon(5, 95, loop));
         check("a lasso takes what it mostly encloses", LayoutHit.MostlyInside(new HitRect(10, 10, 60, 60), loop) && LayoutHit.MostlyInside(new HitRect(60, 10, 120, 60), loop) && !LayoutHit.MostlyInside(new HitRect(90, 10, 190, 60), loop) && !LayoutHit.MostlyInside(new HitRect(10, 10, 60, 60), new[] { (0.0, 0.0), (1.0, 1.0) }));
-        check("a tap stays within five pixels of where it began", LayoutHit.IsTap(new[] { (10.0, 10.0), (12.0, 11.0), (10.5, 9.0) }) && !LayoutHit.IsTap(new[] { (10.0, 10.0), (20.0, 10.0) }) && !LayoutHit.IsTap(Array.Empty<(double, double)>()));
+        check("a tap stays within five pixels of where it began", LayoutHit.IsTap(new[] { (10.0, 10.0), (12.0, 11.0), (10.5, 9.0) }) && !LayoutHit.IsTap(new[] { (10.0, 10.0), (20.0, 10.0) }) && !LayoutHit.IsTap(Array.Empty<(double, double)>())
+            && !LayoutHit.IsTap(new[] { (10.0, 10.0), (14.0, 14.0) }) && LayoutHit.IsTap(new[] { (10.0, 10.0), (13.0, 13.0) })); // a circle of five, as on the web
 
         // ----- where a timeline puts things -----
         check("a time is a height on the grid, 64 pixels to the hour", Near(LayoutHit.TimelineY(540, 480), 64) && Near(LayoutHit.TimelineY(480, 480), 0) && Near(LayoutHit.TimelineY(1080, 480), 640));

@@ -6,6 +6,7 @@ using Windows.Devices.Input;
 using Windows.Foundation;
 using Windows.UI;
 using Windows.UI.Core;
+using Windows.UI.Input;
 using Windows.UI.Input.Inking;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
@@ -35,6 +36,8 @@ public sealed partial class MainPage
         public required FrameworkElement Element;
         public required HitRect Rect;
         public FrameworkElement? Ghost;
+        /// <summary>Where the copy that follows the pointer starts (it is the part's own size, so it isn't where the turned part's bounds are).</summary>
+        public double GhostX, GhostY;
     }
 
     /// <summary>Where a dragged part would land: a container and a place in it, or a time on a timeline.</summary>
@@ -67,10 +70,11 @@ public sealed partial class MainPage
         public int End, OriginalEnd;
     }
 
-    const double Pad = 6, KnobSize = 26;
+    /// <summary>Padding round a selected part; a knob's size; how far in and out of the frame's line the pen can take hold of it.</summary>
+    const double Pad = 6, KnobSize = 26, EdgeBand = 9;
 
-    Rectangle _frame = null!, _dropMark = null!;
-    Border _knobRotate = null!, _knobDelete = null!, _knobResize = null!;
+    Rectangle _frame = null!, _edge = null!, _dropMark = null!;
+    Border _knobRotate = null!, _knobDelete = null!, _knobResize = null!, _knobMove = null!;
     Border _dropLabel = null!;
     TextBlock _dropLabelText = null!;
     Polyline _lasso = null!;
@@ -100,10 +104,16 @@ public sealed partial class MainPage
         }
         catch (Exception ex)
         {
+            var failed = _drag;
             _drag = null;
             try
             {
+                failed?.Source.ReleasePointerCapture(failed.Pointer);
                 while (EditLayer.Children.Count > _overlayCount) EditLayer.Children.RemoveAt(EditLayer.Children.Count - 1);
+                ShowDropMark(null);
+                _lasso.Visibility = Visibility.Collapsed;
+                _lasso.Points.Clear();
+                _lassoPoints = null;
                 ClearSelection();
                 RebuildDrawings();
             }
@@ -148,14 +158,28 @@ public sealed partial class MainPage
     }
 
     /// <summary>
-    /// While the pointer is over the frame or a knob the ink presenter is switched off, so that a pen pressed there grabs the part
-    /// instead of writing (whether or not the presenter would have let a control above it have the input).
+    /// Where the pen takes hold of the selected part: its knobs, and the band along the frame's line (not the inside, so that the pen
+    /// still writes, or taps another part, inside a big frame). The ink presenter is switched off only while the pointer is over one,
+    /// so that a press there grabs instead of writing.
     /// </summary>
-    void UpdateInkEnabled(Point? pointer)
+    bool OnGrab(Point p)
     {
-        bool over = pointer is { } p && _frame.Visibility == Visibility.Visible
-            && (OverElement(_frame, p, 0) || OverElement(_knobRotate, p, 4) || OverElement(_knobDelete, p, 4) || OverElement(_knobResize, p, 4));
-        Ink.InkPresenter.IsInputEnabled = !over;
+        if (_frame.Visibility != Visibility.Visible) return false;
+        if (OverElement(_knobRotate, p, 4) || OverElement(_knobDelete, p, 4) || OverElement(_knobResize, p, 4) || OverElement(_knobMove, p, 4)) return true;
+        double x = Canvas.GetLeft(_frame), y = Canvas.GetTop(_frame);
+        var line = new HitRect(x, y, x + _frame.Width, y + _frame.Height);
+        return line.Contains(p.X, p.Y, EdgeBand) && !line.Contains(p.X, p.Y, -EdgeBand);
+    }
+
+    /// <summary>
+    /// Switches the ink presenter off while the pen is over somewhere it takes hold, and on everywhere else. The pen's barrel button and
+    /// its eraser end are not for taking hold (they lasso and erase), so they never switch it off.
+    /// </summary>
+    void UpdateInkEnabled(PointerPoint point)
+    {
+        var props = point.Properties;
+        bool grabs = !(props.IsBarrelButtonPressed || props.IsRightButtonPressed || props.IsEraser);
+        Ink.InkPresenter.IsInputEnabled = _drag is not null || !(grabs && OnGrab(point.Position));
     }
 
     static bool OverElement(FrameworkElement e, Point p, double tolerance)
@@ -165,16 +189,29 @@ public sealed partial class MainPage
         return new HitRect(x, y, x + e.Width, y + e.Height).Contains(p.X, p.Y, tolerance);
     }
 
+    /// <summary>The pointer left, or was lost: writing is back on (a neighbouring knob that it entered switches it off again). Its last position can't be trusted, as a pen going out of range leaves it over the frame.</summary>
+    void InkBack()
+    {
+        if (_drag is null) Ink.InkPresenter.IsInputEnabled = true;
+    }
+
     void Wire(UIElement element, DragKind kind)
     {
-        element.PointerEntered += (_, e) => Safe(() => UpdateInkEnabled(e.GetCurrentPoint(Sheet).Position));
-        element.PointerExited += (_, e) => Safe(() => { if (_drag is null) UpdateInkEnabled(e.GetCurrentPoint(Sheet).Position); });
+        element.PointerEntered += (_, e) => Safe(() => UpdateInkEnabled(e.GetCurrentPoint(Sheet)));
+        element.PointerExited += (_, _) => Safe(InkBack);
         element.PointerPressed += (_, e) => Safe(() => BeginDrag(e, kind, element));
         element.PointerMoved += (s, e) => Safe(() => Drag_PointerMoved(s, e));
         element.PointerReleased += (_, e) => Safe(() => EndDrag(e, cancelled: false));
-        element.PointerCanceled += (_, e) => Safe(() => EndDrag(e, cancelled: true));
-        element.PointerCaptureLost += (_, e) => Safe(() => EndDrag(e, cancelled: true));
+        element.PointerCanceled += (_, e) => Safe(() => { EndDrag(e, cancelled: true); InkBack(); });
+        element.PointerCaptureLost += (_, e) => Safe(() => { EndDrag(e, cancelled: true); InkBack(); });
     }
+
+    /// <summary>The pointer moves anywhere on the page: the switch follows where it is, so it can never be left off.</summary>
+    void Sheet_PointerMoved(object sender, PointerRoutedEventArgs e) => Safe(() =>
+    {
+        if (_selected is null || _drag is not null) return;
+        UpdateInkEnabled(e.GetCurrentPoint(Sheet));
+    });
 
     void BuildEditOverlay()
     {
@@ -182,7 +219,8 @@ public sealed partial class MainPage
         _dropMark = new Rectangle { Fill = _claudeInk, RadiusX = 2, RadiusY = 2, IsHitTestVisible = false, Visibility = Visibility.Collapsed };
         _dropLabelText = new TextBlock { Foreground = _claudeInk, FontSize = 12 };
         _dropLabel = new Border { Background = _paper, Padding = new Thickness(4, 0, 4, 0), CornerRadius = new CornerRadius(3), Child = _dropLabelText, IsHitTestVisible = false, Visibility = Visibility.Collapsed };
-        // The frame is filled (with nothing) so that the pen lands on it and grabs the part instead of writing.
+        // The frame is only a drawing. What takes hold of the part is the band along its line (an invisible stroke, with no fill, so
+        // the inside of the frame still belongs to the ink) and the knobs.
         _frame = new Rectangle
         {
             Stroke = _claudeInk,
@@ -190,15 +228,22 @@ public sealed partial class MainPage
             StrokeDashArray = new DoubleCollection { 4, 3 },
             RadiusX = 4,
             RadiusY = 4,
-            Fill = new SolidColorBrush(Colors.Transparent),
+            IsHitTestVisible = false,
+            Visibility = Visibility.Collapsed,
+        };
+        _edge = new Rectangle
+        {
+            Stroke = new SolidColorBrush(Colors.Transparent),
+            StrokeThickness = EdgeBand * 2,
             Visibility = Visibility.Collapsed,
             ManipulationMode = ManipulationModes.None,
         };
-        Wire(_frame, DragKind.Move);
+        Wire(_edge, DragKind.Move);
         _knobRotate = Knob("\u21BB", "Turn", DragKind.Rotate);
         _knobDelete = Knob("\u00D7", "Delete", DragKind.Delete);
         _knobResize = Knob("\u2195", "Change the end", DragKind.Resize);
-        foreach (var e in new UIElement[] { _lasso, _dropMark, _dropLabel, _frame, _knobRotate, _knobDelete, _knobResize }) EditLayer.Children.Add(e);
+        _knobMove = Knob("\u2725", "Move", DragKind.Move);
+        foreach (var e in new UIElement[] { _lasso, _dropMark, _dropLabel, _frame, _edge, _knobRotate, _knobDelete, _knobResize, _knobMove }) EditLayer.Children.Add(e);
         _overlayCount = EditLayer.Children.Count;
     }
 
@@ -282,7 +327,7 @@ public sealed partial class MainPage
         if (_drag is not null) AbortDrag();
         _selected = null;
         _selectedIds.Clear();
-        foreach (var e in new UIElement[] { _frame, _knobRotate, _knobDelete, _knobResize }) e.Visibility = Visibility.Collapsed;
+        foreach (var e in new UIElement[] { _frame, _edge, _knobRotate, _knobDelete, _knobResize, _knobMove }) e.Visibility = Visibility.Collapsed;
         Ink.InkPresenter.IsInputEnabled = true;
     }
 
@@ -319,6 +364,9 @@ public sealed partial class MainPage
         var nodes = SelectedNodes();
         PlaceAt(_frame, r.Left, r.Top, r.Width, r.Height);
         _frame.Visibility = Visibility.Visible;
+        PlaceAt(_edge, r.Left - EdgeBand, r.Top - EdgeBand, r.Width + EdgeBand * 2, r.Height + EdgeBand * 2);
+        _edge.Visibility = Visibility.Visible;
+        PlaceKnob(_knobMove, r.Left, r.Top, true);
         PlaceKnob(_knobRotate, r.CenterX, r.Top - 30, CanRotateSelection(nodes));
         PlaceKnob(_knobDelete, r.Right, r.Top, true);
         PlaceKnob(_knobResize, r.CenterX, r.Bottom, CanResizeSelection(nodes));
@@ -356,7 +404,7 @@ public sealed partial class MainPage
         if (EditableAt(points[0].X, points[0].Y) is not { } hit) return false;
         stroke.Selected = true;
         Strokes.DeleteSelected();
-        Select(hit.Visual, new[] { hit.Node });
+        Safe(() => Select(hit.Visual, new[] { hit.Node })); // the stroke is gone either way: it was a tap
         return true;
     }
 
@@ -371,13 +419,16 @@ public sealed partial class MainPage
     {
         if (e.PointerDeviceType != PointerDeviceType.Touch) return;
         var p = e.GetPosition(Sheet);
+        if (OnGrab(p)) return;
         if (!SelectAt(p.X, p.Y)) ClearSelection();
     });
 
     void OnWindowKeyDown(CoreWindow sender, KeyEventArgs args) => Safe(() =>
     {
-        if (_selected is null || FocusManager.GetFocusedElement() is TextBox or PasswordBox) return;
-        if (args.VirtualKey is Windows.System.VirtualKey.Delete or Windows.System.VirtualKey.Back)
+        if (_selected is null || FocusManager.GetFocusedElement() is TextBox or PasswordBox or RichEditBox or ComboBox or ListViewBase) return;
+        bool modified = new[] { Windows.System.VirtualKey.Control, Windows.System.VirtualKey.Shift, Windows.System.VirtualKey.Menu }
+            .Any(k => sender.GetKeyState(k).HasFlag(CoreVirtualKeyStates.Down));
+        if (args.VirtualKey is Windows.System.VirtualKey.Delete or Windows.System.VirtualKey.Back && !modified)
         {
             args.Handled = true;
             DeleteSelection();
@@ -412,6 +463,13 @@ public sealed partial class MainPage
     });
 
     void OnLassoReleased(InkUnprocessedInput sender, PointerEventArgs args) => Safe(EndLasso);
+
+    void OnLassoLost(InkUnprocessedInput sender, PointerEventArgs args) => Safe(() =>
+    {
+        _lassoPoints = null;
+        _lasso.Visibility = Visibility.Collapsed;
+        _lasso.Points.Clear();
+    });
 
     void EndLasso()
     {
@@ -483,12 +541,16 @@ public sealed partial class MainPage
         foreach (var item in drag.Items)
         {
             var ghost = LayoutXaml.BuildPart(item.Node, style);
-            ghost.Width = item.Rect.Width;
-            ghost.Height = item.Rect.Height;
+            double w = item.Element.ActualWidth, h = item.Element.ActualHeight;
+            ghost.Width = w;
+            ghost.Height = h;
             ghost.Opacity = 0.7;
             ghost.IsHitTestVisible = false;
-            Canvas.SetLeft(ghost, item.Rect.Left);
-            Canvas.SetTop(ghost, item.Rect.Top);
+            // Its own size (it turns itself, if the part is turned), centred where the part's bounds are.
+            item.GhostX = item.Rect.CenterX - w / 2;
+            item.GhostY = item.Rect.CenterY - h / 2;
+            Canvas.SetLeft(ghost, item.GhostX);
+            Canvas.SetTop(ghost, item.GhostY);
             EditLayer.Children.Add(ghost);
             item.Ghost = ghost;
             item.Element.Opacity = 0.35;
@@ -506,8 +568,8 @@ public sealed partial class MainPage
                 double dx = p.X - d.Start.X, dy = p.Y - d.Start.Y;
                 foreach (var item in d.Items)
                 {
-                    Canvas.SetLeft(item.Ghost, item.Rect.Left + dx);
-                    Canvas.SetTop(item.Ghost, item.Rect.Top + dy);
+                    Canvas.SetLeft(item.Ghost, item.GhostX + dx);
+                    Canvas.SetTop(item.Ghost, item.GhostY + dy);
                 }
                 d.Drop = ComputeDrop(d, built, p, dy);
                 ShowDropMark(d.Drop);
@@ -540,6 +602,8 @@ public sealed partial class MainPage
                     item.Element.RenderTransform = new RotateTransform { Angle = item.Node.Rot + d.Degrees };
                 }
                 d.Moved |= Math.Abs(d.Degrees) > 0.5;
+                var turned = d.Items.Select(i => PageRect(i.Element)).ToList();
+                PlaceFrame(new HitRect(turned.Min(r => r.Left) - Pad, turned.Min(r => r.Top) - Pad, turned.Max(r => r.Right) + Pad, turned.Max(r => r.Bottom) + Pad));
                 break;
             }
         }
@@ -553,7 +617,7 @@ public sealed partial class MainPage
         d.Source.ReleasePointerCapture(e.Pointer);
         var p = e.GetCurrentPoint(Sheet).Position;
         FinishDrag(d, p, cancelled);
-        UpdateInkEnabled(p); // still over the frame (it was repositioned or rebuilt): the pen is still for grabbing
+        Ink.InkPresenter.IsInputEnabled = true; // the next move of the pen over the page decides again, with the frame where it is by then
         e.Handled = true;
     }
 
