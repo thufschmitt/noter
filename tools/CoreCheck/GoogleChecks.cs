@@ -73,6 +73,8 @@ static class GoogleChecks
         check("each event has an id that names its calendar, and a repeating one says so", agenda.Contains("{id: me@example.com|e1}") && agenda.Contains("Weekly sync [Personal] (repeats) {id: me@example.com|e3_20261111T100000Z}"));
         var week = await events.RunAsync(Args("""{"start":"2026-11-19","end":"2026-11-23"}"""), default);
         check("an all-day event is shown with its days", week.Contains("all day until Sat 21 Nov Trip") || week.Contains("all day until") && week.Contains("Trip"));
+        check("the agenda ends with a reminder to show the events on a timeline, and the tool says so too", agenda.EndsWith("Don't list them in words.)") && events.Definition.Description.Contains("put them on a timeline")
+            && !(await events.RunAsync(Args("""{"start":"2030-01-01","end":"2030-01-01"}"""), default)).Contains("timeline"));
         check("the search narrows it", !(await events.RunAsync(Args("""{"start":"2026-11-11","end":"2026-11-11","search":"plan"}"""), default)).Contains("Standup"));
         check("every request carried the token, and the time range was asked for", google.Requests.Where(r => r.Path.Contains("/events")).All(r => r.Headers["Authorization"].StartsWith("Bearer access-g")) && google.Requests.Any(r => r.Query.Contains("singleEvents=true") && r.Query.Contains("timeMin=2026-11-11T00%3A00%3A00%2B01%3A00")));
 

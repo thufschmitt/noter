@@ -12,6 +12,14 @@ public static class CalendarText
     const int MaxEvents = 80;
     const int MaxDescription = 160;
 
+    /// <summary>
+    /// A reminder placed after an agenda, where the model reads it just before it writes its reply: events are shown on a timeline,
+    /// not listed in words. Nothing is added when there were no events.
+    /// </summary>
+    public static string WithTimelineHint(string agenda) => agenda.EndsWith("None found.", StringComparison.Ordinal)
+        ? agenda
+        : agenda + "\n\n(If you show these events to the user, put them on a timeline: one timeline col per day, each event a box with its time of day as start and end in HH:MM. Don't list them in words.)";
+
     public static string Agenda(IReadOnlyList<CalendarEvent> events, DateTimeOffset from, DateTimeOffset to, TimeZoneInfo zone, string? search)
     {
         var culture = CultureInfo.InvariantCulture;

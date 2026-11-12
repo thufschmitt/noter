@@ -191,7 +191,8 @@ public sealed class CalendarTool : IAgentTool
         "Reads the user's calendar from their Nextcloud server. Use it for questions about their schedule, availability, " +
         "upcoming or past events, or when something is on, and to find an event before changing or deleting it. Returns the " +
         "events in the range, grouped by day, each with its time, title, calendar, location, whether it repeats, and its " +
-        "{id: …}. Times are in the user's own time zone. Ask for a short range (a day or a week) unless the question needs " +
+        "{id: …}. Times are in the user's own time zone. To show the events to the user, put them on a timeline in a layout " +
+        "(see your instructions), not in a list of words. Ask for a short range (a day or a week) unless the question needs " +
         "more; the longest range is about three months.",
         new Dictionary<string, JsonElement>
         {
@@ -218,7 +219,7 @@ public sealed class CalendarTool : IAgentTool
 
         _c.RequireCalendars();
         var events = await _c.Nextcloud.EventsAsync(_c.Account, start, end, _c.Zone, ct, _c.Only);
-        return CalendarText.Agenda(events, start, end, _c.Zone, CalendarContext.Text(input, "search"));
+        return CalendarText.WithTimelineHint(CalendarText.Agenda(events, start, end, _c.Zone, CalendarContext.Text(input, "search")));
     }
 }
 

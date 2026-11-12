@@ -99,8 +99,10 @@ static class AgentChecks
             var tool = new CalendarTool(nc, account, Plus1, () => from);
             var text = await tool.RunAsync(Args("""{"start":"2026-11-11","end":"2026-11-11"}"""), default);
             check("the tool returns the day's agenda", text.Contains("Standup, daily") && text.Contains("Conference") && text.Contains("(test+1)"));
+            check("with a reminder, just before the model writes its reply, to show the events on a timeline", text.EndsWith("Don't list them in words.)") && text.Contains("put them on a timeline") && tool.Definition.Description.Contains("put them on a timeline"));
             var report = server.Requests.Last(q => q.Method == "REPORT");
             check("the query asks the server to expand repeats for exactly that day", report.Body.Contains("expand start=\"20261110T230000Z\" end=\"20261111T230000Z\""));
+            check("and none when there is nothing to show", !(await tool.RunAsync(Args("""{"start":"2026-11-11","end":"2026-11-11","search":"zzz-no-such-event"}"""), default)).Contains("timeline"));
             check("every request carried the app password", server.Requests.Where(q => q.Method is "PROPFIND" or "REPORT").All(q => q.Headers["Authorization"].StartsWith("Basic ")));
 
             var asked = server.Requests.Count;
@@ -228,6 +230,12 @@ static class AgentChecks
         check("an item outside the range widens it to whole hours", Layout.RangeOf(Layout.Find(late, "a")!) == (420, 840));
         check("with no range the items set it, and with nothing it is a working day", Layout.RangeOf(Layout.Parse(Layout.Sanitize("<layout><col id=\"a\" timeline><box start=\"9:20\" end=\"10:40\">x</box></col></layout>")!)!.Descendants().First(d => d.Id == "a")) == (540, 660)
             && Layout.RangeOf(Layout.Parse(Layout.Sanitize("<layout><col id=\"a\" timeline><box>x</box></col></layout>")!)!.Descendants().First(d => d.Id == "a")) == (480, 1080));
+        bool Minutes(string? t, out int m) => Layout.TryMinutes(t, out m);
+        check("times are taken as calendars and people write them: a date-time with seconds and a zone, am and pm, an hour with am", Minutes("2026-11-12T09:30:00+01:00", out var iso) && iso == 570 && Minutes("2026-11-12 09:30:00Z", out var spaced) && spaced == 570
+            && Minutes("9:30 pm", out var pm) && pm == 1290 && Minutes("9am", out var am) && am == 540 && Minutes("12am", out var midnight) && midnight == 0 && Minutes("12:30 PM", out var noon) && noon == 750 && Minutes("7:05", out var plain) && plain == 425 && Minutes("24:00", out var end) && end == 1440);
+        check("and what isn't a time of day is not", !Minutes("9", out _) && !Minutes("2026-11-12", out _) && !Minutes("soon", out _) && !Minutes("25:00", out _) && !Minutes("9:60", out _) && !Minutes("13:00 pm", out _) && !Minutes("0am", out _) && !Minutes("24:30", out _) && !Minutes("", out _) && !Minutes(null, out _));
+        var copied = Layout.Sanitize("<layout><col id=\"d\" timeline><box start=\"2026-11-12T09:00:00+01:00\" end=\"2026-11-12T09:30:00+01:00\">Standup</box><box start=\"2:15 PM\">Call</box></col></layout>")!;
+        check("a model that copies the times it was given still gets them placed, as HH:MM", copied.Contains("<box id=\"") is false && copied.Contains("<box start=\"09:00\" end=\"09:30\">Standup</box>") && copied.Contains("<box start=\"14:15\">Call</box>"));
         var dayHtml = Blocks.Document(day);
         var dayBody = dayHtml[dayHtml.IndexOf("<body>")..];
         check("the hours are a grid as tall as the range, which says where it starts so a drop can be turned back into a time", dayBody.Contains("<div class=\"tl\" data-from=\"480\" data-to=\"1080\" data-ph=\"64\" style=\"height:640px\">"));

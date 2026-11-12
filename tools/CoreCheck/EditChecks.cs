@@ -48,6 +48,16 @@ static class EditChecks
         var board = note.Drawings.Single();
         check("the model's layout is on the page, editable, in its canonical form", board.Editable && Blocks.FigureId(board.Markup) == "board" && note.Text == "Here it is." && board.Markup.Contains("<col id=\"doing\" title=\"Doing\" drop/>") && board.Alt == "Week");
         check("the model was told the user can edit, and how", LastBody().Contains("Layouts can be interactive") && LastBody().Contains("edit on a part"));
+        var told = LastBody();
+        var agendaExample = System.Text.RegularExpressions.Regex.Match(told, "<layout id=\"agenda\".*?</layout>", System.Text.RegularExpressions.RegexOptions.Singleline).Value;
+        var agendaTree = Layout.Parse(Layout.Sanitize(agendaExample) ?? "<layout/>");
+        check("the model is told, in its own bullet, to put any agenda or schedule on a timeline, never in words, a table or a picture", told.Contains("Agendas and schedules: whenever you show the user events or a plan with times") && told.Contains("Do not write it as a list in words, a table or a picture") && told.Contains("an agenda or schedule) write a layout") && told.Contains("events and schedules always go on a timeline"));
+        check("it is told the time format exactly, and that the page does the placing", told.Contains("HH:MM, and nothing else (no date, no seconds, no am/pm, no time zone)") && told.Contains("so you never write sizes or positions") && told.Contains("After reading the calendar with a tool, put what it returned on a timeline"));
+        check("its example is a complete layout that works: two days, three timed events, the hours shared", agendaTree is not null && agendaTree.Descendants().Count(d => d.Tag == "col" && d.Has("timeline")) == 2 && agendaTree.Descendants().Count(d => Layout.TimesOf(d) is not null) == 3
+            && Blocks.Document(Layout.Sanitize(agendaExample)!).Contains("data-from=\"480\"") && Blocks.Document(Layout.Sanitize(agendaExample)!).Contains("fg-blue"));
+        var editExample = Layout.Sanitize("<layout><col id=\"thu\" timeline=\"08:00-18:00\" drop><box id=\"e1\" edit start=\"09:00\" end=\"09:30\">Standup</box></col></layout>")!;
+        check("where editing is possible it is told to make agenda events editable by default, and how to find an event again", told.Contains("make its boxes edit and its cols drop by default") && told.Contains("<col id=\"thu\" timeline=\"08:00-18:00\" drop><box id=\"e1\" edit start=\"09:00\" end=\"09:30\">Standup</box></col>")
+            && told.Contains("find the event again in the calendar by its title and old time") && Blocks.IsEditable(editExample));
         check("the history shows the layout as it is", session.History().Last().Reply.Contains("<box id=\"c1\" edit>Call Anna</box>"));
         check("nothing has been edited, so there is nothing more to ask", !session.HasEdits && !view.State.CanAsk);
 
@@ -157,5 +167,6 @@ static class EditChecks
         session.StrokesCollected(new[] { again });
         await session.AskAsync();
         check("the model is told not to offer editing when the screen can't", LastBody().Contains("cannot select, move, turn or delete") && !LastBody().Contains("Layouts can be interactive"));
+        check("but is still told to put agendas on a timeline, without editing", LastBody().Contains("Agendas and schedules: whenever you show") && !LastBody().Contains("make its boxes edit and its cols drop by default"));
     }
 }

@@ -90,17 +90,37 @@ public static class Layout
 
     /// <summary>A timeline column draws this many pixels to the hour; items snap to this many minutes (the page does, when dragging); an item with no end lasts this long.</summary>
     public const int PxPerHour = 64, SnapMinutes = 15, DefaultMinutes = 60, DayMinutes = 1440;
-    static readonly Regex TimeRule = new(@"^(\d{1,2}):(\d{2})$", RegexOptions.Compiled);
+    // Times as calendars write them are taken too, since a model copies what it was given: 2026-11-12T09:30:00+01:00, 9:30 pm, 9am.
+    // Only the time of day counts (an hour with am or pm needs 1 to 12); a column is a day, and the zone is the user's own.
+    static readonly Regex TimeRule = new(@"^(?:\d{4}-\d{2}-\d{2}[T ])?(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?\s*(?<ampm>[ap]\.?m\.?)?\s*(?:Z|[+-]\d{2}(?::?\d{2})?)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    static readonly Regex HourOnlyRule = new(@"^(\d{1,2})\s*(?<ampm>[ap]\.?m\.?)$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     static readonly Regex RangeRule = new(@"^(\d{1,2})(?::(\d{2}))?\s*[-–]\s*(\d{1,2})(?::(\d{2}))?$", RegexOptions.Compiled);
 
-    /// <summary>Minutes since midnight from <c>H:MM</c> or <c>HH:MM</c> (24:00 is the end of the day); false for anything else.</summary>
+    /// <summary>
+    /// Minutes since midnight from <c>H:MM</c> or <c>HH:MM</c> (24:00 is the end of the day), also as a calendar or a person writes it
+    /// (<c>2026-11-12T09:30:00+01:00</c>, <c>9:30 pm</c>, <c>9am</c>); false for anything else.
+    /// </summary>
     public static bool TryMinutes(string? text, out int minutes)
     {
         minutes = 0;
-        var m = TimeRule.Match((text ?? "").Trim());
-        if (!m.Success) return false;
-        int hours = int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture), mins = int.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture);
-        if (mins > 59 || hours > 24 || (hours == 24 && mins != 0)) return false;
+        var trimmed = (text ?? "").Trim();
+        var m = TimeRule.Match(trimmed);
+        int hours, mins = 0;
+        if (m.Success)
+        {
+            hours = int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
+            mins = int.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture);
+        }
+        else if ((m = HourOnlyRule.Match(trimmed)).Success) hours = int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
+        else return false;
+        if (mins > 59) return false;
+        var ampm = m.Groups["ampm"].Value;
+        if (ampm.Length > 0)
+        {
+            if (hours is < 1 or > 12) return false;
+            hours = hours % 12 + (char.ToLowerInvariant(ampm[0]) == 'p' ? 12 : 0);
+        }
+        if (hours > 24 || (hours == 24 && mins != 0)) return false;
         minutes = hours * 60 + mins;
         return true;
     }
