@@ -196,8 +196,15 @@ await sleep(1200);
 check('the standup sits at nine, as tall as its hour, and the hours are written once', await evaluate(`(() => { const doc = frameDoc(firstDrawing()), tl = doc.querySelector('.tl'), e = doc.getElementById('e1').getBoundingClientRect(), t = tl.getBoundingClientRect(); return Math.round(e.top - t.top) === 64 && Math.round(e.height) === 62 && doc.querySelectorAll('.tl-label').length === 11 && doc.querySelector('.tl-label').textContent === '08:00'; })()`));
 check('overlapping items share the width side by side, and the hours line up between the days', await evaluate(`(() => { const doc = frameDoc(firstDrawing()), a = doc.getElementById('e2').getBoundingClientRect(), b = doc.getElementById('e3').getBoundingClientRect(), t = doc.querySelectorAll('.tl'); return a.right <= b.left + 1 && Math.abs(a.width - b.width) < 2 && a.top < b.bottom && b.top < a.bottom && Math.abs(t[0].getBoundingClientRect().top - t[1].getBoundingClientRect().top) < 1 && Math.abs(t[0].getBoundingClientRect().height - t[1].getBoundingClientRect().height) < 1; })()`));
 await shot('4f-timeline');
+// A tap that takes more than 400ms is ink, and a screenshot can leave the page busy for a while on a slow machine: let it settle,
+// and tap again (after the dot of ink it would have left stops counting as writing) if the first tap didn't take.
+await sleep(1200);
 let [tcx, tcy] = await onScreen('#e1');
-await mouse('mousePressed', tcx, tcy, 'pen'); await mouse('mouseReleased', tcx, tcy, 'pen');
+for (let attempt = 0; attempt < 3 && !(await evaluate(`!!selection`)); attempt++) {
+  if (attempt > 0) { await sleep(1300); [tcx, tcy] = await onScreen('#e1'); }
+  await mouse('mousePressed', tcx, tcy, 'pen'); await mouse('mouseReleased', tcx, tcy, 'pen');
+  await until(`!!selection`, 1500);
+}
 check('tapping an item selects it, offering its end but no turning', await until(`selection && selection.els[0].id === 'e1'`) && await evaluate(`getComputedStyle(selEl.querySelector('.rotate')).display === 'none' && getComputedStyle(selEl.querySelector('.resize')).display !== 'none'`));
 // To eleven on Friday: where its top edge lands is what counts, so the pointer moves by as much as the edge has to.
 const [, fTop, , fBottom] = await rectOnScreen('#fri .tl'), [, eTop] = await rectOnScreen('#e1'), [fl, , fr] = await rectOnScreen('#fri .tl');
