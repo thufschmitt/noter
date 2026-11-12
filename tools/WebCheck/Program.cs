@@ -323,8 +323,18 @@ try
     Check("connecting sends the browser to Google with the client, offline access, the scopes that allow changes, and back to this server", gcAuth.AbsolutePath == "/authorize" && gq["client_id"] == "gcid" && gq["access_type"] == "offline" && gq["scope"] == GoogleSignIn.WriteScopes && gq["redirect_uri"] == url + "/oauth/callback");
     var gback = await http.GetAsync("/oauth/callback?code=abc&state=" + Uri.EscapeDataString(gq["state"]!));
     Check("the browser coming back completes it, with the secret", gback.StatusCode == HttpStatusCode.OK && (await gback.Content.ReadAsStringAsync()).Contains("Google Calendar") && googleApi.LastTokenForm["client_secret"] == "gsecret" && (await Json(await http.GetAsync("/api/google"))).GetProperty("connected").GetBoolean());
-    var gcheck = await Json(await http.SendAsync(ApiReq(HttpMethod.Post, "/api/google/check")));
-    Check("checking lists the calendars, marking the ones that can't be changed", gcheck.GetProperty("calendars").EnumerateArray().Select(c => c.GetString()).SequenceEqual(new[] { "Personal", "Team", "Holidays (read only)" }));
+    static (string?, bool, bool)[] Ticks(JsonElement list) => list.GetProperty("calendars").EnumerateArray().Select(c => (c.GetProperty("name").GetString(), c.GetProperty("used").GetBoolean(), c.GetProperty("writable").GetBoolean())).ToArray();
+    var gcals = await Json(await http.GetAsync("/api/google/calendars"));
+    Check("listing the calendars marks the ones in use (Google's own switches until a choice is made) and the ones that can't be changed", !gcals.GetProperty("custom").GetBoolean()
+        && Ticks(gcals).SequenceEqual(new (string?, bool, bool)[] { ("Personal", true, true), ("Team", true, true), ("Holidays", false, false) }));
+    var gpick = await Json(await http.SendAsync(ApiReq(HttpMethod.Put, "/api/google/calendars", new { ids = new[] { FakeGoogle.Team, FakeGoogle.Holidays } })));
+    Check("choosing calendars keeps exactly those, in the settings", gpick.GetProperty("custom").GetBoolean() && Ticks(gpick).SequenceEqual(new (string?, bool, bool)[] { ("Personal", false, true), ("Team", true, true), ("Holidays", true, false) })
+        && File.ReadAllText(Path.Combine(data, "settings.json")).Contains("google-calendars"));
+    Check("a calendar that isn't one of the account's is refused", (await http.SendAsync(ApiReq(HttpMethod.Put, "/api/google/calendars", new { ids = new[] { "nobody@example.com" } }))).StatusCode == HttpStatusCode.BadRequest
+        && Ticks(await Json(await http.GetAsync("/api/google/calendars"))).Count(t => t.Item2) == 2);
+    Check("choosing nothing is allowed, and nothing is in use then", Ticks(await Json(await http.SendAsync(ApiReq(HttpMethod.Put, "/api/google/calendars", new { ids = Array.Empty<string>() })))).All(t => !t.Item2));
+    var greset = await Json(await http.SendAsync(ApiReq(HttpMethod.Put, "/api/google/calendars", new { ids = (string[]?)null })));
+    Check("no choice goes back to Google's own switches", !greset.GetProperty("custom").GetBoolean() && Ticks(greset).Count(t => t.Item2) == 2);
     Check("the tokens are in the private file, not with the settings", File.ReadAllText(Path.Combine(data, "secrets.json")).Contains("access-g1") && File.ReadAllText(Path.Combine(data, "secrets.json")).Contains("gsecret") && !File.ReadAllText(Path.Combine(data, "settings.json")).Contains("access-g1") && !File.ReadAllText(Path.Combine(data, "settings.json")).Contains("gsecret"));
     api.FinalText = "HEARD: calendar\n---\nOk.";
     await using (var gb = await FakeBrowser.ConnectAsync(url))
@@ -392,8 +402,15 @@ try
     }
     Check("once approved there the account shows as connected, without a password in sight", status.GetProperty("connected").GetBoolean() && status.GetProperty("user").GetString() == FakeNextcloud.User && !status.ToString().Contains(FakeNextcloud.Password));
     Check("the app password is kept with the other secrets only", File.ReadAllText(Path.Combine(data, "secrets.json")).Contains(FakeNextcloud.Password) && !File.ReadAllText(Path.Combine(data, "settings.json")).Contains(FakeNextcloud.Password));
-    var calendars = await Json(await http.SendAsync(ApiReq(HttpMethod.Post, "/api/nextcloud/check")));
-    Check("checking lists the calendars Claude can use, marking those it may only read", calendars.GetProperty("calendars").EnumerateArray().Select(c => c.GetString()).SequenceEqual(new[] { "Personal", "Team (read only)" }));
+    var calendars = await Json(await http.GetAsync("/api/nextcloud/calendars"));
+    Check("listing the calendars marks the ones in use (all, until a choice is made) and those Claude may only read", !calendars.GetProperty("custom").GetBoolean()
+        && Ticks(calendars).SequenceEqual(new (string?, bool, bool)[] { ("Personal", true, true), ("Team", true, false) }));
+    var cpick = await Json(await http.SendAsync(ApiReq(HttpMethod.Put, "/api/nextcloud/calendars", new { ids = new[] { "personal" } })));
+    Check("choosing calendars keeps exactly those, in the settings", cpick.GetProperty("custom").GetBoolean() && Ticks(cpick).SequenceEqual(new (string?, bool, bool)[] { ("Personal", true, true), ("Team", false, false) })
+        && File.ReadAllText(Path.Combine(data, "settings.json")).Contains("nextcloud-calendars"));
+    Check("a calendar that isn't one of the account's is refused", (await http.SendAsync(ApiReq(HttpMethod.Put, "/api/nextcloud/calendars", new { ids = new[] { "elsewhere" } }))).StatusCode == HttpStatusCode.BadRequest);
+    var creset = await Json(await http.SendAsync(ApiReq(HttpMethod.Put, "/api/nextcloud/calendars", new { ids = (string[]?)null })));
+    Check("no choice goes back to all of them", !creset.GetProperty("custom").GetBoolean() && Ticks(creset).All(t => t.Item2));
     await using (var tab = await FakeBrowser.ConnectAsync(url))
     {
         await tab.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "page"));

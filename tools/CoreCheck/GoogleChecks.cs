@@ -116,6 +116,30 @@ static class GoogleChecks
         var del = google.Writes.Last();
         check("a delete is made against the version that was read, and says what went", del.Method == "DELETE" && del.IfMatch is not null && deleted.StartsWith("Deleted \"Trip\"") && !google.Events[FakeGoogle.Primary].Any(e => (string?)e["id"] == "e2"));
 
+        // ----- choosing the calendars -----
+        check("no calendars are chosen to begin with", book.Calendars() is null);
+        var listed = await tools.ListCalendarsAsync(default);
+        check("with no choice the calendars in use are the ones switched on in Google Calendar; with one, exactly the chosen",
+            listed.Where(c => GoogleCalendar.IsUsed(c, null)).Select(c => c.Name).SequenceEqual(new[] { "Personal", "Team" })
+            && listed.Where(c => GoogleCalendar.IsUsed(c, new[] { FakeGoogle.Holidays })).Select(c => c.Name).SequenceEqual(new[] { "Holidays" }));
+        book.SaveCalendars(new[] { FakeGoogle.Team, FakeGoogle.Holidays, FakeGoogle.Team });
+        check("a choice is kept with the settings, once each, and read back by another book", new GoogleCalendarBook(settings, secrets).Calendars()!.OrderBy(c => c).SequenceEqual(new[] { FakeGoogle.Holidays, FakeGoogle.Team }.OrderBy(c => c)));
+        var picked = GoogleCalendarTools.For(tools, canWrite: true, Plus1, () => now, book.Calendars());
+        var pickedAgenda = await picked[0].RunAsync(Args("""{"start":"2026-11-11","end":"2026-11-11"}"""), default);
+        check("only the chosen calendars are read, even one Google has switched off", pickedAgenda.Contains("Planning [Team]") && pickedAgenda.Contains("Armistice") && !pickedAgenda.Contains("[Personal]"));
+        await picked[1].RunAsync(Args("""{"title":"Chosen","start":"2026-11-14T10:00"}"""), default);
+        check("an event is added to a chosen calendar, never to the main one when that wasn't chosen", google.Writes.Last().Path.EndsWith("/calendars/" + FakeGoogle.Team + "/events"));
+        var notChosen = await Fails(() => picked[1].RunAsync(Args("""{"title":"x","start":"2026-11-14T10:00","calendar":"Personal"}"""), default));
+        check("naming a calendar that wasn't chosen is refused, naming the ones that were", notChosen is not null && notChosen.EndsWith("The calendars are: Team."));
+        var writes = google.Writes.Count;
+        check("an event in a calendar that wasn't chosen is neither changed nor deleted", (await Fails(() => picked[2].RunAsync(Args("""{"id":"me@example.com|e1","title":"x"}"""), default)))?.Contains("hasn't chosen") == true
+            && (await Fails(() => picked[3].RunAsync(Args("""{"id":"me@example.com|e1"}"""), default)))?.Contains("hasn't chosen") == true && google.Writes.Count == writes);
+        var switchedOff = GoogleCalendarTools.For(tools, canWrite: true, Plus1, () => now, Array.Empty<string>());
+        check("with every calendar switched off the model is told so, for reading and for adding", (await Fails(() => switchedOff[0].RunAsync(Args("""{"start":"2026-11-11"}"""), default)))?.Contains("hasn't chosen any Google calendar") == true
+            && (await Fails(() => switchedOff[1].RunAsync(Args("""{"title":"x","start":"2026-11-14T10:00"}"""), default)))?.Contains("hasn't chosen any Google calendar") == true);
+        book.SignOut();
+        check("signing out forgets the choice, as another account has other calendars", book.Calendars() is null);
+
         // ----- errors -----
         var refused = await Fails(() => new GoogleCalendar(_ => Task.FromResult("nope"), google.Endpoints).ListCalendarsAsync(default));
         check("a token Google doesn't accept says why, and to connect again", refused is not null && refused.Contains("Invalid Credentials") && refused.Contains("Connect Google Calendar again"));

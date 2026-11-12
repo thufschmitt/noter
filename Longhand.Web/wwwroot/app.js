@@ -1330,6 +1330,49 @@ async function addApp(name, url, tokenRequired, client = {}) {
   }
 }
 
+// ----- which calendars the model may use -----
+
+// A provider's calendars as ticks: the model reads (and changes) only the ticked ones. A tick is saved as soon as it is made. The last
+// list is kept, so a re-render of the dialog shows it at once while the fresh one is fetched.
+const calendarLists = {};
+function calendarPicker(provider) {
+  const box = document.createElement('div');
+  box.className = 'calendars';
+  const show = list => {
+    calendarLists[provider] = list;
+    box.textContent = '';
+    const head = document.createElement('p');
+    head.className = 'note-text';
+    head.textContent = list.calendars.length === 0 ? 'No calendars found.' : 'Calendars the model can use:';
+    box.append(head);
+    for (const c of list.calendars) {
+      const row = document.createElement('label');
+      row.className = 'note-text';
+      const tick = document.createElement('input');
+      tick.type = 'checkbox';
+      tick.checked = c.used;
+      tick.onchange = async () => {
+        const ids = [...box.querySelectorAll('input[type=checkbox]')].filter(t => t.checked).map(t => t.dataset.id);
+        box.querySelectorAll('input').forEach(t => { t.disabled = true; });
+        try {
+          show(await api('PUT', `/api/${provider}/calendars`, { ids }));
+          appsSay(ids.length === 0 ? 'No calendar is ticked, so the model can\'t use any of them.' : 'Saved.');
+        } catch (e) {
+          appsSay(e.message);
+          show(list);
+        }
+      };
+      tick.dataset.id = c.id;
+      row.append(tick, ' ' + (c.writable ? c.name : c.name + ' (read only)'));
+      box.append(row);
+    }
+  };
+  if (calendarLists[provider]) show(calendarLists[provider]);
+  else box.textContent = 'Loading your calendars…';
+  api('GET', `/api/${provider}/calendars`).then(show, e => { if (!calendarLists[provider]) box.textContent = e.message; });
+  return box;
+}
+
 // ----- Nextcloud -----
 
 function renderNextcloud() {
@@ -1343,15 +1386,9 @@ function renderNextcloud() {
     const buttons = document.createElement('div');
     buttons.className = 'buttons';
     buttons.append(
-      button('Check', 'Check', async () => {
-        try {
-          const { calendars } = await api('POST', '/api/nextcloud/check');
-          appsSay(calendars.length === 0 ? 'No calendars found.' : 'The model can use: ' + calendars.join(', ') + '.');
-        } catch (e) { appsSay(e.message); }
-      }),
-      button('Disconnect', 'Disconnect', async () => { await api('POST', '/api/nextcloud/disconnect'); appsSay('Disconnected from Nextcloud.'); loadApps(); }),
+      button('Disconnect', 'Disconnect', async () => { await api('POST', '/api/nextcloud/disconnect'); delete calendarLists.nextcloud; appsSay('Disconnected from Nextcloud.'); loadApps(); }),
     );
-    box.append(line, buttons);
+    box.append(line, calendarPicker('nextcloud'), buttons);
     return;
   }
   const intro = document.createElement('p');
@@ -1369,10 +1406,8 @@ function renderNextcloud() {
       renderNextcloud();
       await waitFor(d => d.nextcloud.connected || (!d.nextcloud.pending && d.nextcloud.error));
       const d = appsData.nextcloud;
-      if (d.connected) {
-        const { calendars } = await api('POST', '/api/nextcloud/check');
-        appsSay(calendars.length === 0 ? 'Connected, but no calendars were found.' : 'Connected. The model can use: ' + calendars.join(', ') + '.');
-      } else if (d.error) appsSay("Couldn't connect to Nextcloud: " + d.error);
+      if (d.connected) appsSay('Connected. Tick the calendars the model can use.');
+      else if (d.error) appsSay("Couldn't connect to Nextcloud: " + d.error);
     } catch (e) {
       if (win) win.close();
       appsSay(e.message);
@@ -1399,16 +1434,10 @@ function renderGoogle() {
     const buttons = document.createElement('div');
     buttons.className = 'buttons';
     buttons.append(
-      button('Check', 'Check', async () => {
-        try {
-          const { calendars } = await api('POST', '/api/google/check');
-          appsSay(calendars.length === 0 ? 'No calendars found.' : 'The model can use: ' + calendars.join(', ') + '.');
-        } catch (e) { appsSay(e.message); }
-      }),
-      button('Disconnect', 'Disconnect', async () => { await api('POST', '/api/google/disconnect', {}); appsSay('Disconnected from Google Calendar.'); loadApps(); }),
-      button('Forget client', 'Disconnect and forget the OAuth client too', async () => { await api('POST', '/api/google/disconnect', { forget: true }); appsSay('Google Calendar and its OAuth client are forgotten.'); loadApps(); }),
+      button('Disconnect', 'Disconnect', async () => { await api('POST', '/api/google/disconnect', {}); delete calendarLists.google; appsSay('Disconnected from Google Calendar.'); loadApps(); }),
+      button('Forget client', 'Disconnect and forget the OAuth client too', async () => { await api('POST', '/api/google/disconnect', { forget: true }); delete calendarLists.google; appsSay('Google Calendar and its OAuth client are forgotten.'); loadApps(); }),
     );
-    box.append(line, buttons);
+    box.append(line, calendarPicker('google'), buttons);
     return;
   }
   const intro = document.createElement('p');
@@ -1443,8 +1472,7 @@ function renderGoogle() {
       else appsSay('Your browser blocked the window.', url);
       if (await waitFor(d => d.google.connected)) {
         googleDraft = { clientId: null, write: null };
-        const { calendars } = await api('POST', '/api/google/check');
-        appsSay(calendars.length === 0 ? 'Connected, but no calendars were found.' : 'Connected. The model can use: ' + calendars.join(', ') + '.');
+        appsSay('Connected. Tick the calendars the model can use.');
       }
     } catch (e) {
       if (win) win.close();

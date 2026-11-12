@@ -189,8 +189,11 @@ public sealed class Nextcloud
         return calendars;
     }
 
-    /// <summary>The events that overlap [start, end), repeating events expanded into their occurrences by the server.</summary>
-    public async Task<List<CalendarEvent>> EventsAsync(NextcloudAccount account, DateTimeOffset start, DateTimeOffset end, TimeZoneInfo floatingZone, CancellationToken ct)
+    /// <summary>
+    /// The events that overlap [start, end), repeating events expanded into their occurrences by the server. With <paramref name="only"/>,
+    /// just those calendars (by <see cref="CalendarInfo.Segment"/>); without, all of them.
+    /// </summary>
+    public async Task<List<CalendarEvent>> EventsAsync(NextcloudAccount account, DateTimeOffset start, DateTimeOffset end, TimeZoneInfo floatingZone, CancellationToken ct, IReadOnlyCollection<string>? only = null)
     {
         string Stamp(DateTimeOffset t) => t.UtcDateTime.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
         var body = $"""
@@ -203,6 +206,7 @@ public sealed class Nextcloud
         var events = new List<CalendarEvent>();
         foreach (var calendar in await ListCalendarsAsync(account, ct))
         {
+            if (only is not null && !only.Contains(calendar.Segment)) continue;
             var doc = await DavAsync(account, "REPORT", new Uri(new Uri(account.Server.TrimEnd('/') + "/"), calendar.Href), "1", body, ct);
             foreach (var response in doc.Descendants(D + "response"))
             {

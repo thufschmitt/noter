@@ -69,6 +69,7 @@ public sealed class GoogleCalendarBook
 {
     const string ClientIdKey = "google-client-id", WriteKey = "google-write", TokenEndpointKey = "google-token-endpoint", ExpiresKey = "google-expires";
     const string SecretName = "google-client-secret", AccessName = "google-access", RefreshName = "google-refresh";
+    const string CalendarsKey = "google-calendars";
 
     readonly ISettings _settings;
     readonly ISecrets _secrets;
@@ -87,6 +88,12 @@ public sealed class GoogleCalendarBook
     public bool CanWrite => _settings.Get(WriteKey) == "1";
 
     public bool Connected => Secret(AccessName) is not null;
+
+    /// <summary>The calendars (by Google's id) the user chose for Longhand to use; null when no choice was made, meaning the ones switched on in Google Calendar.</summary>
+    public IReadOnlyCollection<string>? Calendars() => CalendarChoice.Read(_settings, CalendarsKey);
+
+    /// <summary>Keeps the choice of calendars; null goes back to the ones switched on in Google Calendar.</summary>
+    public void SaveCalendars(IEnumerable<string>? ids) => CalendarChoice.Write(_settings, CalendarsKey, ids);
 
     /// <summary>
     /// Keeps the client and whether to allow changes. A sign-in made with another client, or without the scope for changes, no
@@ -138,6 +145,7 @@ public sealed class GoogleCalendarBook
     /// <summary>Forgets the sign-in, keeping the client, so connecting again is one tap.</summary>
     public void SignOut()
     {
+        _settings.Remove(CalendarsKey); // another Google account has other calendars
         _secrets.Remove(AccessName);
         _secrets.Remove(RefreshName);
         _settings.Remove(TokenEndpointKey);
@@ -160,6 +168,9 @@ public sealed class GoogleCalendarBook
 public sealed class GoogleCalendar
 {
     public sealed record CalendarInfo(string Id, string Name, bool Writable, bool Primary, bool Selected);
+
+    /// <summary>Whether a calendar is one to use: one of the <paramref name="only"/> the user chose, or, with no choice made, one switched on in Google Calendar (or the main one).</summary>
+    public static bool IsUsed(CalendarInfo calendar, IReadOnlyCollection<string>? only) => only is null ? calendar.Selected || calendar.Primary : only.Contains(calendar.Id);
 
     /// <summary>An event as Google has it, with the version tag a change has to be made against.</summary>
     public sealed record Found(string CalendarId, string EventId, JsonObject Json, string? ETag, CalendarEvent Event);
@@ -261,10 +272,12 @@ public sealed class GoogleCalendar
         return calendars.OrderByDescending(c => c.Primary).ThenByDescending(c => c.Selected).ThenBy(c => c.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
     }
 
-    /// <summary>The events between two moments across the calendars the user has switched on; repeating ones come as the single occurrences in the range.</summary>
-    public async Task<List<CalendarEvent>> EventsAsync(DateTimeOffset start, DateTimeOffset end, CancellationToken ct)
+    /// <summary>
+    /// The events between two moments across the calendars to use (<see cref="IsUsed"/>); repeating ones come as the single occurrences in the range.
+    /// </summary>
+    public async Task<List<CalendarEvent>> EventsAsync(DateTimeOffset start, DateTimeOffset end, CancellationToken ct, IReadOnlyCollection<string>? only = null)
     {
-        var calendars = (await ListCalendarsAsync(ct)).Where(c => c.Selected || c.Primary).Take(MaxCalendars).ToList();
+        var calendars = (await ListCalendarsAsync(ct)).Where(c => IsUsed(c, only)).Take(MaxCalendars).ToList();
         var lists = await Task.WhenAll(calendars.Select(async calendar =>
         {
             var events = new List<CalendarEvent>();
@@ -361,13 +374,26 @@ public sealed class GoogleCalendar
 public sealed class GoogleCalendarContext : CalendarClock
 {
     public GoogleCalendar Google { get; }
+    /// <summary>The calendars (by Google's id) the user chose to use; null when they haven't chosen, meaning the ones switched on in Google Calendar.</summary>
+    public IReadOnlyCollection<string>? Only { get; }
 
-    public GoogleCalendarContext(GoogleCalendar google, TimeZoneInfo zone, Func<DateTimeOffset> now) : base(zone, now) => Google = google;
+    public GoogleCalendarContext(GoogleCalendar google, TimeZoneInfo zone, Func<DateTimeOffset> now, IReadOnlyCollection<string>? only = null) : base(zone, now)
+    {
+        Google = google;
+        Only = only;
+    }
+
+    /// <summary>Refuses to go on when the user switched every calendar off.</summary>
+    internal void RequireCalendars()
+    {
+        if (Only is { Count: 0 }) throw CalendarChoice.NoneChosen("Google");
+    }
 
     /// <summary>The event as it is now, refusing repeating ones (one change could rewrite every occurrence).</summary>
     internal async Task<GoogleCalendar.Found> ReadEventAsync(string? id, CancellationToken ct)
     {
-        if (!GoogleCalendar.TryParseId(id, out _, out _)) throw new InvalidOperationException("id must be an event's id, as reading the calendar shows it ({id: …}).");
+        if (!GoogleCalendar.TryParseId(id, out var calendarId, out _)) throw new InvalidOperationException("id must be an event's id, as reading the calendar shows it ({id: …}).");
+        if (Only is not null && !Only.Contains(calendarId)) throw CalendarChoice.NotChosen();
         var found = await Google.GetEventAsync(id!, ct);
         if (found.Event.Repeats) throw new InvalidOperationException("That is a repeating event; Longhand can't change or delete repeating events. Tell the user to change it in their calendar app.");
         return found;
@@ -377,9 +403,10 @@ public sealed class GoogleCalendarContext : CalendarClock
 public static class GoogleCalendarTools
 {
     /// <summary>Reading, and, when the user allowed it, adding, changing and deleting events.</summary>
-    public static IAgentTool[] For(GoogleCalendar google, bool canWrite, TimeZoneInfo? zone = null, Func<DateTimeOffset>? now = null)
+    /// <param name="calendars">The calendars (by Google's id) the user chose for the tools to use; null for the ones switched on in Google Calendar.</param>
+    public static IAgentTool[] For(GoogleCalendar google, bool canWrite, TimeZoneInfo? zone = null, Func<DateTimeOffset>? now = null, IReadOnlyCollection<string>? calendars = null)
     {
-        var context = new GoogleCalendarContext(google, zone ?? TimeZoneInfo.Local, now ?? (() => DateTimeOffset.Now));
+        var context = new GoogleCalendarContext(google, zone ?? TimeZoneInfo.Local, now ?? (() => DateTimeOffset.Now), calendars);
         var read = new GoogleCalendarEventsTool(context);
         return canWrite
             ? new IAgentTool[] { read, new GoogleCalendarAddTool(context), new GoogleCalendarChangeTool(context), new GoogleCalendarDeleteTool(context) }
@@ -403,7 +430,7 @@ public sealed class GoogleCalendarEventsTool : IAgentTool
         ToolName,
         "Reads the user's Google Calendar. Use it for questions about their schedule, availability, upcoming or past events, or " +
         "when something is on, and to find an event before changing or deleting it. Returns the events in the range across the " +
-        "calendars they have switched on, grouped by day, each with its time, title, calendar, location, whether it repeats, and " +
+        "calendars they have chosen for it, grouped by day, each with its time, title, calendar, location, whether it repeats, and " +
         "its {id: …}. Times are in the user's own time zone. Ask for a short range (a day or a week) unless the question needs " +
         "more; the longest range is about three months.",
         new Dictionary<string, JsonElement>
@@ -427,7 +454,8 @@ public sealed class GoogleCalendarEventsTool : IAgentTool
         if (end <= start) throw new InvalidOperationException("end must be after start.");
         if (end - start > TimeSpan.FromDays(MaxDays)) end = start.AddDays(MaxDays);
 
-        var events = await _c.Google.EventsAsync(start, end, ct);
+        _c.RequireCalendars();
+        var events = await _c.Google.EventsAsync(start, end, ct, _c.Only);
         return CalendarText.Agenda(events, start, end, _c.Zone, CalendarContext.Text(input, "search"));
     }
 }
@@ -467,7 +495,8 @@ public sealed class GoogleCalendarAddTool : IAgentTool
         if (!input.ContainsKey("start")) throw new InvalidOperationException("start is needed.");
         var when = _c.When(input, old: null);
 
-        var calendars = (await _c.Google.ListCalendarsAsync(ct)).Where(c => c.Writable).ToList();
+        _c.RequireCalendars();
+        var calendars = (await _c.Google.ListCalendarsAsync(ct)).Where(c => c.Writable && (_c.Only is null || _c.Only.Contains(c.Id))).ToList();
         if (calendars.Count == 0) throw new InvalidOperationException("The user has no calendar that Longhand may add events to.");
         GoogleCalendar.CalendarInfo calendar;
         if (CalendarContext.Text(input, "calendar") is { Length: > 0 } wanted)

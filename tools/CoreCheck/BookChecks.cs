@@ -104,6 +104,14 @@ static class BookChecks
         cloud.Save(new NextcloudAccount("https://cloud.example", "me", "app-pass"));
         var again = new NextcloudBook(settings, secrets).Load();
         check("a Nextcloud account survives saving and loading", again == new NextcloudAccount("https://cloud.example", "me", "app-pass"));
+        check("no Nextcloud calendars are chosen to begin with", cloud.Calendars() is null);
+        cloud.SaveCalendars(new[] { "team", "personal", "team" });
+        check("a choice of calendars is kept, once each, and read back by another book", new NextcloudBook(settings, secrets).Calendars()!.OrderBy(c => c).SequenceEqual(new[] { "personal", "team" }));
+        cloud.SaveCalendars(Array.Empty<string>());
+        check("choosing none is a choice too", cloud.Calendars() is { Count: 0 });
+        cloud.SaveCalendars(null);
+        check("a null choice goes back to using all of them", cloud.Calendars() is null);
+        cloud.SaveCalendars(new[] { "personal" });
         cloud.Clear();
         check("clearing forgets the account and its password", cloud.Load() is null && secrets.Get("nextcloud-app-password") is null && settings.All().Count == 0);
     }

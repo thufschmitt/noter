@@ -115,7 +115,8 @@ body.typing #toast { bottom: 150px; }
 #appClient code { font-size: 12px; user-select: all; word-break: break-all; }
 #google input[type=text], #google input[type=password], #google input:not([type]) { width: 100%; box-sizing: border-box; }
 #google code { font-size: 12px; user-select: all; word-break: break-all; }
-#google label input { margin-right: 6px; }
-#google label { display: flex; gap: 8px; align-items: flex-start; font-weight: 400; text-align: left; text-transform: none; letter-spacing: 0; }
-#google label input { margin: 3px 0 0; flex: none; width: auto; min-width: 0; }
+#google label input, .calendars label input { margin-right: 6px; }
+#google label, .calendars label { display: flex; gap: 8px; align-items: flex-start; font-weight: 400; text-align: left; text-transform: none; letter-spacing: 0; }
+#google label input, .calendars label input { margin: 3px 0 0; flex: none; width: auto; min-width: 0; }
+.calendars label { margin: 2px 0; }
 #selection .knob.resize { left: 50%; top: 100%; cursor: ns-resize; }

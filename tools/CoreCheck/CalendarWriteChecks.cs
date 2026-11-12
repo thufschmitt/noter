@@ -72,6 +72,11 @@ static class CalendarWriteChecks
         check("a repeating event is neither changed nor deleted", (await Fails(() => tools["calendar_delete_event"].RunAsync(Args("""{"id":"personal/weekly.ics"}"""), default)))?.Contains("repeating") == true && server.Events.ContainsKey("personal/weekly.ics"));
         server.Events["team_shared_by_bob/standup.ics"] = ("BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:s\r\nDTSTART:20261111T080000Z\r\nDTEND:20261111T090000Z\r\nSUMMARY:Standup\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n", "\"s1\"");
         check("a calendar shared read-only is left alone", (await Fails(() => tools["calendar_delete_event"].RunAsync(Args("""{"id":"team_shared_by_bob/standup.ics"}"""), default)))?.Contains("read-only") == true && server.Events.ContainsKey("team_shared_by_bob/standup.ics"));
+        var chosen = CalendarTools.For(new Nextcloud(), account, Plus1, () => now, new[] { "personal" }).ToDictionary(t => t.Name);
+        check("an event in a calendar that wasn't chosen is neither changed nor deleted", (await Fails(() => chosen["calendar_delete_event"].RunAsync(Args("""{"id":"team_shared_by_bob/standup.ics"}"""), default)))?.Contains("hasn't chosen") == true
+            && (await Fails(() => chosen["calendar_change_event"].RunAsync(Args("""{"id":"team_shared_by_bob/standup.ics","title":"x"}"""), default)))?.Contains("hasn't chosen") == true && server.Events.ContainsKey("team_shared_by_bob/standup.ics"));
+        var other = CalendarTools.For(new Nextcloud(), account, Plus1, () => now, new[] { "team_shared_by_bob" }).ToDictionary(t => t.Name);
+        check("an event isn't added to a calendar that wasn't chosen, even the default one", (await Fails(() => other["calendar_add_event"].RunAsync(Args("""{"title":"x","start":"2026-11-12T10:00"}"""), default)))?.Contains("no calendar that Longhand may add") == true);
 
         var deleted = await tools["calendar_delete_event"].RunAsync(Args($$"""{"id":"{{path}}"}"""), default);
         check("deleting removes it and says what it was", !server.Events.ContainsKey(path) && deleted.Contains("Dentist (moved by phone)") && server.Requests.Last(q => q.Method == "DELETE").Headers["If-Match"] == "\"v99\"");

@@ -1097,6 +1097,46 @@ public sealed partial class MainPage : Page, IPageView
             add.IsEnabled = true;
         };
 
+        // ----- which calendars the model may use: the account's calendars as check boxes; a tick is kept as soon as it is made -----
+        StackPanel CalendarPicker(Func<CancellationToken, Task<List<(string Id, string Label, bool Used)>>> load, Action<IEnumerable<string>> save)
+        {
+            var picker = new StackPanel { Spacing = 4 };
+            picker.Children.Add(new TextBlock { Text = "Loading your calendars…", FontSize = 12, Opacity = 0.75 });
+
+            async Task FillAsync()
+            {
+                try
+                {
+                    var calendars = await load(cts.Token);
+                    picker.Children.Clear();
+                    picker.Children.Add(new TextBlock { Text = calendars.Count == 0 ? "No calendars found." : "Calendars the model can use:", FontSize = 12, Opacity = 0.75 });
+                    var ticks = new List<(CheckBox Tick, string Id)>();
+                    void Changed(object sender, RoutedEventArgs e)
+                    {
+                        var picked = ticks.Where(t => t.Tick.IsChecked == true).Select(t => t.Id).ToList();
+                        save(picked);
+                        message.Text = picked.Count == 0 ? "No calendar is ticked, so the model can't use any of them." : "";
+                    }
+                    foreach (var calendar in calendars)
+                    {
+                        var tick = new CheckBox { Content = new TextBlock { Text = calendar.Label, TextWrapping = TextWrapping.Wrap, FontSize = 12, Width = 330 }, IsChecked = calendar.Used };
+                        tick.Checked += Changed;
+                        tick.Unchecked += Changed;
+                        ticks.Add((tick, calendar.Id));
+                        picker.Children.Add(tick);
+                    }
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    picker.Children.Clear();
+                    picker.Children.Add(new TextBlock { Text = ex.Message, TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.75 });
+                }
+            }
+            _ = FillAsync();
+            return picker;
+        }
+
         // ----- Google Calendar: through Google's own API, with an OAuth client the user made in their own Google Cloud project -----
         var google = new StackPanel { Spacing = 8, Width = 380 };
         var googleIdBox = new TextBox { PlaceholderText = "Client ID (ends in .apps.googleusercontent.com)", Width = 380 };
@@ -1120,18 +1160,15 @@ public sealed partial class MainPage : Page, IPageView
                     FontSize = 12,
                     Opacity = 0.75,
                 });
-                var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-                var check = new Button { Content = "Check" };
-                check.Click += async (_, _) =>
-                {
-                    try
+                google.Children.Add(CalendarPicker(
+                    async ct =>
                     {
-                        var calendars = await new GoogleCalendar(ct => book.AccessTokenAsync(_oauth, ct)).ListCalendarsAsync(cts.Token);
-                        message.Text = calendars.Count == 0 ? "No calendars found." : "The model can use: " + string.Join(", ", calendars.Select(c => c.Writable ? c.Name : c.Name + " (read only)")) + ".";
-                    }
-                    catch (OperationCanceledException) { }
-                    catch (Exception ex) { message.Text = ex.Message; }
-                };
+                        var chosen = book.Calendars();
+                        return (await new GoogleCalendar(token => book.AccessTokenAsync(_oauth, token)).ListCalendarsAsync(ct))
+                            .Select(c => (c.Id, c.Writable ? c.Name : c.Name + " (read only)", GoogleCalendar.IsUsed(c, chosen))).ToList();
+                    },
+                    ids => book.SaveCalendars(ids)));
+                var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
                 async Task Disconnect(bool forget)
                 {
                     if (book.TokenToRevoke() is { } token)
@@ -1147,7 +1184,6 @@ public sealed partial class MainPage : Page, IPageView
                 disconnect.Click += async (_, _) => await Disconnect(false);
                 var forgetButton = new Button { Content = "Forget client" };
                 forgetButton.Click += async (_, _) => await Disconnect(true);
-                buttons.Children.Add(check);
                 buttons.Children.Add(disconnect);
                 buttons.Children.Add(forgetButton);
                 google.Children.Add(buttons);
@@ -1186,8 +1222,7 @@ public sealed partial class MainPage : Page, IPageView
                     message.Text = "Approve the connection in your browser. This page continues when you have.";
                     var query = await OAuthBroker.AuthorizeAsync(request.AuthorizeUrl, request.State, cts.Token);
                     book.SaveSession(await _oauth.FinishAsync(request, query, cts.Token));
-                    var calendars = await new GoogleCalendar(ct => book.AccessTokenAsync(_oauth, ct)).ListCalendarsAsync(cts.Token);
-                    message.Text = calendars.Count == 0 ? "Connected, but no calendars were found." : "Connected. The model can use: " + string.Join(", ", calendars.Select(c => c.Writable ? c.Name : c.Name + " (read only)")) + ".";
+                    message.Text = "Connected. Tick the calendars the model can use.";
                     googleSecretBox.Password = "";
                 }
                 catch (OperationCanceledException)
@@ -1235,10 +1270,7 @@ public sealed partial class MainPage : Page, IPageView
                         message.Text = "Approve the connection in your browser. This page continues when you have.";
                         var connected = await _nextcloud.WaitForLoginAsync(start, TimeSpan.FromSeconds(2), TimeSpan.FromMinutes(10), cts.Token);
                         NextcloudStore.Save(connected);
-                        var calendars = await _nextcloud.ListCalendarsAsync(connected, cts.Token);
-                        message.Text = calendars.Count == 0
-                            ? "Connected, but no calendars were found."
-                            : "Connected. The model can use: " + string.Join(", ", calendars.Select(c => c.Label)) + ".";
+                        message.Text = "Connected. Tick the calendars the model can use.";
                     }
                     catch (OperationCanceledException)
                     {
@@ -1255,26 +1287,15 @@ public sealed partial class MainPage : Page, IPageView
             else
             {
                 nextcloud.Children.Add(new TextBlock { Text = $"Connected as {account.User} on {new Uri(account.Server).Host}", FontSize = 12, Opacity = 0.75 });
+                nextcloud.Children.Add(CalendarPicker(
+                    async ct =>
+                    {
+                        var chosen = NextcloudStore.Calendars();
+                        return (await _nextcloud.ListCalendarsAsync(account, ct))
+                            .Select(c => (c.Segment, c.Label, chosen is null || chosen.Contains(c.Segment))).ToList();
+                    },
+                    segments => NextcloudStore.SaveCalendars(segments)));
                 var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-                var check = new Button { Content = "Check" };
-                check.Click += async (_, _) =>
-                {
-                    check.IsEnabled = false;
-                    try
-                    {
-                        var calendars = await _nextcloud.ListCalendarsAsync(account, cts.Token);
-                        message.Text = calendars.Count == 0 ? "No calendars found." : "The model can use: " + string.Join(", ", calendars.Select(c => c.Label)) + ".";
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        message.Text = "";
-                    }
-                    catch (Exception ex)
-                    {
-                        message.Text = ex.Message;
-                    }
-                    check.IsEnabled = true;
-                };
                 var disconnect = new Button { Content = "Disconnect" };
                 disconnect.Click += async (_, _) =>
                 {
@@ -1284,7 +1305,6 @@ public sealed partial class MainPage : Page, IPageView
                     message.Text = "Disconnected from Nextcloud.";
                     RenderNextcloud();
                 };
-                buttons.Children.Add(check);
                 buttons.Children.Add(disconnect);
                 nextcloud.Children.Add(buttons);
             }

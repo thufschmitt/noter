@@ -239,6 +239,28 @@ await sleep(200);
 await shot('6d-google-section');
 check('connecting without a client ID says what to paste, and opens nothing', await (async () => { await evaluate(`[...document.querySelectorAll('#google button')].find(b => b.textContent === 'Connect').click()`); return await until(`document.getElementById('appsMessage').textContent.includes('client ID')`, 5000); })());
 check('the old MCP sign-in client section is still there, without a Google preset', await evaluate(`!!document.getElementById('appClient') && ![...document.getElementById('appPreset').options].some(o => /google/i.test(o.text))`));
+// A connected account can't be signed in to here, so the connected state is drawn from stubbed answers: the calendars are ticks, and a tick is saved at once.
+await evaluate(`(() => {
+  window.__puts = [];
+  window.__realFetch = window.fetch;
+  let used = { personal: true, team: true };
+  window.fetch = async (path, opts = {}) => {
+    if (path !== '/api/nextcloud/calendars') return window.__realFetch(path, opts);
+    if (opts.method === 'PUT') { const ids = JSON.parse(opts.body).ids; window.__puts.push(ids); used = { personal: ids.includes('personal'), team: ids.includes('team') }; }
+    return new Response(JSON.stringify({ custom: window.__puts.length > 0, calendars: [{ id: 'personal', name: 'Personal', writable: true, used: used.personal }, { id: 'team', name: 'Team', writable: false, used: used.team }] }), { headers: { 'content-type': 'application/json' } });
+  };
+  appsData.nextcloud = { connected: true, user: 'alice', host: 'cloud.example.com' };
+  renderNextcloud();
+})()`);
+check('a connected Nextcloud lists its calendars as ticks, the ones in use ticked and the read-only one marked', await until(`(() => { const rows = [...document.querySelectorAll('#nextcloud .calendars label')]; return rows.length === 2 && rows.every(r => r.querySelector('input').checked) && rows[1].textContent.trim() === 'Team (read only)' && getComputedStyle(rows[0]).display === 'flex' && getComputedStyle(rows[0]).fontWeight === '400'; })()`, 5000));
+await evaluate(`document.getElementById('nextcloud').scrollIntoView({ block: 'center' })`);
+await sleep(200);
+await shot('6e-calendars');
+await evaluate(`document.querySelectorAll('#nextcloud .calendars input')[1].click()`);
+check('unticking one saves the ticked ones at once, and the list shows it', await until(`JSON.stringify(window.__puts) === '[["personal"]]' && document.getElementById('appsMessage').textContent === 'Saved.' && [...document.querySelectorAll('#nextcloud .calendars input')].map(i => i.checked).join() === 'true,false'`, 5000));
+await evaluate(`document.querySelectorAll('#nextcloud .calendars input')[0].click()`);
+check('unticking the last one says that nothing is available to the model then', await until(`JSON.stringify(window.__puts) === '[["personal"],[]]' && document.getElementById('appsMessage').textContent.includes('can\\'t use any')`, 5000));
+await evaluate(`window.fetch = window.__realFetch; appsData.nextcloud = { connected: false }; renderNextcloud(); document.getElementById('appsMessage').textContent = ''`);
 await evaluate(`document.getElementById('appName').value = 'Local Notes'; document.getElementById('appUrl').value = 'http://127.0.0.1:18081/open'; document.getElementById('appAdd').click()`);
 check('an app added by address appears as needing no sign-in', await until(`document.getElementById('appList').textContent.includes('local-notes') && document.getElementById('appList').textContent.includes('No sign-in needed')`));
 await evaluate(`document.getElementById('appsClose').click()`);

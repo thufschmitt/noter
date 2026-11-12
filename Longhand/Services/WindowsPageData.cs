@@ -49,8 +49,8 @@ public sealed class WindowsPageData : IPageData
     public async Task<PreparedAsk> PrepareAskAsync(CodexSignIn signIn, string model, CancellationToken ct)
     {
         var tools = new List<IAgentTool>();
-        if (NextcloudStore.Load() is { } account) tools.AddRange(CalendarTools.For(_nextcloud, account));
-        if (GoogleStore.Book.Connected) tools.AddRange(GoogleCalendarTools.For(new GoogleCalendar(ct2 => GoogleStore.Book.AccessTokenAsync(_oauth, ct2)), GoogleStore.Book.CanWrite));
+        if (NextcloudStore.Load() is { } account) tools.AddRange(CalendarTools.For(_nextcloud, account, calendars: NextcloudStore.Calendars()));
+        if (GoogleStore.Book.Connected) tools.AddRange(GoogleCalendarTools.For(new GoogleCalendar(ct2 => GoogleStore.Book.AccessTokenAsync(_oauth, ct2)), GoogleStore.Book.CanWrite, calendars: GoogleStore.Book.Calendars()));
         var (connectors, expired) = await ConnectorStore.ActiveAsync(_oauth, ct);
         var (appTools, failures) = await McpTool.ForWithReasonsAsync(connectors, ct);
         var unreachable = failures.Select(f => f.Reason.Length > 0 ? $"{f.Name} ({f.Reason})" : f.Name);

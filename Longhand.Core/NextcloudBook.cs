@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 namespace Longhand.Services;
 
 /// <summary>
@@ -9,6 +11,7 @@ public sealed class NextcloudBook
     const string PasswordName = "nextcloud-app-password";
     const string ServerKey = "nextcloud-server";
     const string LoginKey = "nextcloud-login";
+    const string CalendarsKey = "nextcloud-calendars";
 
     readonly ISettings _settings;
     readonly ISecrets _secrets;
@@ -33,8 +36,15 @@ public sealed class NextcloudBook
         _secrets.Set(PasswordName, account.Password);
     }
 
+    /// <summary>The calendars (<see cref="CalendarInfo.Segment"/>) the user chose for Longhand to use; null when no choice was made, meaning all of them.</summary>
+    public IReadOnlyCollection<string>? Calendars() => CalendarChoice.Read(_settings, CalendarsKey);
+
+    /// <summary>Keeps the choice of calendars; null goes back to using all of them.</summary>
+    public void SaveCalendars(IEnumerable<string>? segments) => CalendarChoice.Write(_settings, CalendarsKey, segments);
+
     public void Clear()
     {
+        _settings.Remove(CalendarsKey);
         _settings.Remove(ServerKey);
         _settings.Remove(LoginKey);
         _secrets.Remove(PasswordName);

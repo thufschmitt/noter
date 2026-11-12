@@ -82,6 +82,24 @@ public sealed class WebApps
         };
     }
 
+    /// <summary>A choice is nothing (go back to the default) or calendars the account has.</summary>
+    static bool ValidChoice(string[]? ids, System.Collections.Generic.HashSet<string> known) => ids is null || (ids.Length <= 200 && ids.All(known.Contains));
+
+    /// <summary>Google's calendars, each with whether the model uses it (the user's choice, else Google's own switches).</summary>
+    async Task<object> GoogleCalendarsAsync(CancellationToken ct)
+    {
+        var chosen = _store.Google.Calendars();
+        var calendars = await GoogleClient.ListCalendarsAsync(ct);
+        return new { custom = chosen is not null, calendars = calendars.Select(c => new { id = c.Id, name = c.Name, writable = c.Writable, used = GoogleCalendar.IsUsed(c, chosen) }) };
+    }
+
+    async Task<object> NextcloudCalendarsAsync(NextcloudAccount account, CancellationToken ct)
+    {
+        var chosen = _store.Nextcloud.Calendars();
+        var calendars = await _nextcloud.ListCalendarsAsync(account, ct);
+        return new { custom = chosen is not null, calendars = calendars.Select(c => new { id = c.Segment, name = c.Name, writable = c.Writable, used = chosen is null || chosen.Contains(c.Segment) }) };
+    }
+
     public void Map(WebApplication app)
     {
         app.MapGet("/api/apps", () => new { apps = _store.Connectors.List().Select(Shape), nextcloud = NextcloudStatus(), google = GoogleStatus() });
@@ -248,10 +266,25 @@ public sealed class WebApps
             return Results.Ok(new { url = request.AuthorizeUrl.ToString() });
         });
 
-        app.MapPost("/api/google/check", async (HttpContext ctx) =>
+        // The calendars to use: GET lists them with the ones in use ticked; PUT keeps the ids the user ticked (null goes back to Google's own switches).
+        app.MapGet("/api/google/calendars", async (HttpContext ctx) =>
         {
             if (!_store.Google.Connected) return Results.BadRequest(new { error = "Google Calendar isn't connected." });
-            try { return Results.Ok(new { calendars = (await GoogleClient.ListCalendarsAsync(ctx.RequestAborted)).Select(c => c.Writable ? c.Name : c.Name + " (read only)") }); }
+            try { return Results.Ok(await GoogleCalendarsAsync(ctx.RequestAborted)); }
+            catch (OperationCanceledException) { return Results.StatusCode(499); }
+            catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+
+        app.MapPut("/api/google/calendars", async (HttpContext ctx, CalendarsBody body) =>
+        {
+            if (!_store.Google.Connected) return Results.BadRequest(new { error = "Google Calendar isn't connected." });
+            try
+            {
+                var known = (await GoogleClient.ListCalendarsAsync(ctx.RequestAborted)).Select(c => c.Id).ToHashSet(StringComparer.Ordinal);
+                if (!ValidChoice(body.Ids, known)) return Results.BadRequest(new { error = "Those aren't calendars of your Google account." });
+                _store.Google.SaveCalendars(body.Ids);
+                return Results.Ok(await GoogleCalendarsAsync(ctx.RequestAborted));
+            }
             catch (OperationCanceledException) { return Results.StatusCode(499); }
             catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
         });
@@ -295,10 +328,25 @@ public sealed class WebApps
             catch (Exception ex) { return Results.BadRequest(new { error = "Couldn't connect to Nextcloud: " + ex.Message }); }
         });
 
-        app.MapPost("/api/nextcloud/check", async (HttpContext ctx) =>
+        // The calendars to use: GET lists them with the ones in use ticked; PUT keeps the ones the user ticked (null goes back to all of them).
+        app.MapGet("/api/nextcloud/calendars", async (HttpContext ctx) =>
         {
             if (_store.Nextcloud.Load() is not { } account) return Results.BadRequest(new { error = "Nextcloud isn't connected." });
-            try { return Results.Ok(new { calendars = (await _nextcloud.ListCalendarsAsync(account, ctx.RequestAborted)).Select(c => c.Label) }); }
+            try { return Results.Ok(await NextcloudCalendarsAsync(account, ctx.RequestAborted)); }
+            catch (OperationCanceledException) { return Results.StatusCode(499); }
+            catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+
+        app.MapPut("/api/nextcloud/calendars", async (HttpContext ctx, CalendarsBody body) =>
+        {
+            if (_store.Nextcloud.Load() is not { } account) return Results.BadRequest(new { error = "Nextcloud isn't connected." });
+            try
+            {
+                var known = (await _nextcloud.ListCalendarsAsync(account, ctx.RequestAborted)).Select(c => c.Segment).ToHashSet(StringComparer.Ordinal);
+                if (!ValidChoice(body.Ids, known)) return Results.BadRequest(new { error = "Those aren't calendars of your Nextcloud." });
+                _store.Nextcloud.SaveCalendars(body.Ids);
+                return Results.Ok(await NextcloudCalendarsAsync(account, ctx.RequestAborted));
+            }
             catch (OperationCanceledException) { return Results.StatusCode(499); }
             catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
         });
@@ -320,5 +368,6 @@ public sealed class WebApps
     sealed record TokenBody(string? Token);
     sealed record ServerBody(string? Server);
     sealed record GoogleClientBody(string? ClientId, string? ClientSecret, bool? Write);
+    sealed record CalendarsBody(string[]? Ids);
     sealed record ForgetBody(bool? Forget);
 }

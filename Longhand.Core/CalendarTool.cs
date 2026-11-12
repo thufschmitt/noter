@@ -16,9 +16,10 @@ namespace Longhand.Services;
 /// </summary>
 public static class CalendarTools
 {
-    public static IAgentTool[] For(Nextcloud nextcloud, NextcloudAccount account, TimeZoneInfo? zone = null, Func<DateTimeOffset>? now = null)
+    /// <param name="calendars">The calendars (by <see cref="CalendarInfo.Segment"/>) the user chose for the tools to use; null for all of them.</param>
+    public static IAgentTool[] For(Nextcloud nextcloud, NextcloudAccount account, TimeZoneInfo? zone = null, Func<DateTimeOffset>? now = null, IReadOnlyCollection<string>? calendars = null)
     {
-        var context = new CalendarContext(nextcloud, account, zone ?? TimeZoneInfo.Local, now ?? (() => DateTimeOffset.Now));
+        var context = new CalendarContext(nextcloud, account, zone ?? TimeZoneInfo.Local, now ?? (() => DateTimeOffset.Now), calendars);
         return new IAgentTool[] { new CalendarTool(context), new CalendarAddTool(context), new CalendarChangeTool(context), new CalendarDeleteTool(context) };
     }
 }
@@ -136,16 +137,28 @@ public sealed class CalendarContext : CalendarClock
 {
     public Nextcloud Nextcloud { get; }
     public NextcloudAccount Account { get; }
+    /// <summary>The calendars (by <see cref="CalendarInfo.Segment"/>) the user chose to use; null when all of them are.</summary>
+    public IReadOnlyCollection<string>? Only { get; }
 
-    public CalendarContext(Nextcloud nextcloud, NextcloudAccount account, TimeZoneInfo zone, Func<DateTimeOffset> now) : base(zone, now)
+    public CalendarContext(Nextcloud nextcloud, NextcloudAccount account, TimeZoneInfo zone, Func<DateTimeOffset> now, IReadOnlyCollection<string>? only = null) : base(zone, now)
     {
         Nextcloud = nextcloud;
         Account = account;
+        Only = only;
+    }
+
+    internal bool Uses(string segment) => Only is null || Only.Contains(segment);
+
+    /// <summary>Refuses to go on when the user switched every calendar off.</summary>
+    internal void RequireCalendars()
+    {
+        if (Only is { Count: 0 }) throw CalendarChoice.NoneChosen("Nextcloud");
     }
 
     /// <summary>The event behind an id, as it is now on the server, with its version tag.</summary>
     internal async Task<(string Ics, string? ETag, CalendarEvent Event)> ReadEventAsync(string id, CancellationToken ct)
     {
+        if (!Uses(id.Split('/')[0])) throw CalendarChoice.NotChosen();
         var (ics, etag) = await Nextcloud.GetEventAsync(Account, id, ct);
         var events = ICalendar.ParseEvents(ics, id.Split('/')[0], Zone);
         if (events.Count == 0) throw new InvalidOperationException("That isn't an event Longhand can read.");
@@ -167,8 +180,8 @@ public sealed class CalendarTool : IAgentTool
 
     public CalendarTool(CalendarContext context) => _c = context;
 
-    public CalendarTool(Nextcloud nextcloud, NextcloudAccount account, TimeZoneInfo? zone = null, Func<DateTimeOffset>? now = null)
-        : this(new CalendarContext(nextcloud, account, zone ?? TimeZoneInfo.Local, now ?? (() => DateTimeOffset.Now))) { }
+    public CalendarTool(Nextcloud nextcloud, NextcloudAccount account, TimeZoneInfo? zone = null, Func<DateTimeOffset>? now = null, IReadOnlyCollection<string>? calendars = null)
+        : this(new CalendarContext(nextcloud, account, zone ?? TimeZoneInfo.Local, now ?? (() => DateTimeOffset.Now), calendars)) { }
 
     public string Name => ToolName;
     public string Status => "checking your calendar…";
@@ -203,7 +216,8 @@ public sealed class CalendarTool : IAgentTool
         if (end <= start) throw new InvalidOperationException("end must be after start.");
         if (end - start > TimeSpan.FromDays(MaxDays)) end = start.AddDays(MaxDays);
 
-        var events = await _c.Nextcloud.EventsAsync(_c.Account, start, end, _c.Zone, ct);
+        _c.RequireCalendars();
+        var events = await _c.Nextcloud.EventsAsync(_c.Account, start, end, _c.Zone, ct, _c.Only);
         return CalendarText.Agenda(events, start, end, _c.Zone, CalendarContext.Text(input, "search"));
     }
 }
@@ -243,7 +257,8 @@ public sealed class CalendarAddTool : IAgentTool
         if (!input.ContainsKey("start")) throw new InvalidOperationException("start is needed.");
         var when = _c.When(input, old: null);
 
-        var calendars = (await _c.Nextcloud.ListCalendarsAsync(_c.Account, ct)).Where(c => c.Writable).ToList();
+        _c.RequireCalendars();
+        var calendars = (await _c.Nextcloud.ListCalendarsAsync(_c.Account, ct)).Where(c => c.Writable && _c.Uses(c.Segment)).ToList();
         if (calendars.Count == 0) throw new InvalidOperationException("The user has no calendar that Longhand may add events to.");
         CalendarInfo calendar;
         if (CalendarContext.Text(input, "calendar") is { Length: > 0 } wanted)

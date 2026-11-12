@@ -8,4 +8,8 @@ public static class NextcloudStore
     public static NextcloudAccount? Load() => Book.Load();
     public static void Save(NextcloudAccount account) => Book.Save(account);
     public static void Clear() => Book.Clear();
+
+    /// <summary>The calendars the user chose for the model to use (see <see cref="NextcloudBook.Calendars"/>); null when they haven't chosen.</summary>
+    public static System.Collections.Generic.IReadOnlyCollection<string>? Calendars() => Book.Calendars();
+    public static void SaveCalendars(System.Collections.Generic.IEnumerable<string>? segments) => Book.SaveCalendars(segments);
 }

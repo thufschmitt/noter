@@ -103,6 +103,16 @@ static class AgentChecks
             check("the query asks the server to expand repeats for exactly that day", report.Body.Contains("expand start=\"20261110T230000Z\" end=\"20261111T230000Z\""));
             check("every request carried the app password", server.Requests.Where(q => q.Method is "PROPFIND" or "REPORT").All(q => q.Headers["Authorization"].StartsWith("Basic ")));
 
+            var asked = server.Requests.Count;
+            var teamOnly = await new CalendarTool(nc, account, Plus1, () => from, new[] { "team_shared_by_bob" }).RunAsync(Args("""{"start":"2026-11-11","end":"2026-11-11"}"""), default);
+            var reports = server.Requests.Skip(asked).Where(q => q.Method == "REPORT").Select(q => q.Path).ToList();
+            check("with calendars chosen, only those are read, and the others are not even asked", !teamOnly.Contains("Standup, daily") && reports.Count == 1 && reports[0].EndsWith("/team_shared_by_bob/"));
+            var personalOnly = await new CalendarTool(nc, account, Plus1, () => from, new[] { "personal" }).RunAsync(Args("""{"start":"2026-11-11","end":"2026-11-11"}"""), default);
+            check("and a chosen calendar is read as before", personalOnly.Contains("Standup, daily"));
+            string? none = null;
+            try { await new CalendarTool(nc, account, Plus1, () => from, Array.Empty<string>()).RunAsync(Args("""{"start":"2026-11-11"}"""), default); } catch (InvalidOperationException ex) { none = ex.Message; }
+            check("with every calendar switched off the model is told so", none is not null && none.Contains("hasn't chosen any Nextcloud calendar"));
+
             var failed = false;
             try { await tool.RunAsync(Args("""{"start":"someday"}"""), default); } catch (InvalidOperationException) { failed = true; }
             check("a bad date is reported to Claude", failed);
