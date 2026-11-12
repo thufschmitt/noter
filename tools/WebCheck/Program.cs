@@ -154,6 +154,11 @@ try
         Check("the new conversation is the open one", second != conversation);
         await b.SendAsync(new { t = "rename", id = conversation, name = "Standups" });
         Check("renaming shows in the list", await b.UntilAsync(l => l.Last(m => m.GetProperty("t").GetString() == "conversations").GetProperty("items").EnumerateArray().Any(i => i.GetProperty("title").GetString() == "Standups")));
+        await b.SendAsync(new { t = "archive", id = conversation, archived = true });
+        Check("archiving keeps a conversation, marked archived", await b.UntilAsync(l => l.Last(m => m.GetProperty("t").GetString() == "conversations").GetProperty("items").EnumerateArray().Any(i => i.GetProperty("id").GetString() == conversation && i.GetProperty("archived").GetBoolean()))
+            && Directory.Exists(Path.Combine(data, "conversations", conversation)) && b.Last("conversations")!.Value.GetProperty("current").GetString() == second);
+        await b.SendAsync(new { t = "archive", id = conversation, archived = false });
+        Check("an archived conversation can come back", await b.UntilAsync(l => l.Last(m => m.GetProperty("t").GetString() == "conversations").GetProperty("items").EnumerateArray().All(i => !i.GetProperty("archived").GetBoolean())));
         await b.SendAsync(new { t = "delete", id = "../../etc" });
         await b.SendAsync(new { t = "delete", id = conversation });
         Check("deleting a conversation removes its folder", await b.UntilAsync(l => l.Last(m => m.GetProperty("t").GetString() == "conversations").GetProperty("items").GetArrayLength() == 1) && !Directory.Exists(Path.Combine(data, "conversations", conversation)));

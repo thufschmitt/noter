@@ -10,8 +10,9 @@ namespace Longhand.Services;
 /// <summary>
 /// One conversation in the list. <c>AutoTitle</c> comes from the first exchange; a name the user gave wins over it.
 /// <c>Model</c> is the Claude model this conversation is answered by (null for one saved before each had its own).
+/// <c>Archived</c> ones are kept, and can still be opened, but are listed apart so they don't clutter the list.
 /// </summary>
-public sealed record Conversation(string Id, string AutoTitle, string CustomTitle, DateTimeOffset Updated, bool Blank, string? Model = null)
+public sealed record Conversation(string Id, string AutoTitle, string CustomTitle, DateTimeOffset Updated, bool Blank, string? Model = null, bool Archived = false)
 {
     [JsonIgnore]
     public string Title => CustomTitle.Length > 0 ? CustomTitle : AutoTitle.Length > 0 ? AutoTitle : "New conversation";
@@ -40,7 +41,7 @@ public sealed class ConversationIndex
             .Where(c => !string.IsNullOrEmpty(c.Id) && seen.Add(c.Id))
             .Select(c => c with { AutoTitle = c.AutoTitle ?? "", CustomTitle = c.CustomTitle ?? "" })
             .ToList();
-        if (index.Find(index.CurrentId) is null) index.CurrentId = index.Newest().FirstOrDefault()?.Id;
+        if (index.Find(index.CurrentId) is null) index.CurrentId = index.NextToOpen();
         return index;
     }
 
@@ -49,6 +50,15 @@ public sealed class ConversationIndex
     public Conversation? Find(string? id) => id is null ? null : Items.FirstOrDefault(c => c.Id == id);
 
     public IEnumerable<Conversation> Newest() => Items.OrderByDescending(c => c.Updated);
+
+    /// <summary>The conversations in the main list, newest first.</summary>
+    public IEnumerable<Conversation> Active() => Newest().Where(c => !c.Archived);
+
+    /// <summary>The archived conversations, newest first.</summary>
+    public IEnumerable<Conversation> Archived() => Newest().Where(c => c.Archived);
+
+    /// <summary>What to open when the open one goes away: the newest in the main list, else the newest archived one.</summary>
+    string? NextToOpen() => (Active().FirstOrDefault() ?? Newest().FirstOrDefault())?.Id;
 
     /// <summary>Adds an empty conversation, answered by <paramref name="model"/>, and makes it the open one.</summary>
     public Conversation Create(DateTimeOffset now, string? model = null)
@@ -85,9 +95,18 @@ public sealed class ConversationIndex
     public string? Delete(string id)
     {
         Items.RemoveAll(c => c.Id == id);
-        if (CurrentId == id) CurrentId = Newest().FirstOrDefault()?.Id;
+        if (CurrentId == id) CurrentId = NextToOpen();
         return CurrentId;
     }
+
+    /// <summary>Moves a conversation to the archive, or back to the main list. It keeps its place in time.</summary>
+    public void SetArchived(string id, bool archived) => Change(id, c => c with { Archived = archived });
+
+    /// <returns>
+    /// What to open after archiving the open conversation: the newest left in the main list, or null when it is empty (a new one
+    /// should be started then).
+    /// </returns>
+    public string? NextAfterArchiving(string id) => Active().FirstOrDefault(c => c.Id != id)?.Id;
 
     /// <summary>Drops conversations nothing was written in, except the one being kept. Returns their ids.</summary>
     public List<string> RemoveBlank(string? keepId)

@@ -915,7 +915,10 @@ document.addEventListener('keydown', e => {
 
 // ---------- conversations ----------
 
-let conversationState = { current: null, items: [] }, armedDelete = null, renaming = null;
+let conversationState = { current: null, items: [] }, armedDelete = null, renaming = null, showArchived = false;
+
+const archiveIcon = '<svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="5" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4"/></svg>';
+const unarchiveIcon = '<svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="5" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M12 18v-6M9 15l3-3 3 3"/></svg>';
 
 function when(iso) {
   const d = new Date(iso), now = new Date();
@@ -926,10 +929,24 @@ function when(iso) {
 
 function closeFlyout() { $('flyout').hidden = true; }
 
+// The flyout shows the main list, or (one tap away, at its foot) the archived conversations. Archiving keeps a conversation; only
+// from the archive can one be deleted for good.
 function renderConversations() {
   const list = $('conversationList');
   list.textContent = '';
+  const archived = conversationState.items.filter(c => c.archived);
+  if (showArchived && archived.length === 0) showArchived = false;
+  $('newConversation').hidden = showArchived;
+  if (showArchived) {
+    const back = document.createElement('button');
+    back.className = 'row section';
+    back.innerHTML = '<svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>Archived conversations';
+    back.title = 'Back to the conversations';
+    back.onclick = () => { showArchived = false; armedDelete = renaming = null; renderConversations(); };
+    list.append(back);
+  }
   for (const c of conversationState.items) {
+    if (!!c.archived !== showArchived) continue;
     const line = document.createElement('div');
     line.className = 'line' + (c.id === conversationState.current ? ' current' : '');
     if (renaming === c.id) {
@@ -953,14 +970,32 @@ function renderConversations() {
     open.lastChild.textContent = (c.id === conversationState.current ? 'Open now · ' : '') + when(c.updated);
     open.onclick = () => { closeFlyout(); send({ t: 'open', id: c.id }); };
     const rename = button('✎', 'Rename', () => { renaming = c.id; armedDelete = null; renderConversations(); });
-    const armed = armedDelete === c.id;
-    const del = button(armed ? 'Delete?' : '🗑', armed ? 'Tap again to delete this conversation for good' : 'Delete', () => {
-      if (!armed) { armedDelete = c.id; renderConversations(); return; }
-      armedDelete = null;
-      send({ t: 'delete', id: c.id });
-    });
-    line.append(open, rename, del);
+    if (!c.archived) {
+      const archive = button('', 'Archive (it stays under Archived)', () => { armedDelete = null; send({ t: 'archive', id: c.id, archived: true }); });
+      archive.innerHTML = archiveIcon;
+      archive.className = 'archive';
+      line.append(open, rename, archive);
+    } else {
+      const restore = button('', 'Back to the conversations', () => { armedDelete = null; send({ t: 'archive', id: c.id, archived: false }); });
+      restore.innerHTML = unarchiveIcon;
+      restore.className = 'unarchive';
+      const armed = armedDelete === c.id;
+      const del = button(armed ? 'Delete?' : '🗑', armed ? 'Tap again to delete this conversation for good' : 'Delete', () => {
+        if (!armed) { armedDelete = c.id; renderConversations(); return; }
+        armedDelete = null;
+        send({ t: 'delete', id: c.id });
+      });
+      line.append(open, rename, restore, del);
+    }
     list.append(line);
+  }
+  if (!showArchived && archived.length > 0) {
+    const more = document.createElement('button');
+    more.className = 'row section archived';
+    more.innerHTML = archiveIcon + '<span></span><svg viewBox="0 0 24 24" class="chevron"><path d="M9 18l6-6-6-6"/></svg>';
+    more.querySelector('span').textContent = `Archived (${archived.length})`;
+    more.onclick = () => { showArchived = true; armedDelete = renaming = null; renderConversations(); };
+    list.append(more);
   }
 }
 
@@ -974,7 +1009,7 @@ $('conversations').onclick = e => {
   e.stopPropagation();
   const flyout = $('flyout');
   flyout.hidden = !flyout.hidden;
-  if (!flyout.hidden) { armedDelete = renaming = null; renderConversations(); }
+  if (!flyout.hidden) { armedDelete = renaming = null; showArchived = false; renderConversations(); }
 };
 $('newConversation').onclick = () => { closeFlyout(); send({ t: 'new' }); };
 document.addEventListener('pointerdown', e => { if (!e.target.closest('#flyout, #conversations')) closeFlyout(); });

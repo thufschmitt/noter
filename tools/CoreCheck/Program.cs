@@ -81,6 +81,24 @@ index.Touch(newest.Id, t0.AddHours(2), blank: false);
 Check("deleting another conversation keeps the open one", index.Delete(oldest.Id) == newest.Id && index.CurrentId == newest.Id);
 Check("deleting the open one opens the newest left", index.Delete(newest.Id) is null && index.Items.Count == 0);
 
+var shelf = new ConversationIndex();
+var olderChat = shelf.Create(t0);
+var newerChat = shelf.Create(t0.AddHours(1));
+shelf.Touch(olderChat.Id, t0, blank: false);
+shelf.Touch(newerChat.Id, t0.AddHours(1), blank: false);
+Check("after archiving the open one, the newest other one in the main list opens", shelf.NextAfterArchiving(newerChat.Id) == olderChat.Id && shelf.NextAfterArchiving(olderChat.Id) == newerChat.Id);
+shelf.SetArchived(newerChat.Id, true);
+Check("an archived conversation is kept, but listed apart", shelf.Items.Count == 2 && shelf.Active().Select(c => c.Id).SequenceEqual(new[] { olderChat.Id }) && shelf.Archived().Select(c => c.Id).SequenceEqual(new[] { newerChat.Id }));
+Check("archiving the only one left in the main list leaves nothing to open there", shelf.NextAfterArchiving(olderChat.Id) is null);
+Check("being archived survives saving and loading", ConversationIndex.Parse(shelf.ToJson()).Find(newerChat.Id)!.Archived);
+Check("a list saved before archiving existed loads with nothing archived", ConversationIndex.Parse("""{"Items":[{"Id":"a","AutoTitle":"A","CustomTitle":"","Updated":"2026-11-10T09:00:00+00:00","Blank":false}],"CurrentId":"a"}""").Archived().Count() == 0);
+shelf.CurrentId = olderChat.Id;
+Check("deleting the open one prefers the main list, then the archive", shelf.Delete(olderChat.Id) == newerChat.Id);
+shelf.SetArchived(newerChat.Id, false);
+Check("an archived conversation can come back", shelf.Active().Count() == 1 && !shelf.Archived().Any());
+var archivedOnly = ConversationIndex.Parse("""{"Items":[{"Id":"a","AutoTitle":"A","CustomTitle":"","Updated":"2026-11-10T09:00:00+00:00","Blank":false,"Archived":true},{"Id":"b","AutoTitle":"B","CustomTitle":"","Updated":"2026-11-09T09:00:00+00:00","Blank":false}],"CurrentId":"gone"}""");
+Check("a dangling open conversation falls back to the main list before the archive", archivedOnly.CurrentId == "b");
+
 var saved = new ConversationIndex();
 var kept = saved.Create(t0);
 saved.Rename(kept.Id, "Kept");

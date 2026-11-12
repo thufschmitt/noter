@@ -370,6 +370,7 @@ public sealed partial class MainPage : Page, IPageView
     readonly Flyout _conversationsFlyout = new() { Placement = Windows.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Top };
     readonly StackPanel _conversationList = new() { Spacing = 2, Width = 340 };
     string? _armedDelete, _renaming;
+    bool _showArchived; // the flyout shows the archived conversations instead of the main list
 
     void BuildConversationsFlyout()
     {
@@ -377,14 +378,36 @@ public sealed partial class MainPage : Page, IPageView
         _conversationsFlyout.Opening += (_, _) =>
         {
             _armedDelete = _renaming = null;
+            _showArchived = false;
             RenderConversations();
         };
         ConversationsButton.Flyout = _conversationsFlyout;
     }
 
+    /// <summary>
+    /// The main list, with the archived conversations one tap away at its foot. Archiving keeps a conversation; only from the
+    /// archive can one be deleted for good.
+    /// </summary>
     void RenderConversations()
     {
         _conversationList.Children.Clear();
+        var archived = _session.Index.Archived().ToList();
+        if (archived.Count == 0) _showArchived = false;
+
+        if (_showArchived)
+        {
+            var back = SectionButton("\uE76B", "Archived conversations", null);
+            ToolTipService.SetToolTip(back, "Back to the conversations");
+            back.Click += (_, _) =>
+            {
+                _showArchived = false;
+                _armedDelete = _renaming = null;
+                RenderConversations();
+            };
+            _conversationList.Children.Add(back);
+            foreach (var c in archived) _conversationList.Children.Add(ConversationRow(c));
+            return;
+        }
 
         var add = new Button { HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Left };
         var addLabel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
@@ -398,7 +421,46 @@ public sealed partial class MainPage : Page, IPageView
         };
         _conversationList.Children.Add(add);
 
-        foreach (var c in _session.Index.Newest()) _conversationList.Children.Add(ConversationRow(c));
+        foreach (var c in _session.Index.Active()) _conversationList.Children.Add(ConversationRow(c));
+
+        if (archived.Count > 0)
+        {
+            var more = SectionButton("\uE7B8", $"Archived ({archived.Count})", "\uE76C");
+            more.Margin = new Thickness(0, 6, 0, 0);
+            more.Click += (_, _) =>
+            {
+                _showArchived = true;
+                _armedDelete = _renaming = null;
+                RenderConversations();
+            };
+            _conversationList.Children.Add(more);
+        }
+    }
+
+    /// <summary>A plain full-width row: an icon, a label and, optionally, a chevron at the end.</summary>
+    static Button SectionButton(string glyph, string text, string? trailingGlyph)
+    {
+        var grid = new Grid { ColumnSpacing = 10 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.Children.Add(new FontIcon { Glyph = glyph, FontSize = 14 });
+        var label = new TextBlock { Text = text, Opacity = 0.85 };
+        Grid.SetColumn(label, 1);
+        grid.Children.Add(label);
+        if (trailingGlyph is not null)
+        {
+            var chevron = new FontIcon { Glyph = trailingGlyph, FontSize = 12, Opacity = 0.75 };
+            Grid.SetColumn(chevron, 2);
+            grid.Children.Add(chevron);
+        }
+        return new Button
+        {
+            Content = grid,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Background = new SolidColorBrush(Colors.Transparent),
+        };
     }
 
     UIElement ConversationRow(Conversation c)
@@ -472,6 +534,35 @@ public sealed partial class MainPage : Page, IPageView
             RenderConversations();
         };
 
+        Grid.SetColumn(rename, 1);
+        row.Children.Add(open);
+        row.Children.Add(rename);
+
+        if (!c.Archived)
+        {
+            var archive = new Button { Content = new FontIcon { Glyph = "\uE7B8", FontSize = 14 } };
+            ToolTipService.SetToolTip(archive, "Archive (it stays under Archived)");
+            archive.Click += async (_, _) =>
+            {
+                _armedDelete = null;
+                await _session.ArchiveConversationAsync(c.Id, true);
+                RenderConversations();
+            };
+            Grid.SetColumn(archive, 2);
+            row.Children.Add(archive);
+            return row;
+        }
+
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var restore = new Button { Content = new FontIcon { Glyph = "\uE7A7", FontSize = 14 } };
+        ToolTipService.SetToolTip(restore, "Back to the conversations");
+        restore.Click += async (_, _) =>
+        {
+            _armedDelete = null;
+            await _session.ArchiveConversationAsync(c.Id, false);
+            RenderConversations();
+        };
+
         bool armed = _armedDelete == c.Id;
         var delete = new Button { Content = armed ? new TextBlock { Text = "Delete?" } : new FontIcon { Glyph = "\uE74D", FontSize = 14 } };
         ToolTipService.SetToolTip(delete, armed ? "Tap again to delete this conversation for good" : "Delete");
@@ -488,10 +579,9 @@ public sealed partial class MainPage : Page, IPageView
             RenderConversations();
         };
 
-        Grid.SetColumn(rename, 1);
-        Grid.SetColumn(delete, 2);
-        row.Children.Add(open);
-        row.Children.Add(rename);
+        Grid.SetColumn(restore, 2);
+        Grid.SetColumn(delete, 3);
+        row.Children.Add(restore);
         row.Children.Add(delete);
         return row;
     }

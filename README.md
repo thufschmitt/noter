@@ -48,9 +48,9 @@ After that, starting the app from the Start menu or a tile checks for a newer ve
 | Pen barrel button held (web), or mouse right button | Lasso: circle editable parts of a layout to select them |
 | Eraser button or the pen's eraser end | Erases whole strokes |
 | Ctrl+Z | Undoes the last stroke or erase |
-| Conversations button | Opens the list of conversations: start a new one, switch, rename, or delete (tap twice). Ctrl+N starts a new one. |
+| Conversations button | Opens the list of conversations: start a new one, switch, rename, or archive. Archived conversations are kept under **Archived** at the foot of the list, where they can still be opened, brought back, or deleted for good (tap twice). Ctrl+N starts a new one. |
 
-Each conversation is its own page. They save themselves to the app's local folder, and the app reopens in the one you were last in. Conversations are fully separate: the model only sees the open one. Titles come from the first thing the model heard, and you can rename them. A conversation you never write in disappears when you move away from it, and switching while the model is answering stops that answer. The page from before conversations existed becomes the first one.
+Each conversation is its own page. They save themselves to the app's local folder, and the app reopens in the one you were last in. Conversations are fully separate: the model only sees the open one. Titles come from the first thing the model heard, and you can rename them. Archiving the open conversation opens the newest one left in the list (or a new one); an archived one stays archived when you open it. A conversation you never write in disappears when you move away from it, and switching while the model is answering stops that answer. The page from before conversations existed becomes the first one.
 
 ## How it gets answers
 

@@ -806,6 +806,35 @@ public sealed class PageSession
         });
     }
 
+    /// <summary>
+    /// Moves a conversation to the archive, or back. Archiving the open one opens the newest left in the main list (or a new one),
+    /// so the page shown is always one from the main list unless an archived one is opened on purpose.
+    /// </summary>
+    public async Task ArchiveConversationAsync(string id, bool archived)
+    {
+        if (_index.Find(id) is null) return;
+        if (!archived || id != _currentId)
+        {
+            _index.SetArchived(id, archived);
+            await SaveIndexAsync();
+            return;
+        }
+        if (IsBlankNow)
+        {
+            // Nothing to keep: archiving an empty page is just starting afresh.
+            await DeleteConversationAsync(id);
+            return;
+        }
+        await SwitchAsync(async () =>
+        {
+            var next = _index.NextAfterArchiving(id);
+            _index.SetArchived(id, true);
+            await DropBlankAsync(keepId: next);
+            await ShowConversationAsync(next ?? _index.Create(DateTimeOffset.UtcNow, _data.DefaultModel).Id);
+            await SaveIndexAsync();
+        });
+    }
+
     public async Task RenameConversationAsync(string id, string name)
     {
         _index.Rename(id, name);

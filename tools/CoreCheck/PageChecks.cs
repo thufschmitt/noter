@@ -250,6 +250,17 @@ static class PageChecks
         await session.OpenConversationAsync(busyId);
         check("and asks for it again when reopened", session.PendingCount == 1);
 
+        // ----- archiving -----
+        await session.ArchiveConversationAsync(busyId, true);
+        check("archiving the open conversation keeps it and opens another from the main list", session.CurrentId == firstId && session.Index.Find(busyId)!.Archived && data.Pages[busyId].Ink.Count == 1);
+        await session.ArchiveConversationAsync(firstId, true);
+        check("archiving the last one in the main list starts a new one", session.CurrentId != firstId && session.CurrentId != busyId && session.Index.Find(firstId)!.Archived && session.Index.Active().Count() == 1 && session.Index.Archived().Count() == 2);
+        await session.OpenConversationAsync(busyId);
+        check("an archived conversation can still be opened, and stays archived", session.CurrentId == busyId && view.Ink.Count == 1 && session.Index.Find(busyId)!.Archived && session.Index.Items.Count == 2);
+        await session.ArchiveConversationAsync(firstId, false);
+        check("an archived conversation can come back to the main list", !session.Index.Find(firstId)!.Archived);
+        await session.ArchiveConversationAsync(busyId, false);
+
         // ----- deleting -----
         await session.DeleteConversationAsync(busyId);
         check("deleting the open conversation opens another", session.CurrentId == firstId && !session.Index.Items.Any(c => c.Id == busyId) && !data.Pages.ContainsKey(busyId));

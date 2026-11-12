@@ -251,6 +251,10 @@ public sealed class WebConnection : IPageView, IPageData
             case "delete":
                 if (Str(m, "id") is { } delete && _session.Index.Find(delete) is not null) await _session.DeleteConversationAsync(delete);
                 break;
+            case "archive":
+                if (Str(m, "id") is { } archive && _session.Index.Find(archive) is not null)
+                    await _session.ArchiveConversationAsync(archive, !(m.TryGetProperty("archived", out var a) && a.ValueKind == JsonValueKind.False));
+                break;
             case "model":
                 // The model of the open conversation (and so of new ones after it).
                 if (_started && Str(m, "id") is { } model) await _session.SetModelAsync(model);
@@ -434,7 +438,7 @@ public sealed class WebConnection : IPageView, IPageData
         Send("conversations",
             ("current", index.CurrentId),
             ("model", ModelChoice.Resolve(index.Find(index.CurrentId)?.Model ?? _store.Model)),
-            ("items", index.Newest().Select(c => new { id = c.Id, title = c.Title, updated = c.Updated })));
+            ("items", index.Newest().Select(c => new { id = c.Id, title = c.Title, updated = c.Updated, archived = c.Archived })));
     }
 
     public async Task<List<SavedNote>?> LoadPageAsync(string id)

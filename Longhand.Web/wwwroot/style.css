@@ -54,6 +54,10 @@ button.accent:hover:not(:disabled) { background: var(--accent); filter: brightne
 #conversationList .open small { opacity: .7; }
 #conversationList .line.current .open b { font-weight: 800; }
 #conversationList input { flex: 1; min-width: 0; }
+#flyout .row[hidden] { display: none; }
+#conversationList .section { border-color: transparent; opacity: .85; }
+#conversationList .section.archived { margin-top: 6px; border-top: 1px solid var(--trayline); border-radius: 0; padding-top: 10px; }
+#conversationList .section span { flex: 1; }
 
 dialog { width: min(94vw, 430px); max-height: 92vh; padding: 18px; border-radius: 12px; border: 1px solid var(--trayline); background: var(--paper); color: var(--text); }
 dialog::backdrop { background: rgba(0, 0, 0, .4); }
