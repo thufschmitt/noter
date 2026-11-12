@@ -180,6 +180,16 @@ static class AgentChecks
         var rendered = Blocks.Document(Blocks.Sanitize("<layout><box edit rot=\"15\">x</box></layout>")!);
         check("a turned part is turned in the document", rendered.Contains("data-rot=\"15\" style=\"transform:rotate(15deg)\""));
 
+        // ----- colours -----
+        var coloured = Blocks.Sanitize("<layout color=\"Red\" bg=\"grey\"><box id=\"a\" edit color=\"#ABC\" bg=\"#1e90ff\">x</box><text color=\"url(http://e/x)\">y</text><box color=\"red;background:url(//e)\" bg=\"expression(1)\">z</box><box color=\"#12\">w</box><rule color=\"green\"/></layout>")!;
+        check("palette names and hex colours are kept, in lower case, and anything else is dropped", coloured.StartsWith("<layout color=\"red\" bg=\"gray\">") && coloured.Contains("<box id=\"a\" color=\"#abc\" bg=\"#1e90ff\" edit>x</box>") && coloured.Contains("<text>y</text>") && coloured.Contains("<box>z</box>") && coloured.Contains("<box>w</box>") && coloured.Contains("<rule color=\"green\"/>"));
+        check("a coloured layout survives being read and written again", Layout.Serialize(Layout.Parse(coloured)!) == coloured);
+        var tinted = Blocks.Document(coloured);
+        check("a palette colour is a class, with a light and a dark value", tinted.Contains("class=\"n layout fg-red bg-gray\"") && tinted.Contains(".fg-red{color:#C62828}") && tinted.Contains("@media (prefers-color-scheme: dark){.fg-red{color:#FF8A80}") && tinted.Contains(".bg-blue{background:color-mix(in srgb,#1565C0 22%,transparent)}"));
+        check("a hex colour is a style, and nothing else can get into one", tinted.Contains("style=\"color:#abc;background:color-mix(in srgb,#1e90ff 22%,transparent)\"") && !tinted.Contains("url(") && !tinted.Contains("expression") && !tinted.Contains("http://e"));
+        check("a turned, coloured part keeps both", Blocks.Document(Blocks.Sanitize("<layout><box edit rot=\"15\" color=\"#f00\">x</box></layout>")!).Contains("data-rot=\"15\" style=\"color:#f00;transform:rotate(15deg)\""));
+        check("colours don't get in the way of editing", Layout.ApplyEdits(coloured, new[] { new DrawingChange("a", "rotate", Degrees: 20) }) is { } turnedColour && turnedColour.Contains("<box id=\"a\" color=\"#abc\" bg=\"#1e90ff\" edit rot=\"20\">"));
+
         // ----- the user's changes -----
         var moved = Layout.ApplyEdits(board, new[] { new DrawingChange("c1", "move", "area-1") })!;
         check("a part can be moved into a container that accepts drops, at the end by default", moved.Contains("<col id=\"todo\" title=\"To do\" drop>\n") && moved.IndexOf("id=\"item-1\"") < moved.IndexOf("<col id=\"area-1\"") && moved.IndexOf("<col id=\"area-1\"") < moved.IndexOf("id=\"c1\" edit") && Layout.Find(Layout.Parse(moved)!, "c1")!.Parent!.Id == "area-1");

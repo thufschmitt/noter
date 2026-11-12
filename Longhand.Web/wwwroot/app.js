@@ -795,7 +795,8 @@ async function paintBlock(c, d, x, y) {
   try {
     let svg;
     if (d.kind === 'layout') {
-      const parsed = new DOMParser().parseFromString(inked(d.doc, '#2C4FC4'), 'text/html');
+      // The snapshot is drawn on white: the palette's light colours, whatever the theme.
+      const parsed = new DOMParser().parseFromString(inked(d.doc, '#2C4FC4').replace(/prefers-color-scheme:\s*dark/g, 'prefers-color-scheme: none'), 'text/html');
       parsed.querySelectorAll('meta').forEach(e => e.remove());
       const xhtml = new XMLSerializer().serializeToString(parsed.documentElement);
       svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${d.nw}" height="${d.nh}"><foreignObject x="0" y="0" width="100%" height="100%">${xhtml}</foreignObject></svg>`;

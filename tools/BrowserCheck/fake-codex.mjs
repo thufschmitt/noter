@@ -26,9 +26,9 @@ http.createServer((req, res) => {
     const text = calls === 1
       ? 'HEARD: hello notebook\n---\nHi there! This is the model answering in the notebook, on the ruled lines, in blue handwriting.'
       : body.includes('changed your layouts by hand')
-        ? 'HEARD: [moved the cards]\n---\nMoved it.\n' + board('', card('c1', 'Call Anna') + card('c2', 'Gym') + card('c3', 'Pay rent'), 'Updated by the model.')
+        ? 'HEARD: [moved the cards]\n---\nMoved it.\n' + board('', card('c1', 'Call Anna') + card('c2', 'Gym') + '<box id="c3" edit color="red" bg="yellow">Pay rent</box>', 'Updated by the model.')
         : calls === 2
-          ? 'HEARD: [a scribble] and a question\n---\nHere is your week, with a board.\n' + board(card('c1', 'Call Anna') + card('c2', 'Gym') + card('c3', 'Pay rent'), '')
+          ? 'HEARD: [a scribble] and a question\n---\nHere is your week, with a board.\n' + board(card('c1', 'Call Anna') + card('c2', 'Gym') + '<box id="c3" edit color="red" bg="yellow">Pay rent</box>', '')
           : 'HEARD: [a scribble] and a question\n---\nHere is a sketch.\n' + svg;
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     res.write(sse({ type: 'response.created', response: { id: 'resp_' + calls } }));

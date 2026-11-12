@@ -56,7 +56,34 @@ public static class Layout
     static readonly HashSet<string> Containers = new() { "row", "col", "box" };
     /// <summary>Elements that are not part of the language and whose content is not words either: dropped with everything in them.</summary>
     static readonly HashSet<string> DropWithContent = new() { "script", "style", "svg", "iframe", "object", "embed", "template", "noscript", "foreignobject" };
-    static readonly string[] AttrOrder = { "id", "title", "edit", "drop", "fit", "rot" };
+    static readonly string[] AttrOrder = { "id", "title", "color", "bg", "edit", "drop", "fit", "rot" };
+
+    /// <summary>
+    /// The colour names a layout can use, each with its value on a light page and on a dark one (the page follows the theme, so
+    /// "red" stays readable in both). A colour can also be given as <c>#rgb</c> or <c>#rrggbb</c>, which is shown as it is.
+    /// </summary>
+    public static readonly IReadOnlyDictionary<string, (string Light, string Dark)> Palette = new Dictionary<string, (string, string)>
+    {
+        ["red"] = ("#C62828", "#FF8A80"),
+        ["orange"] = ("#D86A00", "#FFB066"),
+        ["yellow"] = ("#B58900", "#FFD84D"),
+        ["green"] = ("#2E7D32", "#7FD88A"),
+        ["teal"] = ("#00796B", "#5CD6C6"),
+        ["blue"] = ("#1565C0", "#7DB4FF"),
+        ["purple"] = ("#7B1FA2", "#D29BF5"),
+        ["pink"] = ("#C2185B", "#FF8FB8"),
+        ["brown"] = ("#6D4C41", "#C9A28F"),
+        ["gray"] = ("#616161", "#B0B0B0"),
+    };
+    static readonly Regex HexColor = new(@"^#(?:[0-9a-f]{3}|[0-9a-f]{6})$", RegexOptions.Compiled);
+
+    /// <summary>A palette name or a hex colour in its canonical (lower case) form; null for anything else (nothing that could carry CSS or a URL gets through).</summary>
+    static string? NormalizeColor(string value)
+    {
+        value = value.Trim().ToLowerInvariant();
+        if (value == "grey") value = "gray";
+        return Palette.ContainsKey(value) || HexColor.IsMatch(value) ? value : null;
+    }
     static readonly Regex IdRule = new(@"^[A-Za-z][A-Za-z0-9_-]{0,39}$", RegexOptions.Compiled);
 
     // ----- reading it -----
@@ -194,6 +221,10 @@ public static class Layout
             case "title":
                 value = Regex.Replace(value, @"\s+", " ").Trim();
                 if (value.Length > 0) node.Attrs["title"] = value.Length > MaxTitle ? value[..MaxTitle] : value;
+                break;
+            case "color":
+            case "bg":
+                if (NormalizeColor(value) is { } colour) node.Attrs[key] = colour;
                 break;
             case "edit":
             case "drop":
@@ -453,11 +484,17 @@ public static class Layout
         if (n.Has("edit")) sb.Append(" edit");
         if (n.Has("drop")) sb.Append(" drop");
         if (n.Has("fit")) sb.Append(" fit");
+        // A palette colour is a class (which follows the theme); a hex colour is a style. Both were checked when the layout was read.
+        var styles = new List<string>();
+        if (n.Attrs.TryGetValue("color", out var color)) { if (Palette.ContainsKey(color)) sb.Append(" fg-").Append(color); else styles.Add("color:" + color); }
+        if (n.Attrs.TryGetValue("bg", out var bg)) { if (Palette.ContainsKey(bg)) sb.Append(" bg-").Append(bg); else styles.Add("background:color-mix(in srgb," + bg + " 22%,transparent)"); }
+        if (n.Rot != 0) styles.Add("transform:rotate(" + n.Rot.ToString("0.#", CultureInfo.InvariantCulture) + "deg)");
         sb.Append('"');
         if (n.Id is { } id) sb.Append(" id=\"").Append(Encode(id)).Append('"');
         if (n.Has("edit")) sb.Append(" data-edit");
         if (n.Has("drop")) sb.Append(" data-drop");
-        if (n.Rot != 0) sb.Append(" data-rot=\"").Append(n.Rot.ToString("0.#", CultureInfo.InvariantCulture)).Append("\" style=\"transform:rotate(").Append(n.Rot.ToString("0.#", CultureInfo.InvariantCulture)).Append("deg)\"");
+        if (n.Rot != 0) sb.Append(" data-rot=\"").Append(n.Rot.ToString("0.#", CultureInfo.InvariantCulture)).Append('"');
+        if (styles.Count > 0) sb.Append(" style=\"").Append(string.Join(";", styles)).Append('"');
         sb.Append('>');
         if (n.Attrs.TryGetValue("title", out var title)) sb.Append("<div class=\"title\">").Append(Encode(title)).Append("</div>");
         foreach (var k in n.Kids) Render(k, sb);
@@ -493,8 +530,17 @@ public static class Layout
             .drop { min-height: 56px; }
             .rule { border-top: 1.5px solid currentColor; opacity: .6; margin: 6px 0; }
             .text { overflow-wrap: anywhere; }
+            PALETTE
             </style></head>
             <body>BLOCK</body></html>
-            """.Replace("FONTS", Blocks.HandFonts).Replace("BLOCK", body.ToString());
+            """.Replace("FONTS", Blocks.HandFonts).Replace("PALETTE", PaletteCss()).Replace("BLOCK", body.ToString());
+    }
+
+    /// <summary>The classes for the palette colours: the light values, and the dark ones when the page is dark. A background is a soft tint, so the words on it stay readable.</summary>
+    static string PaletteCss()
+    {
+        string Rules(Func<(string Light, string Dark), string> pick) =>
+            string.Concat(Palette.Select(p => $".fg-{p.Key}{{color:{pick(p.Value)}}}.bg-{p.Key}{{background:color-mix(in srgb,{pick(p.Value)} 22%,transparent)}}"));
+        return Rules(v => v.Light) + "@media (prefers-color-scheme: dark){" + Rules(v => v.Dark) + "}";
     }
 }
