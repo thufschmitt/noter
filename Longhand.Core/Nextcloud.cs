@@ -216,7 +216,7 @@ public sealed class Nextcloud
                 var href = ((string?)response.Element(D + "href") ?? "").TrimEnd('/');
                 var id = calendar.Segment + "/" + href.Split('/').Last();
                 foreach (var e in ICalendar.ParseEvents(data.Value, calendar.Name, floatingZone))
-                    events.Add(e with { Id = IsEventId(id) ? id : "" });
+                    events.Add(e with { Id = !IsEventId(id) ? "" : e.Repeats ? id + "#" + OccurrenceKey(e) : id });
             }
         }
         return events;
@@ -228,6 +228,48 @@ public sealed class Nextcloud
 
     /// <summary>Whether this is an event id as <see cref="EventsAsync"/> gives them: a calendar and a file name, nothing that climbs out.</summary>
     public static bool IsEventId(string? id) => id is not null && EventId.IsMatch(id) && !id.Split('/').Any(part => part is "." or "..");
+
+    /// <summary>
+    /// The part of an id that names one occurrence of a repeating event: its start, as UTC (<c>20261118T080000Z</c>) or, for an all-day
+    /// event, its date (<c>20261118</c>). The id then reads <c>personal/a.ics#20261118T080000Z</c>; every occurrence is in the same file.
+    /// </summary>
+    public static string OccurrenceKey(CalendarEvent e) => e.AllDay ? e.Start.ToString("yyyyMMdd", CultureInfo.InvariantCulture) : e.Start.UtcDateTime.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
+
+    /// <summary>Splits an id as <see cref="EventsAsync"/> gives them into the event's file and, for one occurrence of a repeating event, its key. False when it isn't one.</summary>
+    public static bool SplitId(string? id, out string file, out string? key)
+    {
+        file = id ?? "";
+        key = null;
+        if (id is null) return false;
+        int hash = id.IndexOf('#');
+        if (hash >= 0)
+        {
+            file = id[..hash];
+            key = id[(hash + 1)..];
+            if (!TryParseOccurrence(key, out _, out _)) return false;
+        }
+        return IsEventId(file);
+    }
+
+    /// <summary>Reads an occurrence key: the start, and whether it is a date (all-day).</summary>
+    public static bool TryParseOccurrence(string? key, out DateTimeOffset start, out bool allDay)
+    {
+        start = default;
+        allDay = false;
+        if (key is null) return false;
+        if (key.Length == 8 && DateTime.TryParseExact(key, "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var day))
+        {
+            start = new DateTimeOffset(day, TimeSpan.Zero);
+            allDay = true;
+            return true;
+        }
+        if (key.Length == 16 && DateTime.TryParseExact(key, "yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var moment))
+        {
+            start = new DateTimeOffset(moment, TimeSpan.Zero);
+            return true;
+        }
+        return false;
+    }
 
     Uri EventUri(NextcloudAccount account, string id)
     {

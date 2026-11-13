@@ -110,9 +110,41 @@ static class CalendarWriteChecks
         check("deleting removes it and says what it was", !server.Events.ContainsKey(path) && deleted.Contains("Dentist (moved by phone)") && server.Requests.Last(q => q.Method == "DELETE").Headers["If-Match"] == "\"v99\"");
         check("deleting it twice says it is gone", (await Fails(() => tools["calendar_delete_event"].RunAsync(Args($$"""{"id":"{{path}}"}"""), default)))?.Contains("no such event") == true);
 
+        // ----- a repeating event, one occurrence at a time -----
+        server.Events["personal/gym.ics"] = (weekly, "\"g1\"");
+        const string first = "personal/gym.ics#20261118T080000Z";
+        var movedOne = await tools["calendar_change_event"].RunAsync(Args($$"""{"id":"{{first}}","start":"2026-11-18T12:00"}"""), default);
+        var gym = server.Events["personal/gym.ics"].Ics;
+        var gymEvents = ICalendar.ParseEvents(gym, "P", Plus1);
+        check("moving an occurrence adds an exception at the new time, one hour long, and the event keeps repeating", gymEvents.Count == 2 && gym.Contains("RRULE:FREQ=WEEKLY") && gym.Contains("RECURRENCE-ID:20261118T080000Z")
+            && gymEvents[1].Start == new DateTimeOffset(2026, 11, 18, 11, 0, 0, TimeSpan.Zero) && gymEvents[1].End == gymEvents[1].Start.AddHours(1) && gymEvents[0].Start == new DateTimeOffset(2026, 11, 11, 8, 0, 0, TimeSpan.Zero));
+        check("it says it was that occurrence, and gives the id it has now", movedOne.StartsWith("Changed that occurrence") && movedOne.Contains("12:00–13:00") && movedOne.Contains("{id: personal/gym.ics#20261118T110000Z}"));
+        check("it was written over the version that was read", server.Requests.Last(q => q.Method == "PUT").Headers["If-Match"] == "\"g1\"");
+        await tools["calendar_change_event"].RunAsync(Args("""{"id":"personal/gym.ics#20261118T110000Z","title":"Swim"}"""), default);
+        var again2 = ICalendar.ParseEvents(server.Events["personal/gym.ics"].Ics, "P", Plus1);
+        check("it is found again by where it is now, and changed, not added twice", again2.Count == 2 && again2[1].Title == "Swim" && again2[0].Title == "Gym" && again2[1].Start == new DateTimeOffset(2026, 11, 18, 11, 0, 0, TimeSpan.Zero));
+        await tools["calendar_change_event"].RunAsync(Args("""{"id":"personal/gym.ics#20261125T080000Z","title":"Aqua"}"""), default);
+        check("another occurrence is its own exception", ICalendar.ParseEvents(server.Events["personal/gym.ics"].Ics, "P", Plus1) is { Count: 3 } three && three[2].Title == "Aqua" && three[2].Start == new DateTimeOffset(2026, 11, 25, 8, 0, 0, TimeSpan.Zero));
+        var named = await tools["calendar_change_event"].RunAsync(Args("""{"id":"personal/gym.ics","scope":"all","title":"Pool time","location":""}"""), default);
+        var whole = ICalendar.ParseEvents(server.Events["personal/gym.ics"].Ics, "P", Plus1);
+        check("with scope all the repeating event itself is changed (its title, here), and not the occurrences changed on their own", whole[0].Title == "Pool time" && whole[0].Location == "" && whole[1].Title == "Swim" && whole[2].Title == "Aqua" && named.Contains("every occurrence"));
+        check("the times of all of them aren't changed", (await Fails(() => tools["calendar_change_event"].RunAsync(Args("""{"id":"personal/gym.ics","scope":"all","start":"2026-11-18T12:00"}"""), default)))?.Contains("can't be changed") == true);
+        var cancelledOne = await tools["calendar_delete_event"].RunAsync(Args("""{"id":"personal/gym.ics#20261118T110000Z"}"""), default);
+        var left = server.Events["personal/gym.ics"].Ics;
+        check("deleting an occurrence leaves the original time out of the rule and drops its exception", cancelledOne.StartsWith("Deleted that occurrence of") && left.Contains("EXDATE:20261118T080000Z") && ICalendar.ParseEvents(left, "P", Plus1).Count == 2 && !left.Contains("RECURRENCE-ID:20261118T080000Z"));
+        check("an id that names no occurrence, or one before the event began, is refused", (await Fails(() => tools["calendar_change_event"].RunAsync(Args("""{"id":"personal/gym.ics#soon","title":"x"}"""), default)))?.Contains("id must be") == true
+            && (await Fails(() => tools["calendar_change_event"].RunAsync(Args("""{"id":"personal/gym.ics#20261101T080000Z","title":"x"}"""), default)))?.Contains("isn't there") == true
+            && (await Fails(() => tools["calendar_change_event"].RunAsync(Args("""{"id":"personal/gym.ics","title":"x"}"""), default)))?.Contains("repeating") == true
+            && (await Fails(() => tools["calendar_delete_event"].RunAsync(Args("""{"id":"personal/gym.ics","scope":"week"}"""), default)))?.Contains("scope must be") == true);
+        await tools["calendar_delete_event"].RunAsync(Args("""{"id":"personal/gym.ics","scope":"all"}"""), default);
+        check("with scope all, deleting removes the whole repeating event", !server.Events.ContainsKey("personal/gym.ics"));
+
         // Reading shows the ids that changing and deleting need.
         server.Ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:a\r\nDTSTART:20261111T080000Z\r\nDTEND:20261111T090000Z\r\nSUMMARY:Standup\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         var agenda = await tools["calendar_events"].RunAsync(Args("""{"start":"2026-11-11","end":"2026-11-11"}"""), default);
         check("the agenda gives each event's id", agenda.Contains("Standup [Personal] {id: personal/a.ics}"));
+        // The server gives each occurrence of a repeating event as its own event; its id names the occurrence.
+        server.Ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:g\r\nRECURRENCE-ID:20261111T080000Z\r\nDTSTART:20261111T080000Z\r\nDTEND:20261111T090000Z\r\nSUMMARY:Gym\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        check("a repeating event's occurrence has an id that names it", (await tools["calendar_events"].RunAsync(Args("""{"start":"2026-11-11","end":"2026-11-11"}"""), default)).Contains("Gym [Personal] (repeats) {id: personal/a.ics#20261111T080000Z}"));
     }
 }

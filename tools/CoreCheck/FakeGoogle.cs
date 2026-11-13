@@ -27,6 +27,10 @@ sealed class FakeGoogle : FakeServer
             Day("e2", "Trip", "2026-11-20", "2026-11-22"),
             Ev("e3_20261111T100000Z", "Weekly sync", "2026-11-11T11:00:00+01:00", "2026-11-11T12:00:00+01:00", ("recurringEventId", "e3")),
         };
+        // The repeating event itself, a week before the occurrence listed above (a real calendar gives it back by its own id).
+        var master = Ev("e3", "Weekly sync", "2026-10-28T11:00:00+01:00", "2026-10-28T12:00:00+01:00");
+        master["recurrence"] = new JsonArray("RRULE:FREQ=WEEKLY");
+        Events[Primary].Add(master);
         Events[Team] = new() { Ev("e4", "Planning", "2026-11-11T14:00:00+01:00", "2026-11-11T15:00:00+01:00", ("location", "Room 2")) };
         Events[Holidays] = new() { Day("h1", "Armistice", "2026-11-11", "2026-11-12") };
     }

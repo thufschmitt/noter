@@ -11,8 +11,8 @@ namespace Longhand.Services;
 
 /// <summary>
 /// The calendar tools Claude gets while a Nextcloud account is connected: reading events, and adding, changing and deleting
-/// them. Changes go through the version the event was read at, so an event edited elsewhere in the meantime is left alone, and
-/// repeating events are never changed (one change could rewrite every occurrence).
+/// them. Changes go through the version the event was read at, so an event edited elsewhere in the meantime is left alone. A
+/// repeating event is changed one occurrence at a time, unless the model says every one.
 /// </summary>
 public static class CalendarTools
 {
@@ -63,6 +63,17 @@ public class CalendarClock
         }
         return false;
     }
+
+    /// <summary>The scope of a change or a deletion of a repeating event: this occurrence (the default) or every one.</summary>
+    internal static bool AllOccurrences(IReadOnlyDictionary<string, JsonElement> input) =>
+        Text(input, "scope")?.ToLowerInvariant() switch
+        {
+            null or "" or "occurrence" => false,
+            "all" => true,
+            _ => throw new InvalidOperationException("scope must be \"occurrence\" (only the occurrence the id names, the default) or \"all\" (every occurrence of a repeating event)."),
+        };
+
+    internal const string ScopeJson = """{"type":"string","enum":["occurrence","all"],"description":"Only for a repeating event. occurrence (the default): only the occurrence the id names, which is what the user means when they move or change one instance. all: every occurrence (the title, location or notes only, never the times); use it only when the user clearly means all of them."}""";
 
     internal static string? Text(IReadOnlyDictionary<string, JsonElement> input, string key) =>
         input.TryGetValue(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString()!.Trim() : null;
@@ -155,19 +166,42 @@ public sealed class CalendarContext : CalendarClock
         if (Only is { Count: 0 }) throw CalendarChoice.NoneChosen("Nextcloud");
     }
 
-    /// <summary>The event behind an id, as it is now on the server, with its version tag.</summary>
-    internal async Task<(string Ics, string? ETag, CalendarEvent Event)> ReadEventAsync(string id, CancellationToken ct)
+    /// <summary>An event as it is now on the server, with its version tag, and what a change to it works on.</summary>
+    /// <param name="File">The event's file (the id without an occurrence).</param>
+    /// <param name="Event">The event, or for one occurrence of a repeating event, that occurrence as the calendar shows it.</param>
+    /// <param name="Repeats">Whether it is a repeating event.</param>
+    /// <param name="Occurrence">The occurrence a change is for; null for a plain event, or for the whole repeating event.</param>
+    internal sealed record EventRead(string File, string Ics, string? ETag, CalendarEvent Event, bool Repeats, CalendarEvent? Occurrence);
+
+    /// <summary>
+    /// The event behind an id, as it is now on the server. For a repeating event the id names one occurrence (the default), which is
+    /// read as the calendar shows it, or, with <paramref name="all"/>, every occurrence, which is the event itself.
+    /// </summary>
+    internal async Task<EventRead> ReadEventAsync(string id, bool all, CancellationToken ct)
     {
-        if (!Uses(id.Split('/')[0])) throw CalendarChoice.NotChosen();
-        var (ics, etag) = await Nextcloud.GetEventAsync(Account, id, ct);
-        var events = ICalendar.ParseEvents(ics, id.Split('/')[0], Zone);
-        if (events.Count == 0) throw new InvalidOperationException("That isn't an event Longhand can read.");
-        if (events.Count > 1 || events[0].Repeats) throw new InvalidOperationException("That is a repeating event; Longhand can't change or delete repeating events. Tell the user to change it in their calendar app.");
-        return (ics, etag, events[0]);
+        if (!Nextcloud.SplitId(id, out var file, out var key)) throw new InvalidOperationException("id must be an event's id, as reading the calendar shows it ({id: …}).");
+        var calendar = file.Split('/')[0];
+        if (!Uses(calendar)) throw CalendarChoice.NotChosen();
+        var (ics, etag) = await Nextcloud.GetEventAsync(Account, file, ct);
+
+        if (!ICalendar.Repeats(ics))
+        {
+            var events = ICalendar.ParseEvents(ics, calendar, Zone);
+            if (events.Count == 0) throw new InvalidOperationException("That isn't an event Longhand can read.");
+            if (events.Count > 1 || events[0].Repeats) throw new InvalidOperationException("That is a repeating event that Longhand can't read well enough to change. Tell the user to change it in their calendar app.");
+            return new EventRead(file, ics, etag, events[0], false, null);
+        }
+        if (all) return new EventRead(file, ics, etag, ICalendar.Series(ics, calendar, Zone) ?? throw new InvalidOperationException("That isn't an event Longhand can read."), true, null);
+
+        if (key is null || !Nextcloud.TryParseOccurrence(key, out var start, out var allDay))
+            throw new InvalidOperationException("That is a repeating event: give the id of the occurrence, as reading the calendar shows it ({id: …#…}), or scope \"all\" for every occurrence.");
+        var occurrence = ICalendar.OccurrenceOf(ics, start, allDay, calendar, Zone)
+            ?? throw new InvalidOperationException("That occurrence isn't there any more (it was moved or cancelled). Read the calendar again.");
+        return new EventRead(file, ics, etag, occurrence, true, occurrence);
     }
 
     internal static string Id(IReadOnlyDictionary<string, JsonElement> input) =>
-        Text(input, "id") is { } id && Nextcloud.IsEventId(id) ? id : throw new InvalidOperationException("id must be an event's id, as reading the calendar shows it ({id: …}).");
+        Text(input, "id") is { } id && Nextcloud.SplitId(id, out _, out _) ? id : throw new InvalidOperationException("id must be an event's id, as reading the calendar shows it ({id: …}).");
 }
 
 /// <summary>Lets Claude read the user's Nextcloud calendar.</summary>
@@ -290,11 +324,12 @@ public sealed class CalendarChangeTool : IAgentTool
         ToolName,
         "Changes an event in the user's Nextcloud calendar. Use it only when the user asked for that change, and only after " +
         "reading the calendar to find the event and its id; if it isn't clear which event they mean, ask instead. Give only " +
-        "what changes: moving the start keeps the event's length unless an end is given. Repeating events can't be changed. " +
-        "Returns the event as it is now.",
+        "what changes: moving the start keeps the event's length unless an end is given. The id of a repeating event names one " +
+        "occurrence: changing it (moving it, renaming it) changes only that occurrence. Returns the event as it is now.",
         new Dictionary<string, JsonElement>
         {
-            ["id"] = CalendarContext.Json("""{"type":"string","description":"The event's id, as reading the calendar shows it ({id: …})."}"""),
+            ["id"] = CalendarContext.Json("""{"type":"string","description":"The event's id, as reading the calendar shows it ({id: …}); for a repeating event, the id of the occurrence."}"""),
+            ["scope"] = CalendarContext.Json(CalendarContext.ScopeJson),
             ["title"] = CalendarContext.Json("""{"type":"string","description":"Optional: a new title."}"""),
             ["start"] = CalendarContext.Json("""{"type":"string","description":"Optional: a new start, a date-time like 2026-11-10T14:00 or a date for an all-day event, in the user's local time."}"""),
             ["end"] = CalendarContext.Json("""{"type":"string","description":"Optional: a new end (a date-time), or the last day of an all-day event (a date)."}"""),
@@ -307,8 +342,11 @@ public sealed class CalendarChangeTool : IAgentTool
     public async Task<string> RunAsync(IReadOnlyDictionary<string, JsonElement> input, CancellationToken ct)
     {
         var id = CalendarContext.Id(input);
-        var (ics, etag, old) = await _c.ReadEventAsync(id, ct);
+        bool all = CalendarContext.AllOccurrences(input);
+        var read = await _c.ReadEventAsync(id, all, ct);
+        var old = read.Event;
         bool timeChanges = input.ContainsKey("start") || input.ContainsKey("end") || input.ContainsKey("all_day");
+        if (read.Repeats && all && timeChanges) throw new InvalidOperationException("The times of every occurrence can't be changed from here. Change one occurrence (leave scope out), or tell the user to change the repeat in their calendar app.");
         var change = new EventChange(
             CalendarContext.Text(input, "title") is { Length: > 0 } title ? title : null,
             timeChanges ? _c.When(input, old) : null,
@@ -316,10 +354,14 @@ public sealed class CalendarChangeTool : IAgentTool
             CalendarContext.Text(input, "description"));
         if (change == new EventChange()) throw new InvalidOperationException("Nothing to change was given.");
 
-        var changed = ICalendar.Change(ics, change, _c.Now(), out var problem) ?? throw new InvalidOperationException(problem);
-        await _c.Nextcloud.PutEventAsync(_c.Account, id, changed, etag, ct);
+        var changed = (!read.Repeats ? ICalendar.Change(read.Ics, change, _c.Now(), out var problem)
+                : all ? ICalendar.ChangeSeries(read.Ics, change, _c.Now(), out problem)
+                : ICalendar.ChangeOccurrence(read.Ics, read.Occurrence!, change, _c.Now(), _c.Zone, out problem)) ?? throw new InvalidOperationException(problem);
+        await _c.Nextcloud.PutEventAsync(_c.Account, read.File, changed, read.ETag, ct);
         var when = change.When ?? new EventWhen(old.Start, old.End, old.AllDay);
-        return "Changed it. It is now " + _c.Describe(change.Title ?? old.Title, when, old.Calendar, id) + ".";
+        // An occurrence that was moved is named by where it is now.
+        var newId = read.Occurrence is not null ? read.File + "#" + Nextcloud.OccurrenceKey(old with { Start = when.Start, AllDay = when.AllDay }) : read.File;
+        return "Changed " + (read.Occurrence is not null ? "that occurrence" : "it") + ". It is now " + _c.Describe(change.Title ?? old.Title, when, old.Calendar, newId) + (read.Repeats && all ? " (and every occurrence that wasn't changed on its own)" : "") + ".";
     }
 }
 
@@ -338,18 +380,27 @@ public sealed class CalendarDeleteTool : IAgentTool
         ToolName,
         "Deletes an event from the user's Nextcloud calendar. Use it only when the user clearly asked for that event to be " +
         "removed or cancelled, and only after reading the calendar to find it and its id; if it isn't clear which event they " +
-        "mean, ask instead. Repeating events can't be deleted. Returns what was deleted, so the reply can say so.",
+        "mean, ask instead. The id of a repeating event names one occurrence: deleting it removes only that occurrence. Returns what was " +
+        "deleted, so the reply can say so.",
         new Dictionary<string, JsonElement>
         {
-            ["id"] = CalendarContext.Json("""{"type":"string","description":"The event's id, as reading the calendar shows it ({id: …})."}"""),
+            ["id"] = CalendarContext.Json("""{"type":"string","description":"The event's id, as reading the calendar shows it ({id: …}); for a repeating event, the id of the occurrence."}"""),
+            ["scope"] = CalendarContext.Json(CalendarContext.ScopeJson),
         },
         "id");
 
     public async Task<string> RunAsync(IReadOnlyDictionary<string, JsonElement> input, CancellationToken ct)
     {
         var id = CalendarContext.Id(input);
-        var (_, etag, old) = await _c.ReadEventAsync(id, ct);
-        await _c.Nextcloud.DeleteEventAsync(_c.Account, id, etag, ct);
-        return "Deleted " + _c.Describe(old.Title, new EventWhen(old.Start, old.End, old.AllDay), old.Calendar, id) + ".";
+        bool all = CalendarContext.AllOccurrences(input);
+        var read = await _c.ReadEventAsync(id, all, ct);
+        var old = read.Event;
+        if (read.Occurrence is not null)
+        {
+            var left = ICalendar.DeleteOccurrence(read.Ics, read.Occurrence, _c.Now(), _c.Zone, out var problem) ?? throw new InvalidOperationException(problem);
+            await _c.Nextcloud.PutEventAsync(_c.Account, read.File, left, read.ETag, ct);
+        }
+        else await _c.Nextcloud.DeleteEventAsync(_c.Account, read.File, read.ETag, ct);
+        return "Deleted " + (read.Occurrence is not null ? "that occurrence of " : read.Repeats ? "every occurrence of " : "") + _c.Describe(old.Title, new EventWhen(old.Start, old.End, old.AllDay), old.Calendar, id) + ".";
     }
 }

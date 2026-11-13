@@ -389,13 +389,20 @@ public sealed class GoogleCalendarContext : CalendarClock
         if (Only is { Count: 0 }) throw CalendarChoice.NoneChosen("Google");
     }
 
-    /// <summary>The event as it is now, refusing repeating ones (one change could rewrite every occurrence).</summary>
-    internal async Task<GoogleCalendar.Found> ReadEventAsync(string? id, CancellationToken ct)
+    /// <summary>
+    /// The event as it is now. Google gives each occurrence of a repeating event an id of its own, and changing or deleting one of
+    /// those affects only that occurrence, which is the default. With <paramref name="all"/> it is the repeating event itself, which
+    /// is every occurrence that wasn't changed on its own.
+    /// </summary>
+    internal async Task<GoogleCalendar.Found> ReadEventAsync(string? id, bool all, CancellationToken ct)
     {
         if (!GoogleCalendar.TryParseId(id, out var calendarId, out _)) throw new InvalidOperationException("id must be an event's id, as reading the calendar shows it ({id: …}).");
         if (Only is not null && !Only.Contains(calendarId)) throw CalendarChoice.NotChosen();
         var found = await Google.GetEventAsync(id!, ct);
-        if (found.Event.Repeats) throw new InvalidOperationException("That is a repeating event; Longhand can't change or delete repeating events. Tell the user to change it in their calendar app.");
+        if (!found.Event.Repeats) return found;
+        var series = (string?)found.Json["recurringEventId"];
+        if (all) return series is null ? found : await Google.GetEventAsync(GoogleCalendar.MakeId(calendarId, series), ct);
+        if (series is null) throw new InvalidOperationException("That id is the repeating event itself, not one of its occurrences. Give the id of the occurrence, as reading the calendar shows it, or scope \"all\" for every occurrence.");
         return found;
     }
 }
@@ -529,11 +536,12 @@ public sealed class GoogleCalendarChangeTool : IAgentTool
         ToolName,
         "Changes an event in the user's Google Calendar. Use it only when the user asked for that change, and only after " +
         "reading the calendar to find the event and its id; if it isn't clear which event they mean, ask instead. Give only " +
-        "what changes: moving the start keeps the event's length unless an end is given. Repeating events can't be changed. " +
-        "Returns the event as it is now.",
+        "what changes: moving the start keeps the event's length unless an end is given. The id of a repeating event names one " +
+        "occurrence: changing it (moving it, renaming it) changes only that occurrence. Returns the event as it is now.",
         new Dictionary<string, JsonElement>
         {
-            ["id"] = CalendarContext.Json("""{"type":"string","description":"The event's id, as reading the calendar shows it ({id: …})."}"""),
+            ["id"] = CalendarContext.Json("""{"type":"string","description":"The event's id, as reading the calendar shows it ({id: …}); for a repeating event, the id of the occurrence."}"""),
+            ["scope"] = CalendarContext.Json(CalendarContext.ScopeJson),
             ["title"] = CalendarContext.Json("""{"type":"string","description":"Optional: a new title."}"""),
             ["start"] = CalendarContext.Json("""{"type":"string","description":"Optional: a new start, a date-time like 2026-11-10T14:00 or a date for an all-day event, in the user's local time."}"""),
             ["end"] = CalendarContext.Json("""{"type":"string","description":"Optional: a new end (a date-time), or the last day of an all-day event (a date)."}"""),
@@ -546,9 +554,11 @@ public sealed class GoogleCalendarChangeTool : IAgentTool
     public async Task<string> RunAsync(IReadOnlyDictionary<string, JsonElement> input, CancellationToken ct)
     {
         var id = CalendarContext.Text(input, "id");
-        var found = await _c.ReadEventAsync(id, ct);
+        bool all = CalendarContext.AllOccurrences(input);
+        var found = await _c.ReadEventAsync(id, all, ct);
         var old = found.Event;
         bool timeChanges = input.ContainsKey("start") || input.ContainsKey("end") || input.ContainsKey("all_day");
+        if (all && old.Repeats && timeChanges) throw new InvalidOperationException("The times of every occurrence can't be changed from here. Change one occurrence (leave scope out), or tell the user to change the repeat in their calendar app.");
         var title = CalendarContext.Text(input, "title") is { Length: > 0 } t ? t : null;
         var when = timeChanges ? _c.When(input, old) : null;
         var location = CalendarContext.Text(input, "location");
@@ -567,7 +577,8 @@ public sealed class GoogleCalendarChangeTool : IAgentTool
         if (description is not null) body["description"] = description.Length > 0 ? description : null;
 
         await _c.Google.PatchAsync(found.CalendarId, found.EventId, body, found.ETag, ct);
-        return "Changed it. It is now " + _c.Describe(title ?? old.Title, when ?? new EventWhen(old.Start, old.End, old.AllDay), old.Calendar, id!) + ".";
+        var shownId = all && old.Repeats ? GoogleCalendar.MakeId(found.CalendarId, found.EventId) : id!;
+        return "Changed " + (!all && old.Repeats ? "that occurrence" : "it") + ". It is now " + _c.Describe(title ?? old.Title, when ?? new EventWhen(old.Start, old.End, old.AllDay), old.Calendar, shownId) + (all && old.Repeats ? " (and every occurrence that wasn't changed on its own)" : "") + ".";
     }
 }
 
@@ -586,19 +597,23 @@ public sealed class GoogleCalendarDeleteTool : IAgentTool
         ToolName,
         "Deletes an event from the user's Google Calendar. Use it only when the user clearly asked for that event to be " +
         "removed or cancelled, and only after reading the calendar to find it and its id; if it isn't clear which event they " +
-        "mean, ask instead. Repeating events can't be deleted. Returns what was deleted, so the reply can say so.",
+        "mean, ask instead. The id of a repeating event names one occurrence: deleting it removes only that occurrence. Returns what was " +
+        "deleted, so the reply can say so.",
         new Dictionary<string, JsonElement>
         {
-            ["id"] = CalendarContext.Json("""{"type":"string","description":"The event's id, as reading the calendar shows it ({id: …})."}"""),
+            ["id"] = CalendarContext.Json("""{"type":"string","description":"The event's id, as reading the calendar shows it ({id: …}); for a repeating event, the id of the occurrence."}"""),
+            ["scope"] = CalendarContext.Json(CalendarContext.ScopeJson),
         },
         "id");
 
     public async Task<string> RunAsync(IReadOnlyDictionary<string, JsonElement> input, CancellationToken ct)
     {
         var id = CalendarContext.Text(input, "id");
-        var found = await _c.ReadEventAsync(id, ct);
+        bool all = CalendarContext.AllOccurrences(input);
+        var found = await _c.ReadEventAsync(id, all, ct);
         await _c.Google.DeleteAsync(found.CalendarId, found.EventId, found.ETag, ct);
         var old = found.Event;
-        return "Deleted " + _c.Describe(old.Title, new EventWhen(old.Start, old.End, old.AllDay), old.Calendar, id!) + ".";
+        var shownId = all && old.Repeats ? GoogleCalendar.MakeId(found.CalendarId, found.EventId) : id!;
+        return "Deleted " + (!all && old.Repeats ? "that occurrence of " : old.Repeats ? "every occurrence of " : "") + _c.Describe(old.Title, new EventWhen(old.Start, old.End, old.AllDay), old.Calendar, shownId) + ".";
     }
 }

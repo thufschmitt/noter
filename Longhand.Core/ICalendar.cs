@@ -251,6 +251,25 @@ public static class ICalendar
     static string OccurrenceLine(string name, CalendarEvent occurrence) =>
         occurrence.AllDay ? name + ";VALUE=DATE:" + Date(occurrence.Start) : name + ":" + Utc(occurrence.Start);
 
+    /// <summary>The repeating event itself (the one with the rule), as it is written, not any one occurrence. Null when the calendar holds none.</summary>
+    public static CalendarEvent? Series(string ics, string calendar, TimeZoneInfo zone) =>
+        Parts(Unfold(ics).ToList()).FirstOrDefault(IsSeries) is { } series ? Build(TopProperties(series.Lines), calendar, zone) is { } e ? e with { Repeats = true } : null : null;
+
+    /// <summary>
+    /// One occurrence of the repeating event as the calendar shows it: the exception if it was changed before, else the event at that
+    /// start with its length. Null when the calendar holds no repeating event, the occurrence was cancelled, or it is before the event began.
+    /// </summary>
+    public static CalendarEvent? OccurrenceOf(string ics, DateTimeOffset start, bool allDay, string calendar, TimeZoneInfo zone)
+    {
+        var parts = Parts(Unfold(ics).ToList());
+        if (!parts.Any(IsSeries)) return null;
+        var probe = new CalendarEvent(calendar, "", start, start, allDay, "", "");
+        if (parts.FirstOrDefault(p => IsExceptionFor(p, probe, zone)) is { } exception)
+            return Build(TopProperties(exception.Lines), calendar, zone) is { } changed ? changed with { Repeats = true } : null;
+        if (Series(ics, calendar, zone) is not { } master || (allDay ? start.Date < master.Start.Date : start.UtcDateTime.Date < master.Start.UtcDateTime.Date)) return null;
+        return master with { Start = start, End = start + (master.End - master.Start), AllDay = allDay };
+    }
+
     /// <summary>Whether the calendar holds a repeating event.</summary>
     public static bool Repeats(string ics) => Parts(Unfold(ics).ToList()).Any(IsSeries);
 

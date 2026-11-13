@@ -83,7 +83,7 @@ static class GoogleChecks
         var added = await add.RunAsync(Args("""{"title":"Dentist","start":"2026-11-13T15:00","location":"Rue 1","description":"Bring papers"}"""), default);
         var post = google.Writes.Last();
         check("an event is added to the main calendar, an hour long, in the user's zone", post.Method == "POST" && post.Path.EndsWith("/calendars/" + FakeGoogle.Primary + "/events") && (string?)post.Body!["summary"] == "Dentist" && (string?)post.Body["start"]!["dateTime"] == "2026-11-13T15:00:00+01:00" && (string?)post.Body["end"]!["dateTime"] == "2026-11-13T16:00:00+01:00" && (string?)post.Body["location"] == "Rue 1" && (string?)post.Body["description"] == "Bring papers");
-        check("it says what was added, with an id to find it again", added.StartsWith("Added \"Dentist\"") && added.Contains("[Personal]") && added.Contains("{id: me@example.com|new4}"));
+        check("it says what was added, with an id to find it again", added.StartsWith("Added \"Dentist\"") && added.Contains("[Personal]") && added.Contains("{id: me@example.com|new5}"));
         await add.RunAsync(Args("""{"title":"Away","start":"2026-12-01","end":"2026-12-03","calendar":"team"}"""), default);
         var day = google.Writes.Last();
         check("a date makes an all-day event on the calendar asked for, the end day included", day.Path.EndsWith("/calendars/" + FakeGoogle.Team + "/events") && (string?)day.Body!["start"]!["date"] == "2026-12-01" && (string?)day.Body["end"]!["date"] == "2026-12-04");
@@ -98,8 +98,23 @@ static class GoogleChecks
         check("moving the start keeps the length, and it reads back as it is now", changed.Contains("It is now \"Standup (moved)\"") && changed.Contains("09:15–09:45"));
         var after = await events.RunAsync(Args("""{"start":"2026-11-11","end":"2026-11-11"}"""), default);
         check("and the calendar shows it", after.Contains("09:15–09:45 Standup (moved) [Personal]"));
-        check("a repeating event isn't changed or deleted", (await Fails(() => change.RunAsync(Args("""{"id":"me@example.com|e3_20261111T100000Z","title":"x"}"""), default)))?.Contains("repeating") == true
-            && (await Fails(() => all[3].RunAsync(Args("""{"id":"me@example.com|e3_20261111T100000Z"}"""), default)))?.Contains("repeating") == true);
+        // ----- a repeating event: its occurrence by default -----
+        var occurrence = await change.RunAsync(Args("""{"id":"me@example.com|e3_20261111T100000Z","title":"Sync (this week)","start":"2026-11-11T13:00"}"""), default);
+        var occPatch = google.Writes.Last();
+        check("moving one occurrence patches that occurrence's own id, and says so", occPatch.Method == "PATCH" && occPatch.Path.EndsWith("/events/e3_20261111T100000Z") && (string?)occPatch.Body!["summary"] == "Sync (this week)" && (string?)occPatch.Body["start"]!["dateTime"] == "2026-11-11T13:00:00+01:00"
+            && occurrence.StartsWith("Changed that occurrence") && occurrence.Contains("13:00–14:00") && occurrence.Contains("{id: me@example.com|e3_20261111T100000Z}"));
+        check("the repeating event itself isn't touched by it", !google.Writes.Any(w => w.Path.EndsWith("/events/e3")));
+        var everyOne = await change.RunAsync(Args("""{"id":"me@example.com|e3_20261111T100000Z","scope":"all","title":"Weekly sync (renamed)","location":"Room 9"}"""), default);
+        var seriesPatch = google.Writes.Last();
+        check("with scope all the repeating event itself is changed, and the reply says every occurrence", seriesPatch.Method == "PATCH" && seriesPatch.Path.EndsWith("/events/e3") && (string?)seriesPatch.Body!["summary"] == "Weekly sync (renamed)" && everyOne.Contains("every occurrence") && everyOne.Contains("{id: me@example.com|e3}"));
+        check("but not its time, which would move them all", (await Fails(() => change.RunAsync(Args("""{"id":"me@example.com|e3_20261111T100000Z","scope":"all","start":"2026-11-11T13:00"}"""), default)))?.Contains("can't be changed") == true && google.Writes.Last() == seriesPatch);
+        check("the repeating event's own id is not an occurrence, and a scope must be one of the two", (await Fails(() => change.RunAsync(Args("""{"id":"me@example.com|e3","title":"x"}"""), default)))?.Contains("repeating event itself") == true
+            && (await Fails(() => change.RunAsync(Args("""{"id":"me@example.com|e3_20261111T100000Z","scope":"week","title":"x"}"""), default)))?.Contains("scope must be") == true);
+        var oneGone = await all[3].RunAsync(Args("""{"id":"me@example.com|e3_20261111T100000Z"}"""), default);
+        var delOcc = google.Writes.Last();
+        check("deleting an occurrence deletes only it", delOcc.Method == "DELETE" && delOcc.Path.EndsWith("/events/e3_20261111T100000Z") && oneGone.StartsWith("Deleted that occurrence of") && google.Events[FakeGoogle.Primary].Any(e => (string?)e["id"] == "e3"));
+        var allGone = await all[3].RunAsync(Args("""{"id":"me@example.com|e3","scope":"all"}"""), default);
+        check("with scope all, the whole repeating event goes", google.Writes.Last().Path.EndsWith("/events/e3") && google.Writes.Last().Method == "DELETE" && allGone.StartsWith("Deleted every occurrence of") && !google.Events[FakeGoogle.Primary].Any(e => (string?)e["id"] == "e3"));
         check("an id that isn't one is refused", (await Fails(() => change.RunAsync(Args("""{"id":"e1","title":"x"}"""), default)))?.Contains("id must be") == true && (await Fails(() => change.RunAsync(Args("""{"id":"../x|e1","title":"x"}"""), default)))?.Contains("id must be") == true);
         check("nothing to change is refused, and an event that isn't there is said not to be", (await Fails(() => change.RunAsync(Args("""{"id":"me@example.com|e1"}"""), default)))?.Contains("Nothing to change") == true
             && (await Fails(() => change.RunAsync(Args("""{"id":"me@example.com|zzz","title":"x"}"""), default)))?.Contains("doesn't exist") == true);
