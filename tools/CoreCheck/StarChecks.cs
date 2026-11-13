@@ -73,7 +73,6 @@ static class StarChecks
         session.StrokesCollected(new[] { more });
         var onReply = view.DrawPoints(Star(500, reply.Y + 20, 18));
         session.StrokesCollected(new[] { onReply });
-        await Task.Delay(200);
-        check("a star on one of Claude's replies is ink (it marks the reply)", Asked() == 1 && view.Ink.Any(s => s.Id == onReply));
+        check("a star level with one of Claude's replies asks too, if no other ink is near it", await Until(() => Asked() == 2 && !session.Busy) && !view.Ink.Any(s => s.Id == onReply) && view.LastIds is { } sent2 && sent2.Contains(more));
     }
 }

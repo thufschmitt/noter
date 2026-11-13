@@ -142,8 +142,8 @@ public sealed class PageSession
 
     /// <summary>
     /// Whether a stroke is the star that asks Claude: a five-point star drawn in one go (<see cref="StarGesture"/>), standing
-    /// apart from the writing and from Claude's replies (a star on or touching them belongs to them), with something written
-    /// (or a drawing edited) that waits to be asked. Anything else is ink like any other.
+    /// apart from other ink (a star touching it belongs to it), with something written (or a drawing edited) that waits to be
+    /// asked. It can be anywhere on the page, also level with one of Claude's replies. Anything else is ink like any other.
     /// </summary>
     bool IsAskStar(uint id)
     {
@@ -155,9 +155,6 @@ public sealed class PageSession
             if (other.Id != id && _view.StrokePoints(other.Id) is { } p && Box(p) is var box
                 && box.Left < star.Right + Gap && star.Left < box.Right + Gap && box.Top < star.Bottom + Gap && star.Top < box.Bottom + Gap)
                 return false;
-        // Claude's replies run the width of the page, so being level with one is being on it.
-        foreach (var n in _notes)
-            if (!n.IsHint && n.Y < star.Bottom && star.Top < n.Y + n.Covered) return false;
         return true;
     }
 

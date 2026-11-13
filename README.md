@@ -43,7 +43,7 @@ After that, starting the app from the Start menu or a tile checks for a newer ve
 | Pen or mouse | Writes |
 | Touch | Scrolls (the hand button switches fingers to writing) |
 | Ask / Ctrl+Enter | The model answers what you wrote since its last answer. Nothing is sent until you ask. While an answer is coming, the button reads Stop. |
-| Draw a five-point star | Asks, like the Ask button, without leaving the pen. Draw it in one stroke, apart from your writing (not on or touching it, and not on one of the model's replies). The star is taken off the page; Ctrl+Z puts it back. |
+| Draw a five-point star | Asks, like the Ask button, without leaving the pen. Draw it in one stroke anywhere on the page, as long as no other ink is close to it (not on or touching your writing). The star is taken off the page; Ctrl+Z puts it back. |
 | Tap a part of a layout | Selects it, if the model made it editable: drag it into a column or box that accepts drops, knob to turn, cross to delete. Nothing is sent until Ask. |
 | Pen barrel button held, or mouse right button | Lasso: circle editable parts of a layout to select them |
 | Eraser button or the pen's eraser end | Erases whole strokes |
