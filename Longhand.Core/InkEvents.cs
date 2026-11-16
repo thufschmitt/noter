@@ -4,8 +4,11 @@ using System.Linq;
 
 namespace Longhand.Services;
 
-/// <summary>Where a day's timeline is on the page: the height of <see cref="From"/>, how tall a minute is, and the grid's sides.</summary>
-public sealed record TimelineGeometry(double Top, double PxPerMinute, int From, int To, double Left, double Right)
+/// <summary>
+/// Where a day's timeline is on the page: the height of <see cref="From"/>, how tall a minute is, and the grid's sides; and where each
+/// event's box is (by the layout's item id), so writing over one can be told apart.
+/// </summary>
+public sealed record TimelineGeometry(double Top, double PxPerMinute, int From, int To, double Left, double Right, IReadOnlyDictionary<string, HitRect>? Items = null)
 {
     public double Bottom => Top + (To - From) * PxPerMinute;
     public double MinutesAt(double y) => From + (y - Top) / PxPerMinute;
@@ -14,13 +17,17 @@ public sealed record TimelineGeometry(double Top, double PxPerMinute, int From, 
 /// <summary>A stroke of the user's ink, by id, through these points (page coordinates).</summary>
 public sealed record InkPath(uint Id, IReadOnlyList<(double X, double Y)> Points);
 
-/// <summary>An event the user drew: when (minutes since midnight), the strokes that marked the time, and those that are its title.</summary>
-public sealed record DrawnEvent(int Start, int End, IReadOnlyList<uint> Shape, IReadOnlyList<uint> Words);
+/// <summary>
+/// An event the user drew: when (minutes since midnight), the strokes that marked the time, and those that are its title. With
+/// <see cref="Item"/>, it is writing over an event already on the day (that layout item): a new title for it, and no times.
+/// </summary>
+public sealed record DrawnEvent(int Start, int End, IReadOnlyList<uint> Shape, IReadOnlyList<uint> Words, string? Item = null);
 
 /// <summary>
 /// Reads new events from ink drawn over a day's timeline, with no model: plain geometry. A closed shape (a box, an oval) marks an
 /// event from its top to its bottom, and the writing inside it is the title. A line or bracket down the hours does the same, with the
-/// writing to its right. Writing on its own is an event of an hour from where it starts. Times snap to 15 minutes.
+/// writing to its right. Writing over an event already there is a new title for it. Other writing on its own is an event of an hour
+/// from where it starts. Times snap to 15 minutes.
 /// </summary>
 public static class InkEvents
 {
@@ -59,20 +66,26 @@ public static class InkEvents
 
     public static List<DrawnEvent> Find(IReadOnlyList<InkPath> strokes, TimelineGeometry grid)
     {
-        // Only ink over the timeline counts; anything else is left alone.
+        // Only ink over the timeline, or over an event's box (all-day ones are above the hours), counts; anything else is left alone.
+        var items = grid.Items ?? new Dictionary<string, HitRect>();
+        bool InGrid(Box b) => b.CY >= grid.Top - 8 && b.CY <= grid.Bottom + 8 && b.CX >= grid.Left - 40 && b.CX <= grid.Right + 8;
+        string? ItemAt(Box b) => items.Where(i => i.Value.Contains(b.CX, b.CY, 2)).OrderBy(i => i.Value.Area).Select(i => i.Key).FirstOrDefault();
         var all = strokes.Where(s => s.Points.Count > 0).Select(s => (Stroke: s, Box: BoxOf(s.Points))).ToList();
-        var over = all.Where(a => a.Box.CY >= grid.Top - 8 && a.Box.CY <= grid.Bottom + 8 && a.Box.CX >= grid.Left - 40 && a.Box.CX <= grid.Right + 8).ToList();
+        var over = all.Where(a => InGrid(a.Box) || ItemAt(a.Box) is not null).ToList();
         var shapes = new List<(Kind Kind, InkPath Stroke, Box Box, List<uint> Words)>();
         var words = new List<(InkPath Stroke, Box Box)>();
         foreach (var (s, b) in over)
         {
             var kind = KindOf(s, b);
             if (kind == Kind.Word) words.Add((s, b));
+            else if (!InGrid(b)) continue; // a shape over the all-day events marks no time
             else shapes.Add((kind, s, b, new List<uint>()));
         }
 
-        // Each piece of writing goes with the smallest box around it, or else the nearest line to its left.
+        // Each piece of writing goes with the smallest box drawn around it, or else the nearest line to its left, or else the event it
+        // was written over.
         var loose = new List<(InkPath Stroke, Box Box)>();
+        var retitles = new Dictionary<string, List<uint>>();
         foreach (var w in words)
         {
             var inBox = shapes.Where(x => x.Kind == Kind.Box && x.Box.Holds(w.Box.CX, w.Box.CY, 6)).OrderBy(x => x.Box.Width * x.Box.Height).FirstOrDefault();
@@ -80,7 +93,12 @@ public static class InkEvents
             var byLine = shapes.Where(x => x.Kind == Kind.Line && w.Box.CY >= x.Box.Top - 16 && w.Box.CY <= x.Box.Bottom + 16 && w.Box.CX > x.Box.Right - 4 && w.Box.CX < x.Box.Right + TitleReach)
                 .OrderBy(x => w.Box.CX - x.Box.Right).FirstOrDefault();
             if (byLine.Words is not null) { byLine.Words.Add(w.Stroke.Id); continue; }
-            loose.Add(w);
+            if (ItemAt(w.Box) is { } item)
+            {
+                (retitles.TryGetValue(item, out var list) ? list : retitles[item] = new List<uint>()).Add(w.Stroke.Id);
+                continue;
+            }
+            if (InGrid(w.Box)) loose.Add(w);
         }
 
         var found = new List<DrawnEvent>();
@@ -97,7 +115,9 @@ public static class InkEvents
             int start = Math.Min(Layout.DayMinutes - Layout.SnapMinutes, Clamp(LayoutHit.Snap(grid.MinutesAt(line.Min(w => w.Box.Top)))));
             found.Add(new DrawnEvent(start, Math.Min(Layout.DayMinutes, start + Layout.DefaultMinutes), Array.Empty<uint>(), line.Select(w => w.Stroke.Id).ToList()));
         }
-        return found.OrderBy(e => e.Start).ThenBy(e => e.End).ToList();
+        found = found.OrderBy(e => e.Start).ThenBy(e => e.End).ToList();
+        found.AddRange(retitles.Select(r => new DrawnEvent(0, 0, Array.Empty<uint>(), r.Value, r.Key)));
+        return found;
     }
 
     static int Clamp(int minutes) => Math.Clamp(minutes, 0, Layout.DayMinutes);

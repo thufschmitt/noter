@@ -97,12 +97,12 @@ sealed class FakeView : IPageView
     /// <summary>Where the day's timeline is: from 07:00 at y 200, at 64 pixels to the hour, between x 120 and 800.</summary>
     public TimelineGeometry? Timeline = new(200, 64 / 60.0, 7 * 60, 21 * 60, 120, 800);
     public Task<TimelineGeometry?> TimelineAsync(NoteModel note, DrawingModel drawing) => Task.FromResult(Timeline);
-    /// <summary>What an event's title reads as, from the strokes of its words; and the times each was asked for.</summary>
+    /// <summary>What an event's title reads as, from the strokes of its words; and the times each was asked for (with the title it had, when renamed).</summary>
     public Func<IReadOnlyList<uint>, string?> Title = words => words.Count > 0 ? "Gym" : null;
     public readonly List<string> TitlesAsked = new();
-    public Task<string?> EventTitleAsync(IReadOnlyList<uint> words, string when)
+    public Task<string?> EventTitleAsync(IReadOnlyList<uint> words, string when, string? current = null)
     {
-        TitlesAsked.Add(when);
+        TitlesAsked.Add(current is null ? when : $"{when} {current}");
         return Task.FromResult(Title(words));
     }
 }

@@ -19,6 +19,8 @@ sealed class FakeBrowser : IAsyncDisposable
     public int Snapshots;
     /// <summary>The events (their times) whose titles the calendar app asked for; each is answered "Lunch".</summary>
     public readonly List<string> Titles = new();
+    /// <summary>Where the calendar app's events are on the page, by item id, as the browser would say: { left, top, right, bottom }.</summary>
+    public Dictionary<string, object> Items = new();
     public JsonElement LastSnapshotRequest;
 
     public static async Task<FakeBrowser> ConnectAsync(string httpUrl, double width = 800, string? zone = null, bool calendar = false)
@@ -57,11 +59,12 @@ sealed class FakeBrowser : IAsyncDisposable
                         break;
                     case "timeline":
                         // The day's grid: 07:00 at y 200, 64 pixels to the hour, between x 120 and 800.
-                        await SendAsync(new { t = "reply", req = m.GetProperty("req").GetInt32(), value = new { top = 200.0, pxPerMinute = 64 / 60.0, from = 420, to = 1260, left = 120.0, right = 800.0 } });
+                        await SendAsync(new { t = "reply", req = m.GetProperty("req").GetInt32(), value = new { top = 200.0, pxPerMinute = 64 / 60.0, from = 420, to = 1260, left = 120.0, right = 800.0, items = Items } });
                         break;
                     case "title":
-                        Titles.Add(m.GetProperty("when").GetString()!);
-                        await SendAsync(new { t = "reply", req = m.GetProperty("req").GetInt32(), value = "Lunch" });
+                        bool renaming = m.TryGetProperty("current", out var current) && current.ValueKind == JsonValueKind.String;
+                        Titles.Add(m.GetProperty("when").GetString()! + (renaming ? " " + current.GetString() : ""));
+                        await SendAsync(new { t = "reply", req = m.GetProperty("req").GetInt32(), value = renaming ? "Team lunch" : "Lunch" });
                         break;
                     case "snapshot":
                         Snapshots++;

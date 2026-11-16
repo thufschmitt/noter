@@ -71,9 +71,10 @@ public interface IPageView
 
     /// <summary>
     /// The calendar app: the title of an event the user drew, from the handwriting in <paramref name="words"/> (read on the device), or
-    /// typed by the user when it can't be read. <paramref name="when"/> says which event (like "14:00–15:00"). Null skips the event.
+    /// typed by the user when it can't be read. <paramref name="when"/> says which event (like "14:00–15:00"); <paramref name="current"/>
+    /// is its title when the writing renames an event already there. Null leaves the event as it is (or not added).
     /// </summary>
-    Task<string?> EventTitleAsync(IReadOnlyList<uint> words, string when) => Task.FromResult<string?>("New event");
+    Task<string?> EventTitleAsync(IReadOnlyList<uint> words, string when, string? current = null) => Task.FromResult<string?>(current is null ? "New event" : null);
 }
 
 /// <summary>What the calendar app needs besides <see cref="IPageData"/>: the connected calendars, read fresh each time so changes to them take effect at once.</summary>

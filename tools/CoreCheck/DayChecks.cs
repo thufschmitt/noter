@@ -38,6 +38,15 @@ sealed class FakeDaySource : IDaySource
         return Task.CompletedTask;
     }
 
+    public Task<string> RenameAsync(string id, string title, CancellationToken ct)
+    {
+        var (e, editable) = Events[id];
+        Renames.Add($"{id} {title}");
+        Events[id] = (e with { Title = title }, editable);
+        return Task.FromResult(id);
+    }
+
+    public readonly List<string> Renames = new();
     int _added;
     public Task<(string Id, string Said)> AddAsync(string title, DateTime start, DateTime end, CancellationToken ct)
     {
@@ -129,6 +138,12 @@ static class DayChecks
         var two = InkEvents.Find(new[] { new InkPath(1, Rect(300, Y(8, 0), 600, Y(9, 0))), new InkPath(2, Rect(300, Y(11, 0), 600, Y(12, 0))), new InkPath(3, Word(400, Y(11, 30))) }, grid);
         check("several boxes are several events, each with its own writing (or none)", two.Count == 2 && two[0].Words.Count == 0 && two[1].Words.SequenceEqual(new uint[] { 3 }));
         check("ink away from the timeline is no event", InkEvents.Find(new[] { new InkPath(1, Rect(300, 20, 600, 90)), new InkPath(2, Word(300, Y(23, 0) + 400)) }, grid).Count == 0);
+        var withItems = grid with { Items = new Dictionary<string, HitRect> { ["e1"] = new(130, Y(9, 0), 800, Y(9, 30)), ["e2"] = new(130, 150, 800, 180) } };
+        var over = InkEvents.Find(new[] { new InkPath(1, Word(300, Y(9, 25))), new InkPath(2, Word(340, Y(9, 26))), new InkPath(3, Word(300, 172)) }, withItems);
+        check("writing over an event already there is a new title for it, also over an all-day one above the hours",
+            over.Count == 2 && over.Any(e => e.Item == "e1" && e.Words.SequenceEqual(new uint[] { 1, 2 })) && over.Any(e => e.Item == "e2" && e.Words.SequenceEqual(new uint[] { 3 })));
+        var boxOver = InkEvents.Find(new[] { new InkPath(1, Rect(200, Y(8, 30), 700, Y(9, 45))), new InkPath(2, Word(300, Y(9, 25))) }, withItems);
+        check("but writing in a box drawn over it is the box's", boxOver.Count == 1 && boxOver[0].Item is null && boxOver[0].Words.SequenceEqual(new uint[] { 2 }));
         check("a small closed letter is writing, not a box", InkEvents.Find(new[] { new InkPath(1, Rect(300, Y(10, 0), 320, Y(10, 15))) }, grid).Single().Shape.Count == 0);
 
         // ----- the calendar app -----
@@ -180,6 +195,25 @@ static class DayChecks
         view.Title = words => words.Count > 0 ? "Gym" : null;
         session.Undo(); // nothing to undo from that one: undoes nothing harmful
         view.Ink.Clear();
+        // Writing over an event renames it.
+        view.Timeline = view.Timeline! with { Items = Layout.Parse(drawing.Markup)!.Descendants().Where(n => n.Tag == "box" && n.Words() == "Standup").ToDictionary(n => n.Id!, _ => new HitRect(130, Y(11, 0), 800, Y(11, 30))) };
+        view.Title = words => words.Count > 0 ? "Daily" : null;
+        var rename = view.DrawPoints(Word(300, Y(11, 25)));
+        session.StrokesCollected(new[] { rename });
+        await session.AskAsync();
+        check("writing over an event gives it the title written, in the calendar", source.Renames.SequenceEqual(new[] { "cal|a Daily" }) && view.TitlesAsked[^1] == "11:00–11:30 Standup" && !source.Events.ContainsKey("cal|new2"));
+        check("the writing comes off, and the day shows the new title", view.Ink.Count == 0 && drawing.Markup.Contains("Daily") && view.Toasts.Last().Contains("Renamed \"Standup\" to \"Daily\""));
+        session.Undo();
+        check("undo gives it its old title back, and the writing", await Until(() => source.Renames.Count == 2 && drawing.Markup.Contains("Standup")) && view.Ink.Count == 1);
+        source.Events["cal|a"] = (source.Events["cal|a"].Event, false);
+        await session.RefreshDayAsync();
+        view.Timeline = view.Timeline! with { Items = Layout.Parse(drawing.Markup)!.Descendants().Where(n => n.Tag == "box" && n.Words() == "Standup").ToDictionary(n => n.Id!, _ => new HitRect(130, Y(11, 0), 800, Y(11, 30))) };
+        await session.AskAsync();
+        check("an event of a calendar that can't be changed keeps its title, and says so", source.Renames.Count == 2 && view.Toasts.Last().Contains("can't be changed") && view.Ink.Count == 1);
+        source.Events["cal|a"] = (source.Events["cal|a"].Event, true);
+        view.Ink.Clear();
+        view.Timeline = view.Timeline! with { Items = null };
+
         session.StrokesCollected(new[] { view.DrawPoints(Word(300, 60)) });
         await session.AskAsync();
         check("ink that marks no event says how to draw one", view.Toasts.Last().StartsWith("No event found"));

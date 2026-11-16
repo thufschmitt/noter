@@ -439,14 +439,21 @@ public sealed class WebConnection : IPageView, IPageData, IDayData
         var v = await RequestAsync("timeline", MeasureTimeout, ("note", NoteId(note)), ("drawing", DrawingId(drawing)));
         if (v.ValueKind != JsonValueKind.Object) return null;
         double N(string name) => v.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.Number ? p.GetDouble() : double.NaN;
-        var g = new TimelineGeometry(N("top"), N("pxPerMinute"), (int)N("from"), (int)N("to"), N("left"), N("right"));
+        var items = new Dictionary<string, HitRect>();
+        if (v.TryGetProperty("items", out var list) && list.ValueKind == JsonValueKind.Object)
+            foreach (var item in list.EnumerateObject().Take(500))
+                if (item.Value.ValueKind == JsonValueKind.Object && item.Value.TryGetProperty("left", out var l) && item.Value.TryGetProperty("top", out var t)
+                    && item.Value.TryGetProperty("right", out var r) && item.Value.TryGetProperty("bottom", out var b)
+                    && l.ValueKind == JsonValueKind.Number && t.ValueKind == JsonValueKind.Number && r.ValueKind == JsonValueKind.Number && b.ValueKind == JsonValueKind.Number)
+                    items[item.Name] = new HitRect(l.GetDouble(), t.GetDouble(), r.GetDouble(), b.GetDouble());
+        var g = new TimelineGeometry(N("top"), N("pxPerMinute"), (int)N("from"), (int)N("to"), N("left"), N("right"), items);
         return double.IsFinite(g.Top) && g.PxPerMinute > 0 && double.IsFinite(g.Left) && double.IsFinite(g.Right) && g.To > g.From ? g : null;
     }
 
     /// <summary>A browser can't read handwriting, so the user types the title of each event they drew; null skips it.</summary>
-    public async Task<string?> EventTitleAsync(IReadOnlyList<uint> words, string when)
+    public async Task<string?> EventTitleAsync(IReadOnlyList<uint> words, string when, string? current = null)
     {
-        var v = await RequestAsync("title", TimeSpan.FromMinutes(10), ("when", when));
+        var v = await RequestAsync("title", TimeSpan.FromMinutes(10), ("when", when), ("current", current));
         return v.ValueKind == JsonValueKind.String ? v.GetString() : null;
     }
 

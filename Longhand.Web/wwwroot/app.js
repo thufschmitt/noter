@@ -732,13 +732,21 @@ const handlers = {
     const tl = doc && doc.querySelector('.tl');
     if (!tl) { reply(m, null); return; }
     const r = pageRect(d, tl), perMinute = (+tl.dataset.ph * frameScale(d)) / 60, from = +tl.dataset.from;
-    reply(m, { top: r.top, pxPerMinute: perMinute, from, to: from + Math.round((r.bottom - r.top) / perMinute), left: r.left, right: r.right });
+    // Where each event's box is, so writing over one can rename it (the all-day ones too, above the hours).
+    const items = {};
+    for (const el of doc.querySelectorAll('[id]')) if (/^e\d+$/.test(el.id)) items[el.id] = pageRect(d, el);
+    reply(m, { top: r.top, pxPerMinute: perMinute, from, to: from + Math.round((r.bottom - r.top) / perMinute), left: r.left, right: r.right, items });
   },
   // The calendar app: the title of an event drawn on the day, typed, since a browser can't read handwriting. Skip leaves it out.
   title(m) {
     const dialog = $('eventTitle'), input = $('eventTitleInput');
-    $('eventWhen').textContent = 'From ' + m.when.replace('–', ' to ') + '. Type its title:';
-    input.value = '';
+    // Writing over an event renames it: the box says which, and starts from its title.
+    $('eventTitleHeading').textContent = m.current ? 'Rename event' : 'New event';
+    $('eventWhen').textContent = m.current
+      ? `"${m.current}" (${m.when.replace('–', ' to ')}). Type its new title:`
+      : 'From ' + m.when.replace('–', ' to ') + '. Type its title:';
+    $('eventAdd').textContent = m.current ? 'Rename' : 'Add';
+    input.value = m.current || '';
     let done = false;
     const finish = value => {
       if (done) return;

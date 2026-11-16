@@ -104,6 +104,8 @@ public interface IDaySource
     Task DeleteAsync(string id, CancellationToken ct);
     /// <summary>Adds a timed event to the default calendar (the user's choice, else the provider's own). Returns a sentence saying where, and its id.</summary>
     Task<(string Id, string Said)> AddAsync(string title, DateTime start, DateTime end, CancellationToken ct);
+    /// <summary>Gives an event (one occurrence of a repeating one) a new title. Returns its id afterwards.</summary>
+    Task<string> RenameAsync(string id, string title, CancellationToken ct);
 }
 
 /// <summary>
@@ -125,6 +127,12 @@ static class DayTools
 
     public static Task DeleteAsync(IAgentTool delete, string id, CancellationToken ct) =>
         delete.RunAsync(new Dictionary<string, JsonElement> { ["id"] = Str(id) }, ct);
+
+    public static async Task<string> RenameAsync(IAgentTool change, string id, string title, CancellationToken ct)
+    {
+        var said = await change.RunAsync(new Dictionary<string, JsonElement> { ["id"] = Str(id), ["title"] = Str(title) }, ct);
+        return IdIn.Match(said.TrimEnd()) is { Success: true } m ? m.Groups[1].Value : id;
+    }
 
     public static async Task<(string Id, string Said)> AddAsync(IAgentTool add, string title, DateTime start, DateTime end, CancellationToken ct)
     {
@@ -164,6 +172,7 @@ public sealed class NextcloudDaySource : IDaySource
     public Task<string> MoveAsync(string id, DateTime start, DateTime end, CancellationToken ct) => DayTools.MoveAsync(_change, id, start, end, ct);
     public Task DeleteAsync(string id, CancellationToken ct) => DayTools.DeleteAsync(_delete, id, ct);
     public Task<(string Id, string Said)> AddAsync(string title, DateTime start, DateTime end, CancellationToken ct) => DayTools.AddAsync(_add, title, start, end, ct);
+    public Task<string> RenameAsync(string id, string title, CancellationToken ct) => DayTools.RenameAsync(_change, id, title, ct);
 }
 
 public sealed class GoogleDaySource : IDaySource
@@ -208,6 +217,10 @@ public sealed class GoogleDaySource : IDaySource
     public Task<(string Id, string Said)> AddAsync(string title, DateTime start, DateTime end, CancellationToken ct) => CanWrite
         ? DayTools.AddAsync(_add, title, start, end, ct)
         : throw new InvalidOperationException("Google Calendar is connected read-only. Allow changes in the connected apps to add events.");
+
+    public Task<string> RenameAsync(string id, string title, CancellationToken ct) => CanWrite
+        ? DayTools.RenameAsync(_change, id, title, ct)
+        : throw new InvalidOperationException("Google Calendar is connected read-only. Allow changes in the connected apps to rename events.");
 }
 
 /// <summary>Every connected calendar, as one: what the day view shows and changes.</summary>
@@ -266,6 +279,7 @@ public sealed class DayCalendar
 
     public Task<string> MoveAsync(string id, DateTime start, DateTime end, CancellationToken ct) => SourceOf(id).MoveAsync(id, start, end, ct);
     public Task DeleteAsync(string id, CancellationToken ct) => SourceOf(id).DeleteAsync(id, ct);
+    public Task<string> RenameAsync(string id, string title, CancellationToken ct) => SourceOf(id).RenameAsync(id, title, ct);
 
     /// <summary>
     /// Adds a timed event where new events go: the default calendar's provider, else the first that can be written to (Nextcloud,

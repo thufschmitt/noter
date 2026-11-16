@@ -386,6 +386,17 @@ try
             && googleApi.Writes[^1].Body!["summary"]!.GetValue<string>() == "Lunch" && googleApi.Writes[^1].Body!.ToJsonString().Contains("2026-11-11T12:00") && cb.Titles.SequenceEqual(new[] { "12:00–13:00" }));
         Check("no model was asked", api.Requests.Count(r => r.Path.EndsWith("/responses")) == asksBefore);
         Check("the ink comes off and the event shows on the day", await cb.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "delete") && l.Any(m => m.GetProperty("t").GetString() == "drawingChanged" && m.GetProperty("text").GetString()!.Contains("Lunch")), 10000));
+
+        // Writing over that event renames it.
+        var withLunch = cb.Log.Last(m => m.GetProperty("t").GetString() == "drawingChanged" && m.GetProperty("text").GetString()!.Contains("Lunch")).GetProperty("text").GetString()!;
+        var lunch = System.Text.RegularExpressions.Regex.Match(withLunch, @"<box id=""(e\d+)""[^>]*>Lunch").Groups[1].Value;
+        cb.Items = new() { [lunch] = new { left = 130.0, top = yAt(12), right = 800.0, bottom = yAt(13) } };
+        await cb.SendAsync(new { t = "stroke", stroke = new { id = 902, pts = new[] { new[] { 300.0, yAt(12) + 30 }, new[] { 310.0, yAt(12) + 20 }, new[] { 320.0, yAt(12) + 30 } } } });
+        writes = googleApi.Writes.Count;
+        await cb.SendAsync(new { t = "ask" });
+        Check("writing over an event renames it in the calendar, starting from its title", await cb.UntilAsync(_ => googleApi.Writes.Count > writes, 10000)
+            && googleApi.Writes[^1].Method == "PATCH" && googleApi.Writes[^1].Body!["summary"]!.GetValue<string>() == "Team lunch" && cb.Titles[^1] == "12:00–13:00 Lunch");
+        Check("no model was asked for that either", api.Requests.Count(r => r.Path.EndsWith("/responses")) == asksBefore);
     }
 
     var gsame = await Json(await http.SendAsync(ApiReq(HttpMethod.Put, "/api/google/client", new { clientId = "gcid", write = true })));

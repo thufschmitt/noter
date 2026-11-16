@@ -158,32 +158,35 @@ public sealed partial class MainPage : Page, IPageView
         if (drawing.View is not DrawingVisual { Built: { } built } || built.Grids.Values.FirstOrDefault() is not { } grid || grid.ActualHeight <= 0)
             return Task.FromResult<TimelineGeometry?>(null);
         var r = PageRect(grid);
-        return Task.FromResult<TimelineGeometry?>(new TimelineGeometry(r.Top, Layout.PxPerHour / 60.0, grid.FromMinutes, grid.ToMinutes, r.Left + grid.Gutter, r.Right));
+        // Where each event's box is, so writing over one can rename it (the all-day ones too, above the hours).
+        var items = built.Elements.Where(p => p.Key.Tag == "box" && p.Key.Id is { } id && id.StartsWith('e')).ToDictionary(p => p.Key.Id!, p => PageRect(p.Value));
+        return Task.FromResult<TimelineGeometry?>(new TimelineGeometry(r.Top, Layout.PxPerHour / 60.0, grid.FromMinutes, grid.ToMinutes, r.Left + grid.Gutter, r.Right, items));
     }
 
     /// <summary>
     /// The title of an event drawn on the day: its handwriting read by Windows' own recognizer, on this PC (no network). When there is
     /// none, or it can't be read, the user types it; Skip leaves the event out.
     /// </summary>
-    async Task<string?> IPageView.EventTitleAsync(IReadOnlyList<uint> words, string when)
+    async Task<string?> IPageView.EventTitleAsync(IReadOnlyList<uint> words, string when, string? current)
     {
         var read = words.Count > 0 ? await RecognizeAsync(words) : null;
         if (!string.IsNullOrWhiteSpace(read)) return read;
 
-        var box = new TextBox { PlaceholderText = "What is it?", MaxLength = 200, Width = 320 };
+        var box = new TextBox { PlaceholderText = "What is it?", MaxLength = 200, Width = 320, Text = current ?? "" };
         var panel = new StackPanel { Spacing = 8 };
         panel.Children.Add(new TextBlock
         {
-            Text = "From " + when.Replace("–", " to ") + ". " + (words.Count > 0 ? "The writing couldn't be read: type its title." : "Type its title:"),
+            Text = (current is null ? "From " + when.Replace("–", " to ") : $"\"{current}\" ({when.Replace("–", " to ")})") + ". "
+                + (words.Count > 0 ? "The writing couldn't be read: type its " + (current is null ? "title." : "new title.") : "Type its title:"),
             TextWrapping = TextWrapping.Wrap,
             MaxWidth = 320,
         });
         panel.Children.Add(box);
         var dialog = new ContentDialog
         {
-            Title = "New event",
+            Title = current is null ? "New event" : "Rename event",
             Content = panel,
-            PrimaryButtonText = "Add",
+            PrimaryButtonText = current is null ? "Add" : "Rename",
             CloseButtonText = "Skip",
             DefaultButton = ContentDialogButton.Primary,
         };

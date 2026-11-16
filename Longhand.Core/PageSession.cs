@@ -26,8 +26,11 @@ public sealed class PageSession
     sealed record EditedDrawing(NoteModel Note, DrawingModel Drawing, string Markup, Dictionary<string, Layout.EditEntry> Edits) : UndoStep;
     /// <summary>The calendar app: an event the user moved or resized, with where it was (its local times) and its id now.</summary>
     sealed record MovedEvent(DateOnly Day, string Id, string Title, DateTime Start, DateTime End) : UndoStep;
-    /// <summary>The calendar app: events added from the user's drawing, and the ink they were drawn with (taken off the page).</summary>
-    sealed record AddedEvents(DateOnly Day, IReadOnlyList<(string Id, string Title)> Events, IReadOnlyList<object> Ink) : UndoStep;
+    /// <summary>
+    /// The calendar app: events added from the user's drawing, events renamed by writing over them (with their old titles), and the ink
+    /// that did it (taken off the page).
+    /// </summary>
+    sealed record AddedEvents(DateOnly Day, IReadOnlyList<(string Id, string Title)> Events, IReadOnlyList<(string Id, string Old, string New)> Renamed, IReadOnlyList<object> Ink) : UndoStep;
 
     /// <summary>One answer being written, so the layout updates that follow it can be merged.</summary>
     sealed class Answer
@@ -859,7 +862,9 @@ public sealed class PageSession
         _busy = true;
         UpdateState();
         var added = new List<(string Id, string Title)>();
+        var renamed = new List<(string Id, string Old, string New)>();
         var used = new List<uint>();
+        var layout = _dayLayout;
         string? problem = null;
         try
         {
@@ -872,10 +877,37 @@ public sealed class PageSession
             {
                 var ink = _pending.Select(id => _view.StrokePoints(id) is { } p ? new InkPath(id, p) : null).OfType<InkPath>().ToList();
                 var found = InkEvents.Find(ink, grid);
-                if (found.Count == 0) problem = "No event found in the ink. Draw a box over its hours (or a line down them) and write its title in it, then tap Add.";
+                if (found.Count == 0) problem = "No event found in the ink. Draw a box over its hours (or a line down them) and write its title in it, or write a new title over an event, then tap Add.";
                 var midnight = day.ToDateTime(TimeOnly.MinValue);
                 foreach (var e in found)
                 {
+                    if (e.Item is not null)
+                    {
+                        // Writing over an event already there: a new title for it.
+                        if (layout is null || !layout.Events.TryGetValue(e.Item, out var target)) continue;
+                        var old = target.Event;
+                        if (!target.Editable)
+                        {
+                            problem = $"\"{old.Title}\" is in a calendar that can't be changed, so it keeps its title.";
+                            continue;
+                        }
+                        var when = old.AllDay ? "all day" : TimeZoneInfo.ConvertTime(old.Start, calendar.Zone).ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture) + "–" + TimeZoneInfo.ConvertTime(old.End, calendar.Zone).ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+                        var name = (await _view.EventTitleAsync(e.Words, when, old.Title))?.Trim();
+                        if (day != _day) return;
+                        if (string.IsNullOrEmpty(name) || name == old.Title) continue;
+                        try
+                        {
+                            var id = await calendar.RenameAsync(old.Id, name, CancellationToken.None);
+                            renamed.Add((id, old.Title, name));
+                            used.AddRange(e.Words);
+                        }
+                        catch (Exception ex)
+                        {
+                            problem = $"Couldn't rename \"{old.Title}\": {ex.Message}";
+                            break;
+                        }
+                        continue;
+                    }
                     var title = (await _view.EventTitleAsync(e.Words, Layout.Hhmm(e.Start) + "–" + Layout.Hhmm(e.End)))?.Trim();
                     if (day != _day) return; // the user went to another day meanwhile
                     if (string.IsNullOrEmpty(title)) continue; // skipped
@@ -896,24 +928,26 @@ public sealed class PageSession
         finally
         {
             _busy = false;
-            if (day == _day && added.Count > 0)
+            if (day == _day && added.Count + renamed.Count > 0)
             {
                 var tokens = new List<object>();
                 foreach (var id in used)
                     if (_view.TakeStroke(id) is { } token) tokens.Add(token);
                 _pending.ExceptWith(used);
-                _undo.Push(new AddedEvents(day, added, tokens));
+                _undo.Push(new AddedEvents(day, added, renamed, tokens));
             }
             UpdateState();
         }
-        if (added.Count > 0)
-            _view.Toast((added.Count == 1 ? $"Added \"{added[0].Title}\"." : $"Added {added.Count} events: " + string.Join(", ", added.Select(a => $"\"{a.Title}\"")) + ".")
-                + " Ctrl+Z takes " + (added.Count == 1 ? "it" : "them") + " back." + (problem is null ? "" : " " + problem), problem is null ? 5 : 9);
-        else if (problem is not null) _view.Toast(problem, 7);
-        if (added.Count > 0 && day == _day) await ReloadDayAsync();
+        var said = new List<string>();
+        if (added.Count > 0) said.Add(added.Count == 1 ? $"Added \"{added[0].Title}\"." : $"Added {added.Count} events: " + string.Join(", ", added.Select(a => $"\"{a.Title}\"")) + ".");
+        said.AddRange(renamed.Select(r => $"Renamed \"{r.Old}\" to \"{r.New}\"."));
+        if (said.Count > 0) said.Add("Ctrl+Z takes it back.");
+        if (problem is not null) said.Add(problem);
+        if (said.Count > 0) _view.Toast(string.Join(" ", said), problem is null ? 5 : 9);
+        if (added.Count + renamed.Count > 0 && day == _day) await ReloadDayAsync();
     }
 
-    /// <summary>Undo of events added from a drawing: they are deleted from the calendar (the ink is already back).</summary>
+    /// <summary>Undo of what a drawing did: the events it added are deleted, those it renamed get their old titles (the ink is already back).</summary>
     async Task RemoveAddedAsync(AddedEvents step)
     {
         await _dayLock.WaitAsync();
@@ -921,7 +955,11 @@ public sealed class PageSession
         {
             var calendar = DayData.DayCalendar() ?? throw new InvalidOperationException("No calendar is connected any more.");
             foreach (var (id, _) in step.Events.Where(e => e.Id.Length > 0)) await calendar.DeleteAsync(id, CancellationToken.None);
-            _view.Toast(step.Events.Count == 1 ? $"Removed \"{step.Events[0].Title}\" again." : $"Removed those {step.Events.Count} events again.");
+            foreach (var (id, old, _) in step.Renamed) await calendar.RenameAsync(id, old, CancellationToken.None);
+            var said = new List<string>();
+            if (step.Events.Count > 0) said.Add(step.Events.Count == 1 ? $"Removed \"{step.Events[0].Title}\" again." : $"Removed those {step.Events.Count} events again.");
+            said.AddRange(step.Renamed.Select(r => $"\"{r.New}\" is \"{r.Old}\" again."));
+            _view.Toast(string.Join(" ", said));
         }
         catch (Exception ex)
         {
