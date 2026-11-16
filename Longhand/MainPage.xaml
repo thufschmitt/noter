@@ -25,7 +25,7 @@
     <!-- Colours are set from code (see ApplyTheme) so ink, rules and notes follow the system theme together. -->
     <Grid x:Name="Root">
         <!-- One endless ruled sheet. Pen and mouse write; touch scrolls (unless finger writing is on), and two fingers zoom (so does
-             Ctrl with the wheel). Zoomed in, the sheet also scrolls sideways. -->
+             Ctrl with the wheel), never smaller than the page fills the width. Zoomed in, the sheet also scrolls sideways. -->
         <ScrollViewer
             x:Name="Scroller"
             HorizontalScrollMode="Auto"
@@ -33,7 +33,7 @@
             VerticalScrollMode="Enabled"
             VerticalScrollBarVisibility="Auto"
             ZoomMode="Enabled"
-            MinZoomFactor="0.5"
+            MinZoomFactor="1"
             MaxZoomFactor="4"
             SizeChanged="Scroller_SizeChanged">
             <Grid x:Name="Sheet" HorizontalAlignment="Center" VerticalAlignment="Top">

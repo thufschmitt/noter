@@ -42,7 +42,7 @@ After that, starting the app from the Start menu or a tile checks for a newer ve
 |---|---|
 | Pen or mouse | Writes |
 | Touch | Scrolls (the hand button switches fingers to writing) |
-| Pinch with two fingers | Zooms (Ctrl with the mouse wheel too). On Windows from half size to four times, and the sheet scrolls sideways when zoomed in; on the web it is the browser's own zoom, and the ink is redrawn sharp at the new size. Writing, erasing and editing work the same zoomed. A pinch that starts while a finger is writing drops that stroke. |
+| Pinch with two fingers | Zooms (Ctrl with the mouse wheel too). Only in, never smaller than the page at its full width: on Windows up to four times, and the sheet scrolls sideways when zoomed in; on the web it is the browser's own pinch zoom, and the ink is redrawn sharp at the new size. Writing, erasing and editing work the same zoomed. A pinch that starts while a finger is writing drops that stroke. |
 | Ask / Ctrl+Enter | The model answers what you wrote since its last answer. Nothing is sent until you ask. While an answer is coming, the button reads Stop. |
 | Draw a five-point star | Asks, like the Ask button, without leaving the pen. Draw it in one stroke anywhere on the page, as long as no other ink is close to it (not on or touching your writing). The star is taken off the page; Ctrl+Z puts it back. |
 | Tap a part of a layout | Selects it, if the model made it editable: drag it into a column or box that accepts drops, knob to turn, cross to delete. Nothing is sent until Ask. |
