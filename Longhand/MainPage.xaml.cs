@@ -164,24 +164,45 @@ public sealed partial class MainPage : Page, IPageView
     }
 
     /// <summary>
-    /// The title of an event drawn on the day: its handwriting read by Windows' own recognizer, on this PC (no network). When there is
-    /// none, or it can't be read, the user types it; Skip leaves the event out.
+    /// The title of an event drawn on the day: its handwriting read by Windows' own recognizers, on this PC (no network), in each of the
+    /// user's languages (French and English unless they chose others), and the reading with the most real words of its language
+    /// taken (<see cref="HandwritingChoice"/>, with Windows' spell checking). When that is sure, it is used as it is; otherwise the
+    /// user confirms it, with the other readings one tap away, or types it. Skip leaves the event out.
     /// </summary>
     async Task<string?> IPageView.EventTitleAsync(IReadOnlyList<uint> words, string when, string? current)
     {
-        var read = words.Count > 0 ? await RecognizeAsync(words) : null;
-        if (!string.IsNullOrWhiteSpace(read)) return read;
+        var readings = words.Count > 0 ? await ReadHandwritingAsync(words) : new List<HandwritingReading>();
+        var (guesses, sure) = HandwritingChoice.Rank(readings, SpellCheck.IsWord);
+        if (sure && guesses.Count > 0) return guesses[0].Text;
 
-        var box = new TextBox { PlaceholderText = "What is it?", MaxLength = 200, Width = 320, Text = current ?? "" };
+        var box = new TextBox { PlaceholderText = "What is it?", MaxLength = 200, Width = 320, Text = guesses.FirstOrDefault()?.Text ?? current ?? "" };
+        box.SelectAll();
         var panel = new StackPanel { Spacing = 8 };
+        string about = current is null ? "From " + when.Replace("–", " to ") : $"\"{current}\" ({when.Replace("–", " to ")})";
         panel.Children.Add(new TextBlock
         {
-            Text = (current is null ? "From " + when.Replace("–", " to ") : $"\"{current}\" ({when.Replace("–", " to ")})") + ". "
-                + (words.Count > 0 ? "The writing couldn't be read: type its " + (current is null ? "title." : "new title.") : "Type its title:"),
+            Text = about + ". " + (guesses.Count > 0 ? "Is this the " + (current is null ? "title?" : "new title?")
+                : words.Count > 0 ? "The writing couldn't be read: type its " + (current is null ? "title." : "new title.") : "Type its title:"),
             TextWrapping = TextWrapping.Wrap,
             MaxWidth = 320,
         });
         panel.Children.Add(box);
+        if (guesses.Count > 1)
+        {
+            // The other ways the writing reads, one tap away.
+            var wrap = new StackPanel { Spacing = 4 };
+            wrap.Children.Add(new TextBlock { Text = "Or:", FontSize = 12, Opacity = 0.75 });
+            var list = new StackPanel { Spacing = 4 };
+            foreach (var guess in guesses.Skip(1))
+            {
+                var choice = new Button { Content = guess.Text, HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(10, 4, 10, 4) };
+                ToolTipService.SetToolTip(choice, "Read as " + guess.Language);
+                choice.Click += (_, _) => { box.Text = guess.Text; box.SelectAll(); box.Focus(FocusState.Programmatic); };
+                list.Children.Add(choice);
+            }
+            wrap.Children.Add(list);
+            panel.Children.Add(wrap);
+        }
         var dialog = new ContentDialog
         {
             Title = current is null ? "New event" : "Rename event",
@@ -194,8 +215,8 @@ public sealed partial class MainPage : Page, IPageView
         {
             if (e.Key != Windows.System.VirtualKey.Enter) return;
             e.Handled = true;
-            dialog.Hide();
             _typedTitle = box.Text;
+            dialog.Hide();
         };
         _typedTitle = null;
         var result = await dialog.ShowAsync();
@@ -205,35 +226,41 @@ public sealed partial class MainPage : Page, IPageView
 
     string? _typedTitle;
 
-    /// <summary>The words in these strokes, as Windows' handwriting recognizer reads them; null when it can't (no recognizer for the language, say).</summary>
-    async Task<string?> RecognizeAsync(IReadOnlyList<uint> ids)
+    /// <summary>
+    /// What each of the user's handwriting recognizers reads in these strokes: every word with its guesses, best first. A recognizer that
+    /// fails is left out; none at all (no handwriting installed) gives nothing.
+    /// </summary>
+    async Task<List<HandwritingReading>> ReadHandwritingAsync(IReadOnlyList<uint> ids)
     {
+        var readings = new List<HandwritingReading>();
         var wanted = ids.ToHashSet();
-        var all = Strokes.GetStrokes();
         var selected = new List<InkStroke>();
         try
         {
-            foreach (var stroke in all)
+            foreach (var stroke in Strokes.GetStrokes())
             {
                 stroke.Selected = wanted.Contains(stroke.Id);
                 if (stroke.Selected) selected.Add(stroke);
             }
-            if (selected.Count == 0) return null;
-            var recognizer = new InkRecognizerContainer();
-            if (recognizer.GetRecognizers().Count == 0) return null;
-            var results = await recognizer.RecognizeAsync(Strokes, InkRecognitionTarget.Selected);
-            var words = results.Select(r => r.GetTextCandidates().FirstOrDefault()).Where(w => !string.IsNullOrWhiteSpace(w));
-            var text = string.Join(" ", words).Trim();
-            return text.Length > 0 ? text : null;
-        }
-        catch (Exception)
-        {
-            return null;
+            if (selected.Count == 0) return readings;
+            foreach (var recognizer in HandwritingStore.Chosen())
+            {
+                try
+                {
+                    var container = new InkRecognizerContainer();
+                    container.SetDefaultRecognizer(recognizer);
+                    var results = await container.RecognizeAsync(Strokes, InkRecognitionTarget.Selected);
+                    var words = results.Select(r => (IReadOnlyList<string>)r.GetTextCandidates().Where(c => !string.IsNullOrWhiteSpace(c)).ToList()).Where(w => w.Count > 0).ToList();
+                    if (words.Count > 0) readings.Add(new HandwritingReading(HandwritingChoice.LanguageOf(recognizer.Name) ?? "", words));
+                }
+                catch (Exception) { /* this language can't read it; the others still can */ }
+            }
         }
         finally
         {
             foreach (var stroke in selected) stroke.Selected = false;
         }
+        return readings;
     }
 
     void IPageView.DayShown(DateOnly day, bool today)
@@ -1519,6 +1546,49 @@ public sealed partial class MainPage : Page, IPageView
     /// The symbols section of the settings: the user's own shortcuts, each a name, what it means and (optionally) an example
     /// drawing. Changes are saved as they are made.
     /// </summary>
+    /// <summary>
+    /// The languages Longhand Calendar reads titles in: a main one and a second, from the handwriting recognizers installed on this PC.
+    /// A choice is kept as soon as it is made.
+    /// </summary>
+    StackPanel BuildHandwritingSection()
+    {
+        var section = new StackPanel { Spacing = 6, MaxWidth = 380 };
+        section.Children.Add(new TextBlock { Text = "Handwriting", FontWeight = Windows.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 10, 0, 0) });
+        var installed = HandwritingStore.Installed();
+        if (installed.Count == 0)
+        {
+            section.Children.Add(new TextBlock
+            {
+                Text = "No handwriting recognition is installed. Add it in Windows: Settings → Time & language → Language, your language's options, Handwriting. Until then, titles are typed.",
+                TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.75,
+            });
+            return section;
+        }
+        section.Children.Add(new TextBlock
+        {
+            Text = "Longhand Calendar reads the titles you write in these languages and keeps the reading that makes the most sense; when it isn't sure it asks, with the other readings one tap away. More languages can be added in Windows: Settings → Time & language → Language, Handwriting.",
+            TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.75,
+        });
+        var chosen = HandwritingStore.Chosen();
+        var main = new ComboBox { Width = 380, Header = "Main language" };
+        var second = new ComboBox { Width = 380, Header = "Second language" };
+        foreach (var r in installed) main.Items.Add(r.Name);
+        second.Items.Add("None");
+        foreach (var r in installed) second.Items.Add(r.Name);
+        main.SelectedIndex = Math.Max(0, installed.ToList().FindIndex(r => r.Name == chosen[0].Name));
+        second.SelectedIndex = chosen.Count > 1 ? installed.ToList().FindIndex(r => r.Name == chosen[1].Name) + 1 : 0;
+        void Save()
+        {
+            if (main.SelectedIndex < 0) return;
+            HandwritingStore.Save(installed[main.SelectedIndex].Name, second.SelectedIndex > 0 ? installed[second.SelectedIndex - 1].Name : null);
+        }
+        main.SelectionChanged += (_, _) => Save();
+        second.SelectionChanged += (_, _) => Save();
+        section.Children.Add(main);
+        section.Children.Add(second);
+        return section;
+    }
+
     StackPanel BuildSymbolsSection()
     {
         var section = new StackPanel { Spacing = 8, Width = 380 };
@@ -1762,6 +1832,7 @@ public sealed partial class MainPage : Page, IPageView
         panel.Children.Add(new TextBlock { Text = $"Longhand version {v.Major}.{v.Minor}.{v.Build}.{v.Revision}", FontSize = 12, Opacity = 0.75, Margin = new Thickness(0, 6, 0, 0) });
         panel.Children.Add(new TextBlock { Text = "Symbols", FontWeight = Windows.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 10, 0, -6) });
         panel.Children.Add(BuildSymbolsSection());
+        panel.Children.Add(BuildHandwritingSection());
 
         var dialog = new ContentDialog
         {

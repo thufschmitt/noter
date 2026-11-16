@@ -226,3 +226,69 @@ static class DayChecks
         check("today comes back", session.Day == today && session.Notes[0].Drawings[0].Markup.Contains("Standup"));
     }
 }
+
+/// <summary>Choosing between what French and English handwriting recognizers read, with a dictionary of each.</summary>
+static class HandwritingChecks
+{
+    static readonly HashSet<string> French = new(StringComparer.OrdinalIgnoreCase) { "déjeuner", "avec", "réunion", "équipe", "pain" };
+    static readonly HashSet<string> English = new(StringComparer.OrdinalIgnoreCase) { "team", "lunch", "with", "pain", "sam" };
+    static bool? Known(string language, string word) => language.StartsWith("fr") ? French.Contains(word) : language.StartsWith("en") ? English.Contains(word) : null;
+    static IReadOnlyList<IReadOnlyList<string>> W(params string[][] words) => words;
+
+    public static void Run(Action<string, bool> check)
+    {
+        // Written in French: the French reading is all real words, the English one isn't.
+        var (g1, sure1) = HandwritingChoice.Rank(new[]
+        {
+            new HandwritingReading("fr-FR", W(new[] { "Réunion" }, new[] { "équipe" })),
+            new HandwritingReading("en-US", W(new[] { "Reunion" }, new[] { "equips" })),
+        }, Known);
+        check("French writing reads as French, sure enough to use as it is", g1[0].Text == "Réunion équipe" && g1[0].Language == "fr-FR" && sure1 && g1.Count == 2);
+
+        // Written in English: the English reading wins although French comes first.
+        var (g2, sure2) = HandwritingChoice.Rank(new[]
+        {
+            new HandwritingReading("fr-FR", W(new[] { "Team" }, new[] { "lunche" })),
+            new HandwritingReading("en-US", W(new[] { "Team" }, new[] { "lunch" })),
+        }, Known);
+        check("English writing reads as English, though French is the main language", g2[0].Text == "Team lunch" && g2[0].Language == "en-US" && sure2);
+
+        // A word the dictionary doesn't know is swapped for an alternative guess it does know.
+        var (g3, sure3) = HandwritingChoice.Rank(new[]
+        {
+            new HandwritingReading("fr-FR", W(new[] { "Déjeumer", "Déjeuner" }, new[] { "avec" }, new[] { "Sam" })),
+            new HandwritingReading("en-US", W(new[] { "Dejeumer" }, new[] { "arec", "with" }, new[] { "Sam" })),
+        }, Known);
+        check("a word not in the dictionary gives way to another guess that is", g3[0].Text == "Déjeuner avec Sam" && g3.Any(g => g.Text == "Déjeumer avec Sam"));
+        check("a mixed title isn't sure, so it is asked, with the best guess first", !sure3);
+
+        // Both read the same: sure, whatever the dictionaries say.
+        var (g4, sure4) = HandwritingChoice.Rank(new[]
+        {
+            new HandwritingReading("fr-FR", W(new[] { "Zorglub" })),
+            new HandwritingReading("en-US", W(new[] { "Zorglub" })),
+        }, Known);
+        check("readings that agree are one guess, and sure", g4.Count == 1 && sure4);
+
+        // No dictionary at all: the main language comes first, and the user is asked.
+        var (g5, sure5) = HandwritingChoice.Rank(new[]
+        {
+            new HandwritingReading("fr-FR", W(new[] { "Piscine" })),
+            new HandwritingReading("en-US", W(new[] { "Piscina" })),
+        }, (_, _) => null);
+        check("with no dictionary, the main language comes first, and it is asked", g5[0].Text == "Piscine" && g5[1].Text == "Piscina" && !sure5);
+        check("two real readings in different words aren't sure", !HandwritingChoice.Rank(new[]
+        {
+            new HandwritingReading("fr-FR", W(new[] { "Pain" })),
+            new HandwritingReading("en-US", W(new[] { "Team" })),
+        }, Known).Sure);
+        check("nothing read is no guess", HandwritingChoice.Rank(Array.Empty<HandwritingReading>(), Known).Guesses.Count == 0);
+        check("times and numbers count as real words", HandwritingChoice.Rank(new[] { new HandwritingReading("en-US", W(new[] { "Lunch" }, new[] { "12:30" })) }, Known).Guesses[0].Score == 1);
+
+        check("recognizers' languages are read from their names, in English or their own language",
+            HandwritingChoice.LanguageOf("Microsoft English (US) Handwriting Recognizer") == "en-US"
+            && HandwritingChoice.LanguageOf("Microsoft English (United Kingdom) Handwriting Recognizer") == "en-GB"
+            && HandwritingChoice.LanguageOf("Microsoft Reconnaissance d'écriture manuscrite – Français") == "fr-FR"
+            && HandwritingChoice.LanguageOf("Microsoft Handwriting Recognizer - Klingon") is null);
+    }
+}
