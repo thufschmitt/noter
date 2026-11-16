@@ -10,6 +10,7 @@ sealed partial class App : Application
     public App()
     {
         InitializeComponent();
+        CrashLog.Install(this);
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs e) => Show(e.Arguments);

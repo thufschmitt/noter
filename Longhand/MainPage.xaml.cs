@@ -109,9 +109,61 @@ public sealed partial class MainPage : Page, IPageView
     {
         ApplyTheme(recolorInk: false);
         Window.Current.CoreWindow.KeyDown += OnWindowKeyDown;
+        CrashLog.Reported += message => _ = Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () =>
+            ShowToast("Something went wrong: " + message + " It's in the crash report (gear button → Copy crash report).", 8));
         await _session.StartAsync();
         _started = true;
         LayoutSheet();
+        if (CrashLog.HasUnreadCrash) await ShowLastCrashAsync();
+    }
+
+    // ---------- crashes ----------
+
+    /// <summary>The app closed because of an error last time: say so, and offer to copy what happened.</summary>
+    async Task ShowLastCrashAsync()
+    {
+        CrashLog.MarkRead();
+        var dialog = new ContentDialog
+        {
+            Title = (AppKind.IsCalendar ? "Longhand Calendar" : "Longhand") + " closed unexpectedly last time",
+            Content = new TextBlock
+            {
+                Text = "What went wrong was written down. Copy it to paste it wherever you report the problem (it holds the error and where in the code it happened; nothing from your pages or calendar, but read it before sharing it). You can copy it later too, from the gear button.",
+                TextWrapping = TextWrapping.Wrap,
+                MaxWidth = 380,
+            },
+            PrimaryButtonText = "Copy details",
+            CloseButtonText = "Close",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary && CrashLog.CopyReport()) ShowToast("Crash report copied.");
+    }
+
+    /// <summary>The crash report in the gear dialog: copy the latest entries, or clear them.</summary>
+    StackPanel BuildCrashSection()
+    {
+        var section = new StackPanel { Spacing = 6, MaxWidth = 380 };
+        section.Children.Add(new TextBlock { Text = "Crash report", FontWeight = Windows.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 10, 0, 0) });
+        var note = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.75 };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var copy = new Button { Content = "Copy crash report" };
+        var clear = new Button { Content = "Clear" };
+        void Refresh()
+        {
+            bool any = CrashLog.HasEntries;
+            note.Text = any
+                ? "Errors the app ran into are written down, with where in the code they happened. Copy the latest to paste them into a bug report."
+                : "No errors have been written down.";
+            copy.IsEnabled = clear.IsEnabled = any;
+        }
+        copy.Click += (_, _) => { note.Text = CrashLog.CopyReport() ? "Copied: the latest entries are on the clipboard." : "Nothing to copy."; };
+        clear.Click += (_, _) => { CrashLog.Clear(); Refresh(); };
+        buttons.Children.Add(copy);
+        buttons.Children.Add(clear);
+        Refresh();
+        section.Children.Add(note);
+        section.Children.Add(buttons);
+        return section;
     }
 
     // ---------- Longhand Calendar ----------
@@ -1837,6 +1889,7 @@ public sealed partial class MainPage : Page, IPageView
         panel.Children.Add(new TextBlock { Text = "Symbols", FontWeight = Windows.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 10, 0, -6) });
         panel.Children.Add(BuildSymbolsSection());
         panel.Children.Add(BuildHandwritingSection());
+        panel.Children.Add(BuildCrashSection());
 
         var dialog = new ContentDialog
         {
