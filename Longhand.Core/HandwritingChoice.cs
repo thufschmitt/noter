@@ -6,7 +6,8 @@ using System.Text.RegularExpressions;
 namespace Longhand.Services;
 
 /// <summary>
-/// What one handwriting recognizer read: its language (a BCP-47 tag like fr-FR) and, for each word it found, its guesses, best first.
+/// What one handwriting recognizer read: its language (a BCP-47 tag like fr-FR, or <see cref="HandwritingChoice.Auto"/> for a reader
+/// that chooses its language itself) and, for each word it found, its guesses, best first.
 /// </summary>
 public sealed record HandwritingReading(string Language, IReadOnlyList<IReadOnlyList<string>> Words);
 
@@ -22,6 +23,8 @@ public sealed record TitleGuess(string Text, double Score, string Language);
 public static class HandwritingChoice
 {
     public const int MaxGuesses = 5;
+    /// <summary>The language of a reader that doesn't say which it read in (Windows' ink analysis): its words are checked in every language of the other readings.</summary>
+    public const string Auto = "auto";
 
     /// <param name="readings">One per recognizer, the user's main language first.</param>
     /// <param name="known">Whether a word is a real word of a language: true, false, or null when that can't be told (no dictionary).</param>
@@ -31,6 +34,15 @@ public static class HandwritingChoice
     /// </returns>
     public static (List<TitleGuess> Guesses, bool Sure) Rank(IReadOnlyList<HandwritingReading> readings, Func<string, string, bool?> known)
     {
+        // A reader that chose its own language is checked against all of the others': a word is real if any of them knows it.
+        var languages = readings.Select(r => r.Language).Where(l => l != Auto && l.Length > 0).Distinct().ToList();
+        bool? Known(string language, string word)
+        {
+            if (language != Auto) return known(language, word);
+            var answers = languages.Select(l => known(l, word)).ToList();
+            return answers.Contains(true) ? true : answers.Contains(false) ? false : null;
+        }
+
         var all = new List<(TitleGuess Guess, int Order, int Variant)>();
         for (int i = 0; i < readings.Count; i++)
         {
@@ -38,9 +50,9 @@ public static class HandwritingChoice
             var words = r.Words.Where(w => w.Count > 0 && w[0].Trim().Length > 0).ToList();
             if (words.Count == 0) continue;
             var top = words.Select(w => w[0].Trim()).ToList();
-            var fixedUp = words.Select(w => w.Select(c => c.Trim()).FirstOrDefault(c => c.Length > 0 && known(r.Language, c) == true) ?? w[0].Trim()).ToList();
-            all.Add((new TitleGuess(Join(top), Score(top, r.Language, known), r.Language), i, 0));
-            if (!fixedUp.SequenceEqual(top)) all.Add((new TitleGuess(Join(fixedUp), Score(fixedUp, r.Language, known), r.Language), i, 1));
+            var fixedUp = words.Select(w => w.Select(c => c.Trim()).FirstOrDefault(c => c.Length > 0 && Known(r.Language, c) == true) ?? w[0].Trim()).ToList();
+            all.Add((new TitleGuess(Join(top), Score(top, r.Language, Known), r.Language), i, 0));
+            if (!fixedUp.SequenceEqual(top)) all.Add((new TitleGuess(Join(fixedUp), Score(fixedUp, r.Language, Known), r.Language), i, 1));
         }
         if (all.Count == 0) return (new List<TitleGuess>(), false);
 
