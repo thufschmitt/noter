@@ -159,7 +159,6 @@ await BookChecks.RunAsync(Check);
 await GoogleChecks.RunAsync(Check);
 await DayChecks.RunAsync(Check);
 HandwritingChecks.Run(Check);
-AutoReaderChecks.Run(Check);
 
 Console.WriteLine(failures == 0 ? "All checks passed." : $"{failures} check(s) failed.");
 return failures == 0 ? 0 : 1;

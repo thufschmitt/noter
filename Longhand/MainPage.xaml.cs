@@ -195,12 +195,12 @@ public sealed partial class MainPage : Page, IPageView
             var list = new StackPanel { Spacing = 4 };
             foreach (var guess in guesses.Skip(1))
             {
-                // Which reader read it, shown small: a language, or "auto" for Windows' ink analysis.
+                // Which language read it, shown small.
                 var label = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
                 label.Children.Add(new TextBlock { Text = guess.Text });
                 label.Children.Add(new TextBlock { Text = guess.Language, FontSize = 11, Opacity = 0.6, VerticalAlignment = VerticalAlignment.Center });
                 var choice = new Button { Content = label, HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(10, 4, 10, 4) };
-                ToolTipService.SetToolTip(choice, guess.Language == HandwritingChoice.Auto ? "Read by Windows' ink analysis, in a language it chose" : "Read as " + guess.Language);
+                ToolTipService.SetToolTip(choice, "Read as " + guess.Language);
                 choice.Click += (_, _) => { box.Text = guess.Text; box.SelectAll(); box.Focus(FocusState.Programmatic); };
                 list.Children.Add(choice);
             }
@@ -229,29 +229,6 @@ public sealed partial class MainPage : Page, IPageView
     }
 
     string? _typedTitle;
-
-    /// <summary>What Windows' ink analysis reads in these strokes, line by line, each word with its alternatives; null when it reads nothing or fails.</summary>
-    static async Task<HandwritingReading?> AnalyzeHandwritingAsync(IReadOnlyList<InkStroke> strokes)
-    {
-        try
-        {
-            var analyzer = new Windows.UI.Input.Inking.Analysis.InkAnalyzer();
-            analyzer.AddDataForStrokes(strokes);
-            var result = await analyzer.AnalyzeAsync();
-            if (result.Status != Windows.UI.Input.Inking.Analysis.InkAnalysisStatus.Updated) return null;
-            var words = analyzer.AnalysisRoot.FindNodes(Windows.UI.Input.Inking.Analysis.InkAnalysisNodeKind.Line)
-                .OrderBy(line => line.BoundingRect.Y)
-                .SelectMany(line => line.Children.OfType<Windows.UI.Input.Inking.Analysis.InkAnalysisInkWord>().OrderBy(w => w.BoundingRect.X))
-                .Select(w => (IReadOnlyList<string>)new[] { w.RecognizedText }.Concat(w.TextAlternates).Where(c => !string.IsNullOrWhiteSpace(c)).Distinct().ToList())
-                .Where(w => w.Count > 0)
-                .ToList();
-            return words.Count > 0 ? new HandwritingReading(HandwritingChoice.Auto, words) : null;
-        }
-        catch (Exception)
-        {
-            return null;
-        }
-    }
 
     /// <summary>
     /// What each of the user's handwriting recognizers reads in these strokes: every word with its guesses, best first. A recognizer that
@@ -282,9 +259,6 @@ public sealed partial class MainPage : Page, IPageView
                 }
                 catch (Exception) { /* this language can't read it; the others still can */ }
             }
-            // Windows' ink analysis too, last: it groups the strokes into lines and words itself and reads them in a language it
-            // chooses (which language, and how, Windows doesn't say), so its words are checked against every language's dictionary.
-            if (await AnalyzeHandwritingAsync(selected) is { } analysed) readings.Add(analysed);
         }
         finally
         {

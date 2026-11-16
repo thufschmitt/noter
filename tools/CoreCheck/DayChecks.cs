@@ -292,30 +292,3 @@ static class HandwritingChecks
             && HandwritingChoice.LanguageOf("Microsoft Handwriting Recognizer - Klingon") is null);
     }
 }
-
-static class AutoReaderChecks
-{
-    public static void Run(Action<string, bool> check)
-    {
-        var french = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "déjeuner", "avec" };
-        var english = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "with", "lunch" };
-        bool? Known(string l, string w) => l.StartsWith("fr") ? french.Contains(w) : l.StartsWith("en") ? english.Contains(w) : null;
-        IReadOnlyList<IReadOnlyList<string>> W(params string[] words) => words.Select(w => (IReadOnlyList<string>)new[] { w }).ToList();
-        // The two language readers each get half of a mixed title; the reader that chose its own language gets all of it.
-        var (g, sure) = HandwritingChoice.Rank(new[]
-        {
-            new HandwritingReading("fr-FR", W("Déjeuner", "avec", "Tom", "lunchs")),
-            new HandwritingReading("en-US", W("Dejeuner", "arec", "Tom", "lunch")),
-            new HandwritingReading(HandwritingChoice.Auto, W("Déjeuner", "with", "lunch")),
-        }, Known);
-        check("a reader that chooses its own language is checked against every language, and can win", g[0].Text == "Déjeuner with lunch" && g[0].Language == HandwritingChoice.Auto && sure);
-        // The app reads it last, so on a tie the main language wins.
-        var (tie, tieSure) = HandwritingChoice.Rank(new[]
-        {
-            new HandwritingReading("fr-FR", W("avec")),
-            new HandwritingReading("en-US", W("arec")),
-            new HandwritingReading(HandwritingChoice.Auto, W("with")),
-        }, Known);
-        check("on a tie with the main language, the main language comes first, and it is asked", tie[0].Language == "fr-FR" && tie[1].Language == HandwritingChoice.Auto && !tieSure);
-    }
-}
