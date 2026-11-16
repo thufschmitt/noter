@@ -15,6 +15,12 @@
     <div id="margin"></div>
     <div id="title">LONGHAND</div>
     <div id="date"></div>
+    <div id="daybar" hidden>
+      <button id="dayPrev" class="tool" title="The day before" aria-label="The day before"><svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg></button>
+      <span id="dayLabel"></span>
+      <button id="dayNext" class="tool" title="The day after" aria-label="The day after"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button>
+      <button id="dayToday" type="button" title="Back to today">Today</button>
+    </div>
     <div id="notes"></div>
   </div>
 </div>
@@ -51,6 +57,8 @@
   <div id="nextcloud"></div>
   <h3>Google Calendar</h3>
   <div id="google"></div>
+  <h3>New events</h3>
+  <div id="defaultCalendar"></div>
   <h3>Other apps (MCP servers)</h3>
   <div id="appList"></div>
   <p id="appsMessage" class="note-text"></p>

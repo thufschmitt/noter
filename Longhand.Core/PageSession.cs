@@ -24,6 +24,8 @@ public sealed class PageSession
     sealed record ErasedByModel(IReadOnlyList<object> Tokens) : UndoStep;
     /// <summary>A drawing as it was before the user edited it, or before the model replaced it.</summary>
     sealed record EditedDrawing(NoteModel Note, DrawingModel Drawing, string Markup, Dictionary<string, Layout.EditEntry> Edits) : UndoStep;
+    /// <summary>The calendar app: an event the user moved or resized, with where it was (its local times) and its id now.</summary>
+    sealed record MovedEvent(DateOnly Day, string Id, string Title, DateTime Start, DateTime End) : UndoStep;
 
     /// <summary>One answer being written, so the layout updates that follow it can be merged.</summary>
     sealed class Answer
@@ -51,11 +53,31 @@ public sealed class PageSession
     ConversationIndex _index = new();
     string _currentId = "";
 
-    public PageSession(IPageView view, IPageData data)
+    // ----- the calendar app: one day of the user's calendar instead of conversations -----
+    readonly bool _dayMode;
+    DateOnly _day;
+    DayLayout? _dayLayout;
+    NoteModel? _dayNote, _dayReply;
+    readonly List<Turn> _dayTurns = new();
+    readonly SemaphoreSlim _dayLock = new(1, 1);
+    int _dayLoads;
+
+    /// <param name="calendarDay">
+    /// The calendar app: the page shows one day of the user's calendar (<paramref name="data"/> must be an <see cref="IDayData"/>),
+    /// moving and resizing its events changes the calendar at once, and only what is drawn goes to the model. Nothing is saved.
+    /// </param>
+    public PageSession(IPageView view, IPageData data, bool calendarDay = false)
     {
         _view = view;
         _data = data;
+        _dayMode = calendarDay;
+        if (calendarDay && data is not IDayData) throw new ArgumentException("The calendar app needs an IDayData.", nameof(data));
     }
+
+    /// <summary>True in the calendar app.</summary>
+    public bool IsCalendarDay => _dayMode;
+    /// <summary>The day the calendar app shows.</summary>
+    public DateOnly Day => _day;
 
     public ConversationIndex Index => _index;
     public string CurrentId => _currentId;
@@ -67,6 +89,13 @@ public sealed class PageSession
     /// <summary>Opens the conversation that was open last time.</summary>
     public async Task StartAsync()
     {
+        if (_dayMode)
+        {
+            await ShowDayAsync(Today());
+            if (_data.SignIn is null)
+                _view.Toast("Sign in with ChatGPT (gear button) to have your drawings turned into events. Moving events works without it.", 6);
+            return;
+        }
         _index = await _data.LoadIndexAsync();
         var start = _index.Find(_index.CurrentId) ?? _index.Newest().FirstOrDefault() ?? _index.Create(DateTimeOffset.UtcNow, _data.DefaultModel);
         await ShowConversationAsync(start.Id);
@@ -166,6 +195,9 @@ public sealed class PageSession
         if (_undo.Count == 0) return;
         switch (_undo.Pop())
         {
+            case MovedEvent moved:
+                _ = MoveBackAsync(moved);
+                break;
             case AddedStroke added:
                 _view.DeleteStroke(added.StrokeId);
                 _pending.Remove(added.StrokeId);
@@ -247,7 +279,10 @@ public sealed class PageSession
         var strokeIds = spans.Select(s => s.Id).ToList();
 
         // Writing over earlier replies (annotating them) sends those replies along, so Claude sees what the ink refers to.
-        var context = spans.Count > 0 ? ContextAround(spans, ids) : null;
+        // In the calendar app the picture always shows the day it was drawn on, with any older ink of the user's in grey.
+        var context = spans.Count == 0 ? null
+            : _dayMode ? (_dayNote is { } dayNote ? new SnapshotContext(_view.Strokes().Where(s => !ids.Contains(s.Id)).Select(s => s.Id).ToList(), new[] { dayNote }) : null)
+            : ContextAround(spans, ids);
 
         // A typed note on its own has no picture.
         byte[]? png = null;
@@ -297,9 +332,19 @@ public sealed class PageSession
             ShiftBelow(typedNote.Y, typedOccupied, typedNote, ids);
         }
 
+        // The calendar app keeps only the latest answer, under the day.
+        if (_dayMode && _dayReply is { } oldReply && _notes.Contains(oldReply))
+        {
+            RemoveNote(oldReply);
+            _dayReply = null;
+        }
+        var askedDay = _day;
+        var dayBefore = _dayLayout?.Markup;
+
         // The answer goes at the end of the page, so it never lands in the middle of what is already there. Anything the user
         // writes below it while it streams is pushed down out of the way.
         var note = await AddNoteAsync(EndOfPage(), "…", isHint: false, done: false);
+        if (_dayMode) _dayReply = note;
         note.Text = "";
         var answer = new Answer { Note = note, Ids = ids, Occupied = note.Span, Typed = typedNote, TypedOccupied = typedOccupied, TakenEdits = takenEdits };
         ShiftBelow(note.Y, answer.Occupied, note, ids);
@@ -332,7 +377,8 @@ public sealed class PageSession
                 note.Shown = status;
                 _view.NoteChanged(note);
                 RequestGrow(answer);
-            }, hasContext: context is not null, legend: prepared.Legend, typed: typed, cacheKey: conversation, edits: editReport, canEdit: _view.CanEdit);
+            }, hasContext: context is not null, legend: prepared.Legend, typed: typed, cacheKey: _dayMode ? null : conversation, edits: editReport, canEdit: _view.CanEdit,
+               day: _dayMode ? new CalendarDayAsk(DayLayout.Title(_day), _dayLayout?.Agenda ?? "(none)") : null);
 
             note.Heard = result.Heard;
             AddNewDrawings(note, result.Drawings);
@@ -354,6 +400,7 @@ public sealed class PageSession
             note.Shown = note.Text;
             _view.NoteChanged(note);
             await FlushGrowAsync(answer);
+            if (_dayMode && result.Outcome == ReplyOutcome.Done) await AfterDayAnswerAsync(askedDay, dayBefore, ToTurn(note), ids);
         }
         catch (OperationCanceledException)
         {
@@ -387,7 +434,7 @@ public sealed class PageSession
 
     /// <summary>The exchanges on the page, top to bottom.</summary>
     List<NoteModel> Exchanges() => _notes
-        .Where(n => !n.IsHint && !n.IsTyped && n.Done && n.HasContent)
+        .Where(n => !n.IsHint && !n.IsTyped && !n.IsDay && n.Done && n.HasContent)
         .OrderBy(n => n.Y)
         .ToList();
 
@@ -408,7 +455,7 @@ public sealed class PageSession
     /// </summary>
     SnapshotContext? ContextAround(List<StrokeSpan> strokes, HashSet<uint> ids)
     {
-        var replies = _notes.Where(n => !n.IsHint && !n.IsTyped && n.Done && n.HasContent).OrderBy(n => n.Y).ToList();
+        var replies = Exchanges();
         var band = AnnotationContext.Find(
             strokes.Min(s => s.Top),
             strokes.Max(s => s.Bottom),
@@ -424,7 +471,7 @@ public sealed class PageSession
     }
 
     /// <summary>What Claude is told of the earlier exchanges on the page, top to bottom.</summary>
-    public IReadOnlyList<Turn> History() => Exchanges().Select(ToTurn).ToList();
+    public IReadOnlyList<Turn> History() => _dayMode ? _dayTurns.ToList() : Exchanges().Select(ToTurn).ToList();
 
     // ----- keeping the layout in step with a growing answer -----
 
@@ -488,6 +535,7 @@ public sealed class PageSession
     {
         await a.Pump; // let a measurement in flight finish first
         RemoveNote(a.Note);
+        if (_dayReply == a.Note) _dayReply = null;
         ShiftBelow(a.Note.Y + a.Occupied, -a.Occupied, null, a.Ids);
         if (a.Typed is { } typed)
         {
@@ -666,6 +714,7 @@ public sealed class PageSession
     public bool EditDrawing(NoteModel note, DrawingModel drawing, IReadOnlyList<DrawingChange> changes)
     {
         if (!_notes.Contains(note) || !note.Drawings.Contains(drawing)) return false;
+        if (note.IsDay) return EditDay(note, drawing, changes);
         var applied = note.Done && changes.Count > 0 && Blocks.IsLayout(drawing.Markup) ? Layout.ApplyEdits(drawing.Markup, changes) : null;
         if (applied is null)
         {
@@ -719,6 +768,178 @@ public sealed class PageSession
         _view.DrawingsCleared(note);
         note.Drawings.Clear();
         note.DrawingsSeen = 0;
+    }
+
+    // ---------- the calendar app ----------
+
+    IDayData DayData => (IDayData)_data;
+
+    DateOnly Today() => DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(DateTimeOffset.Now, DayData.Zone).DateTime);
+
+    /// <summary>
+    /// Shows a day of the user's calendar (the calendar app only). Another day starts afresh: the ink, the answer and undo go. The
+    /// same day is read again from the calendar, keeping the ink.
+    /// </summary>
+    public async Task ShowDayAsync(DateOnly day)
+    {
+        if (!_dayMode) return;
+        if (_busy && day != _day)
+        {
+            _view.Toast("Still answering. Change the day in a moment.");
+            return;
+        }
+        if (day != _day || _dayNote is null)
+        {
+            ResetPage();
+            _dayNote = _dayReply = null;
+            _dayLayout = null;
+            _dayTurns.Clear();
+            _day = day;
+            _view.PageShown();
+        }
+        _view.DayShown(day, day == Today());
+        await ReloadDayAsync();
+        UpdateState();
+    }
+
+    /// <summary>The day after (+1) or before (-1) the one shown.</summary>
+    public Task MoveDayAsync(int days) => ShowDayAsync(_day.AddDays(days));
+
+    public Task TodayAsync() => ShowDayAsync(Today());
+
+    /// <summary>Reads the day from the calendar and shows it: the block at the top of the page, made again when it changed.</summary>
+    async Task ReloadDayAsync()
+    {
+        var load = ++_dayLoads;
+        var day = _day;
+        var calendar = DayData.DayCalendar();
+        var events = new List<DayEvent>();
+        var failed = new List<string>();
+        if (calendar is null) _view.Toast("Connect a calendar (Google or Nextcloud, with the link button) to see your day here.", 6);
+        else
+        {
+            try { events = await calendar.EventsAsync(day, CancellationToken.None, failed); }
+            catch (Exception ex) { failed.Add(ex.Message); }
+        }
+        if (load != _dayLoads || day != _day) return; // another day, or a newer read, took over
+        if (failed.Count > 0) _view.Toast("Couldn't read your calendar: " + string.Join(" ", failed), 7);
+
+        var layout = DayLayout.Build(day, events, calendar?.Zone ?? DayData.Zone);
+        _dayLayout = layout;
+        if (_dayNote is not { } note || !_notes.Contains(note))
+        {
+            note = new NoteModel { Y = Top, IsDay = true, Done = true };
+            _notes.Add(note);
+            _view.NoteAdded(note);
+            AddDrawing(note, layout.Markup);
+            note.DrawingsSeen = note.Drawings.Count;
+            _dayNote = note;
+            await LayoutAsync(note);
+            _view.ContentChanged();
+        }
+        else if (note.Drawings.Count > 0 && note.Drawings[0].Markup != layout.Markup)
+        {
+            var d = note.Drawings[0];
+            d.Markup = layout.Markup;
+            d.Alt = Blocks.Title(layout.Markup);
+            d.Edits = new();
+            _view.DrawingChanged(note, d);
+            await RelayoutChangedAsync(note);
+        }
+    }
+
+    /// <summary>Reads the day again from the calendar, keeping what is on the page (a window coming back to the front, say).</summary>
+    public Task RefreshDayAsync() => _dayMode && !_busy ? ShowDayAsync(_day) : Task.CompletedTask;
+
+    /// <summary>
+    /// After the model answered a drawing: the day is read again, since it may have added events. When the day changed, the ink it
+    /// answered has done its job and comes off the page (one undo puts it back).
+    /// </summary>
+    async Task AfterDayAnswerAsync(DateOnly day, string? before, Turn turn, HashSet<uint> answered)
+    {
+        _dayTurns.Add(turn);
+        if (day != _day) return;
+        await ReloadDayAsync();
+        if (_dayLayout is null || _dayLayout.Markup == before) return;
+        var tokens = new List<object>();
+        foreach (var id in answered)
+            if (_view.TakeStroke(id) is { } token) tokens.Add(token);
+        if (tokens.Count > 0) _undo.Push(new ErasedByModel(tokens));
+    }
+
+    /// <summary>
+    /// The user moved, resized or deleted events of the day: the page shows it at once, and the calendar is changed (in order, one
+    /// change at a time); then the day is read again, which also puts back what the calendar refused.
+    /// </summary>
+    bool EditDay(NoteModel note, DrawingModel drawing, IReadOnlyList<DrawingChange> changes)
+    {
+        var layout = _dayLayout;
+        var applied = layout is not null && changes.Count > 0 && changes.All(c => c.Op is "move" or "resize" or "delete" && layout.Events.ContainsKey(c.Id))
+            ? Layout.ApplyEdits(drawing.Markup, changes) : null;
+        if (applied is null)
+        {
+            _view.DrawingChanged(note, drawing);
+            return false;
+        }
+        drawing.Markup = applied;
+        _view.DrawingChanged(note, drawing);
+        _ = RelayoutChangedAsync(note);
+        _ = CommitDayAsync(layout!, applied, changes);
+        return true;
+    }
+
+    async Task CommitDayAsync(DayLayout layout, string markup, IReadOnlyList<DrawingChange> changes)
+    {
+        await _dayLock.WaitAsync();
+        try
+        {
+            var calendar = DayData.DayCalendar() ?? throw new InvalidOperationException("No calendar is connected any more.");
+            foreach (var item in changes.Select(c => c.Id).Distinct())
+            {
+                var e = layout.Events[item].Event;
+                if (changes.Any(c => c.Id == item && c.Op == "delete"))
+                {
+                    await calendar.DeleteAsync(e.Id, CancellationToken.None);
+                    _view.Toast($"Deleted \"{e.Title}\" from your calendar.", 5);
+                    continue;
+                }
+                if (DayLayout.TimesIn(markup, item, layout.Day) is not { } now) continue;
+                var was = (Start: TimeZoneInfo.ConvertTime(e.Start, calendar.Zone).DateTime, End: TimeZoneInfo.ConvertTime(e.End, calendar.Zone).DateTime);
+                if (now.Start == was.Start && now.End == was.End) continue;
+                var id = await calendar.MoveAsync(e.Id, now.Start, now.End, CancellationToken.None);
+                _undo.Push(new MovedEvent(layout.Day, id, e.Title, was.Start, was.End));
+            }
+        }
+        catch (Exception ex)
+        {
+            _view.Toast("Couldn't change your calendar: " + ex.Message, 7);
+        }
+        finally
+        {
+            _dayLock.Release();
+        }
+        if (layout.Day == _day) await ReloadDayAsync();
+    }
+
+    /// <summary>Undo of a move or resize: the event goes back to where it was, in the calendar.</summary>
+    async Task MoveBackAsync(MovedEvent moved)
+    {
+        await _dayLock.WaitAsync();
+        try
+        {
+            var calendar = DayData.DayCalendar() ?? throw new InvalidOperationException("No calendar is connected any more.");
+            await calendar.MoveAsync(moved.Id, moved.Start, moved.End, CancellationToken.None);
+            _view.Toast($"Moved \"{moved.Title}\" back.");
+        }
+        catch (Exception ex)
+        {
+            _view.Toast("Couldn't move it back: " + ex.Message, 7);
+        }
+        finally
+        {
+            _dayLock.Release();
+        }
+        if (moved.Day == _day) await ReloadDayAsync();
     }
 
     // ---------- conversations ----------

@@ -56,6 +56,31 @@
             <TextBlock x:Name="ToastText" FontSize="13" TextWrapping="Wrap" />
         </Border>
 
+        <!-- Longhand Calendar only: which day is shown, and the way to the others. -->
+        <Border
+            x:Name="DayBar"
+            Margin="16"
+            Padding="6"
+            HorizontalAlignment="Right"
+            VerticalAlignment="Top"
+            BorderThickness="1"
+            CornerRadius="22"
+            Visibility="Collapsed">
+            <StackPanel Orientation="Horizontal" Spacing="4">
+                <Button x:Name="DayPrev" Click="DayPrev_Click" Style="{StaticResource ToolButton}"
+                        ToolTipService.ToolTip="The day before (Alt+Left)" AutomationProperties.Name="The day before">
+                    <FontIcon Glyph="&#xE76B;" FontSize="14" />
+                </Button>
+                <TextBlock x:Name="DayLabel" VerticalAlignment="Center" FontWeight="SemiBold" Margin="6,0" MinWidth="180" TextAlignment="Center" />
+                <Button x:Name="DayNext" Click="DayNext_Click" Style="{StaticResource ToolButton}"
+                        ToolTipService.ToolTip="The day after (Alt+Right)" AutomationProperties.Name="The day after">
+                    <FontIcon Glyph="&#xE76C;" FontSize="14" />
+                </Button>
+                <Button x:Name="DayToday" Click="DayToday_Click" Content="Today" Height="40" CornerRadius="20" Padding="14,0"
+                        ToolTipService.ToolTip="Back to today" />
+            </StackPanel>
+        </Border>
+
         <!-- A box to type a note instead of writing it; opened with the keyboard button. -->
         <Border
             x:Name="TypeBar"

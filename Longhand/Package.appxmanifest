@@ -40,6 +40,18 @@
         </uap:Extension>
       </Extensions>
     </Application>
+    <!-- Longhand Calendar: the same program, opened on one day of your calendar instead of the notebook (AppKind.IsCalendar). -->
+    <Application Id="Calendar" Executable="$targetnametoken$.exe" EntryPoint="Longhand.App">
+      <uap:VisualElements
+        DisplayName="Longhand Calendar"
+        Description="One day of your calendar: move and resize events with the pen, and draw new ones."
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+        <uap:SplashScreen Image="Assets\SplashScreen.png" BackgroundColor="#FBFCFD" />
+      </uap:VisualElements>
+    </Application>
   </Applications>
 
   <Capabilities>

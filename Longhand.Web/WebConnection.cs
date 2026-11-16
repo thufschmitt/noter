@@ -19,7 +19,7 @@ namespace Longhand.Web;
 /// session does to the page is sent to the browser as small JSON messages, and what the browser does comes back the same way.
 /// The browser keeps the pixels (ink, the handwriting font, measuring text), the server keeps everything else.
 /// </summary>
-public sealed class WebConnection : IPageView, IPageData
+public sealed class WebConnection : IPageView, IPageData, IDayData
 {
     const int MaxMessage = 32 * 1024 * 1024; // a snapshot of a long page is a few megabytes of base64
     static readonly TimeSpan MeasureTimeout = TimeSpan.FromSeconds(15), SnapshotTimeout = TimeSpan.FromSeconds(60);
@@ -40,13 +40,14 @@ public sealed class WebConnection : IPageView, IPageData
     readonly WebApps _apps;
     TimeZoneInfo _zone = TimeZoneInfo.Local;
 
-    public WebConnection(WebSocket ws, WebStore store, WebApps apps, DevReload? dev = null)
+    /// <param name="calendar">The calendar app (one day of the user's calendar) instead of the notebook.</param>
+    public WebConnection(WebSocket ws, WebStore store, WebApps apps, DevReload? dev = null, bool calendar = false)
     {
         _ws = ws;
         _store = store;
         _apps = apps;
         _dev = dev;
-        _session = new PageSession(this, this);
+        _session = new PageSession(this, this, calendarDay: calendar);
     }
 
     public double TextWidth => Math.Max(200, _sheetWidth - MarginX - RightPad - 8);
@@ -242,7 +243,15 @@ public sealed class WebConnection : IPageView, IPageData
             case "ask":
                 if (_started) await _session.AskOrStopAsync();
                 break;
+            case "day":
+                // The calendar app: { delta: -1 | 1 } for the day before or after, { today: true }, or nothing to read the day again.
+                if (!_started || !_session.IsCalendarDay) break;
+                if (m.TryGetProperty("today", out var td) && td.ValueKind == JsonValueKind.True) await _session.TodayAsync();
+                else if (Num(m, "delta") is { } delta && double.IsFinite(delta) && Math.Abs(delta) <= 3660) await _session.MoveDayAsync((int)delta);
+                else await _session.RefreshDayAsync();
+                break;
             case "new":
+                if (_session.IsCalendarDay) break;
                 await _session.NewConversationAsync();
                 break;
             case "open":
@@ -420,6 +429,18 @@ public sealed class WebConnection : IPageView, IPageData
     public void Toast(string message, double seconds = 3.5) => Send("toast", ("message", message), ("seconds", seconds));
     public void StateChanged(PageState state) => Send("state", ("busy", state.Busy), ("canAsk", state.CanAsk));
 
+    public void DayShown(DateOnly day, bool today) =>
+        Send("day", ("date", day.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)),
+            ("label", day.ToString("dddd d MMMM yyyy", System.Globalization.CultureInfo.InvariantCulture)), ("today", today));
+
+    // ---------- IDayData ----------
+
+    public TimeZoneInfo Zone => _zone;
+
+    public DayCalendar? DayCalendar() => Services.DayCalendar.From(
+        _store.Google.Connected ? _apps.GoogleClient : null, _store.Google.CanWrite, _store.Google.Calendars(),
+        _apps.NextcloudClient, _store.Nextcloud.Load(), _store.Nextcloud.Calendars(), _zone, DefaultCalendar.Read(_store.Settings));
+
     // ---------- IPageData ----------
 
     public CodexSignIn? SignIn => _store.SignIn;
@@ -460,13 +481,16 @@ public sealed class WebConnection : IPageView, IPageData
     public async Task<PreparedAsk> PrepareAskAsync(CodexSignIn signIn, string model, CancellationToken ct)
     {
         var tools = new List<IAgentTool>();
-        if (_store.Nextcloud.Load() is { } account) tools.AddRange(CalendarTools.For(_apps.NextcloudClient, account, _zone, calendars: _store.Nextcloud.Calendars()));
-        if (_store.Google.Connected) tools.AddRange(GoogleCalendarTools.For(_apps.GoogleClient, _store.Google.CanWrite, _zone, calendars: _store.Google.Calendars()));
+        var nextcloud = _store.Nextcloud.Load();
+        if (nextcloud is not null) tools.AddRange(CalendarTools.For(_apps.NextcloudClient, nextcloud, _zone, calendars: _store.Nextcloud.Calendars(), defaultCalendar: DefaultCalendar.For(_store.Settings, DefaultCalendar.Nextcloud)));
+        if (_store.Google.Connected) tools.AddRange(GoogleCalendarTools.For(_apps.GoogleClient, _store.Google.CanWrite, _zone, calendars: _store.Google.Calendars(), defaultCalendar: DefaultCalendar.For(_store.Settings, DefaultCalendar.Google)));
         var (connectors, expired) = await _apps.ActiveAsync(ct);
         var (appTools, failures) = await McpTool.ForWithReasonsAsync(connectors, ct);
         var unreachable = failures.Select(f => f.Reason.Length > 0 ? $"{f.Name} ({f.Reason})" : f.Name);
         tools.AddRange(appTools);
-        var service = new CodexService(signIn, renewed => { _store.SaveSignIn(renewed); return Task.CompletedTask; }, model, tools, _zone, _store.CodexBaseUrl, _store.CodexRefreshUrl);
+        var hint = DefaultCalendar.Hint(DefaultCalendar.Read(_store.Settings), _store.Google.Connected && _store.Google.CanWrite, nextcloud is not null);
+        var service = new CodexService(signIn, renewed => { _store.SaveSignIn(renewed); return Task.CompletedTask; }, model, tools, _zone, _store.CodexBaseUrl, _store.CodexRefreshUrl,
+            instructions: hint is null ? null : "- " + hint);
         return new PreparedAsk(service, _store.Legend(), expired.Concat(unreachable).ToList());
     }
 }

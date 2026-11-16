@@ -346,6 +346,36 @@ try
         var sentAsk = api.Requests.Where(r => r.Path.EndsWith("/responses")).Skip(beforeAsk).FirstOrDefault()?.Body ?? "";
         Check("the model is offered Google Calendar, with the tools that change events because that was allowed", sentAsk.Contains("google_calendar_events") && sentAsk.Contains("google_calendar_add_event") && sentAsk.Contains("google_calendar_delete_event"));
     }
+
+    // ----- the calendar new events go to -----
+    var defaults = await Json(await http.GetAsync("/api/calendar/default"));
+    var defaultIds = defaults.GetProperty("options").EnumerateArray().Select(o => o.GetProperty("id").GetString()).ToList();
+    Check("new events can go to the calendars that can be changed, none chosen to begin with", defaults.GetProperty("current").ValueKind == JsonValueKind.Null
+        && defaultIds.Contains(FakeGoogle.Primary) && defaultIds.Contains(FakeGoogle.Team) && !defaultIds.Contains(FakeGoogle.Holidays));
+    var chosenDefault = await Json(await http.SendAsync(ApiReq(HttpMethod.Put, "/api/calendar/default", new { provider = "google", id = FakeGoogle.Team })));
+    Check("a default calendar is kept", chosenDefault.GetProperty("current").GetProperty("id").GetString() == FakeGoogle.Team && File.ReadAllText(Path.Combine(data, "settings.json")).Contains("calendar-default"));
+    Check("one that can't be changed is refused", (await http.SendAsync(ApiReq(HttpMethod.Put, "/api/calendar/default", new { provider = "google", id = FakeGoogle.Holidays }))).StatusCode == HttpStatusCode.BadRequest);
+
+    // ----- the calendar app -----
+    await using (var cb = await FakeBrowser.ConnectAsync(url, zone: "Europe/Paris", calendar: true))
+    {
+        Check("the calendar app opens on a day, with no conversations", await cb.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "day") && l.Any(m => m.GetProperty("t").GetString() == "drawing"), 10000)
+            && !cb.Of("conversations").Any());
+        var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(DateTimeOffset.Now, TimeZoneInfo.FindSystemTimeZoneById("Europe/Paris")).DateTime);
+        int back = new DateOnly(2026, 11, 11).DayNumber - today.DayNumber;
+        await cb.SendAsync(new { t = "day", delta = back });
+        Check("another day is shown, with its events from the calendar", await cb.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "day" && m.GetProperty("date").GetString() == "2026-11-11")
+            && l.Any(m => m.GetProperty("t").GetString() is "drawing" or "drawingChanged" && m.GetProperty("text").GetString()!.Contains("Planning")), 10000));
+        var shown = cb.Log.Last(m => m.GetProperty("t").GetString() is "drawing" or "drawingChanged" && m.GetProperty("text").GetString()!.Contains("Planning"));
+        var item = System.Text.RegularExpressions.Regex.Match(shown.GetProperty("text").GetString()!, @"<box id=""(e\d+)""[^>]*>Planning").Groups[1].Value;
+        Check("an event of a calendar that can be changed can be moved", System.Text.RegularExpressions.Regex.IsMatch(shown.GetProperty("text").GetString()!, $@"<box id=""{item}""[^>]* start=""14:00"" end=""15:00"" edit>"));
+        int writes = googleApi.Writes.Count;
+        await cb.SendAsync(new { t = "edit", note = shown.GetProperty("note").GetInt32(), drawing = shown.GetProperty("id").GetInt32(), changes = new[] { new { id = item, op = "move", to = "d20261111", at = "16:30" } } });
+        Check("moving it there changes it in Google Calendar at once", await cb.UntilAsync(_ => googleApi.Writes.Count > writes, 10000)
+            && googleApi.Writes[^1].Method == "PATCH" && googleApi.Writes[^1].Body!.ToJsonString().Contains("2026-11-11T16:30"));
+        Check("and the day is shown again from the calendar", await cb.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "drawingChanged" && m.GetProperty("text").GetString()!.Contains("start=\"16:30\"")), 10000));
+    }
+
     var gsame = await Json(await http.SendAsync(ApiReq(HttpMethod.Put, "/api/google/client", new { clientId = "gcid", write = true })));
     Check("saving the same client again (secret left empty) keeps the secret and the sign-in", gsame.GetProperty("hasSecret").GetBoolean() && gsame.GetProperty("connected").GetBoolean());
     var gread = await Json(await http.SendAsync(ApiReq(HttpMethod.Put, "/api/google/client", new { clientId = "gcid", write = false })));

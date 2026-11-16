@@ -19,10 +19,10 @@ sealed class FakeBrowser : IAsyncDisposable
     public int Snapshots;
     public JsonElement LastSnapshotRequest;
 
-    public static async Task<FakeBrowser> ConnectAsync(string httpUrl, double width = 800, string? zone = null)
+    public static async Task<FakeBrowser> ConnectAsync(string httpUrl, double width = 800, string? zone = null, bool calendar = false)
     {
         var b = new FakeBrowser();
-        await b._ws.ConnectAsync(new Uri(httpUrl.Replace("http://", "ws://") + "/ws"), CancellationToken.None);
+        await b._ws.ConnectAsync(new Uri(httpUrl.Replace("http://", "ws://") + "/ws" + (calendar ? "?mode=calendar" : "")), CancellationToken.None);
         b._loop = Task.Run(b.ReadAsync);
         await b.SendAsync(new { t = "hello", width, zone });
         return b;

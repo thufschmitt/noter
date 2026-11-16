@@ -362,6 +362,47 @@ public sealed class WebApps
             _store.Nextcloud.Clear();
             return Results.Ok();
         });
+
+        // The calendar new events go to: GET lists the calendars they can go to, with the one chosen; PUT keeps one ({provider, id}),
+        // or with no id goes back to each provider's own default.
+        app.MapGet("/api/calendar/default", async (HttpContext ctx) =>
+        {
+            try { return Results.Ok(await DefaultCalendarAsync(ctx.RequestAborted)); }
+            catch (OperationCanceledException) { return Results.StatusCode(499); }
+        });
+
+        app.MapPut("/api/calendar/default", async (HttpContext ctx, DefaultBody body) =>
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(body.Id)) DefaultCalendar.Write(_store.Settings, null);
+                else
+                {
+                    var (options, _) = await DefaultOptionsAsync(ctx.RequestAborted);
+                    if (options.FirstOrDefault(o => o.Provider == body.Provider && o.Id == body.Id) is not { } chosen)
+                        return Results.BadRequest(new { error = "New events can't go to that calendar: it isn't one of yours that can be changed and that Longhand uses." });
+                    DefaultCalendar.Write(_store.Settings, chosen);
+                }
+                return Results.Ok(await DefaultCalendarAsync(ctx.RequestAborted));
+            }
+            catch (OperationCanceledException) { return Results.StatusCode(499); }
+        });
+    }
+
+    Task<(System.Collections.Generic.List<DefaultCalendar.Choice> Options, System.Collections.Generic.List<string> Problems)> DefaultOptionsAsync(CancellationToken ct) =>
+        DefaultCalendar.OptionsAsync(_store.Google.Connected ? GoogleClient : null, _store.Google.CanWrite, _store.Google.Calendars(),
+            _nextcloud, _store.Nextcloud.Load(), _store.Nextcloud.Calendars(), ct);
+
+    async Task<object> DefaultCalendarAsync(CancellationToken ct)
+    {
+        var (options, problems) = await DefaultOptionsAsync(ct);
+        var current = DefaultCalendar.Read(_store.Settings);
+        return new
+        {
+            current = current is null ? null : new { provider = current.Provider, id = current.Id, name = current.Name, label = DefaultCalendar.Label(current) },
+            options = options.Select(o => new { provider = o.Provider, id = o.Id, name = o.Name, label = DefaultCalendar.Label(o) }),
+            problems,
+        };
     }
 
     sealed record AddApp(string? Name, string? Url, bool? TokenRequired, string? ClientId = null, string? ClientSecret = null, string? Scope = null);
@@ -370,4 +411,5 @@ public sealed class WebApps
     sealed record GoogleClientBody(string? ClientId, string? ClientSecret, bool? Write);
     sealed record CalendarsBody(string[]? Ids);
     sealed record ForgetBody(bool? Forget);
+    sealed record DefaultBody(string? Provider, string? Id);
 }

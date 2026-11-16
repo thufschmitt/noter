@@ -8,7 +8,7 @@ using Windows.UI.Input.Inking;
 namespace Longhand.Services;
 
 /// <summary>Where the page keeps things on Windows: the app's local folder, Credential Manager and local settings.</summary>
-public sealed class WindowsPageData : IPageData
+public sealed class WindowsPageData : IPageData, IDayData
 {
     readonly Func<InkStrokeContainer> _ink;
     readonly McpOAuth _oauth;
@@ -49,14 +49,27 @@ public sealed class WindowsPageData : IPageData
     public async Task<PreparedAsk> PrepareAskAsync(CodexSignIn signIn, string model, CancellationToken ct)
     {
         var tools = new List<IAgentTool>();
-        if (NextcloudStore.Load() is { } account) tools.AddRange(CalendarTools.For(_nextcloud, account, calendars: NextcloudStore.Calendars()));
-        if (GoogleStore.Book.Connected) tools.AddRange(GoogleCalendarTools.For(new GoogleCalendar(ct2 => GoogleStore.Book.AccessTokenAsync(_oauth, ct2)), GoogleStore.Book.CanWrite, calendars: GoogleStore.Book.Calendars()));
+        var settings = WindowsSettings.Local;
+        var nextcloud = NextcloudStore.Load();
+        if (nextcloud is not null) tools.AddRange(CalendarTools.For(_nextcloud, nextcloud, calendars: NextcloudStore.Calendars(), defaultCalendar: DefaultCalendar.For(settings, DefaultCalendar.Nextcloud)));
+        if (GoogleStore.Book.Connected) tools.AddRange(GoogleCalendarTools.For(Google(), GoogleStore.Book.CanWrite, calendars: GoogleStore.Book.Calendars(), defaultCalendar: DefaultCalendar.For(settings, DefaultCalendar.Google)));
         var (connectors, expired) = await ConnectorStore.ActiveAsync(_oauth, ct);
         var (appTools, failures) = await McpTool.ForWithReasonsAsync(connectors, ct);
         var unreachable = failures.Select(f => f.Reason.Length > 0 ? $"{f.Name} ({f.Reason})" : f.Name);
         tools.AddRange(appTools);
         var legend = await SymbolStore.LegendAsync();
-        var service = new CodexService(signIn, renewed => { SignInStore.Save(renewed); return Task.CompletedTask; }, model, tools);
+        var hint = DefaultCalendar.Hint(DefaultCalendar.Read(settings), GoogleStore.Book.Connected && GoogleStore.Book.CanWrite, nextcloud is not null);
+        var service = new CodexService(signIn, renewed => { SignInStore.Save(renewed); return Task.CompletedTask; }, model, tools, instructions: hint is null ? null : "- " + hint);
         return new PreparedAsk(service, legend, expired.Concat(unreachable).ToList());
     }
+
+    GoogleCalendar Google() => new(ct => GoogleStore.Book.AccessTokenAsync(_oauth, ct));
+
+    // ---------- IDayData: the calendar app ----------
+
+    public TimeZoneInfo Zone => TimeZoneInfo.Local;
+
+    public DayCalendar? DayCalendar() => Services.DayCalendar.From(
+        GoogleStore.Book.Connected ? Google() : null, GoogleStore.Book.CanWrite, GoogleStore.Book.Calendars(),
+        _nextcloud, NextcloudStore.Load(), NextcloudStore.Calendars(), Zone, DefaultCalendar.Read(WindowsSettings.Local));
 }

@@ -54,6 +54,8 @@ public sealed class NoteModel
     public bool IsHint;
     /// <summary>Typed by the user with the keyboard (their own words, not a reply of Claude's).</summary>
     public bool IsTyped;
+    /// <summary>The day of the user's calendar, in the calendar app: not a reply of the model's.</summary>
+    public bool IsDay;
     public bool Done;
     public string Heard = "";
     /// <summary>The words of the reply: what is saved and what Claude is told in later turns.</summary>

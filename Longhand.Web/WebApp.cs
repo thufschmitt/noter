@@ -74,7 +74,9 @@ public static class WebApp
             // Ctrl+C waits out the whole shutdown grace period.
             var stopping = ctx.RequestServices.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping;
             using var end = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted, stopping);
-            await new WebConnection(socket, store, apps, dev).RunAsync(end.Token);
+            // The calendar app (/calendar) asks for its own kind of page: one day of the calendar instead of the notebook.
+            bool calendar = ctx.Request.Query["mode"] == "calendar";
+            await new WebConnection(socket, store, apps, dev, calendar).RunAsync(end.Token);
         });
 
         MapSettings(app, store);
@@ -98,7 +100,8 @@ public static class WebApp
         var assembly = Assembly.GetExecutingAssembly();
         app.MapGet("/{**path}", async (HttpContext ctx, string? path) =>
         {
-            var name = string.IsNullOrEmpty(path) ? "index.html" : path;
+            // The calendar app is the same page, which sees from its address that it is the calendar.
+            var name = string.IsNullOrEmpty(path) || path is "calendar" or "calendar/" ? "index.html" : path;
             Stream? opened = null;
             if (!name.Contains(".."))
             {

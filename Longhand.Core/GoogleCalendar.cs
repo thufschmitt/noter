@@ -376,6 +376,8 @@ public sealed class GoogleCalendarContext : CalendarClock
     public GoogleCalendar Google { get; }
     /// <summary>The calendars (by Google's id) the user chose to use; null when they haven't chosen, meaning the ones switched on in Google Calendar.</summary>
     public IReadOnlyCollection<string>? Only { get; }
+    /// <summary>The calendar (by Google's id) the user chose for new events; null for the main one.</summary>
+    public string? Default { get; init; }
 
     public GoogleCalendarContext(GoogleCalendar google, TimeZoneInfo zone, Func<DateTimeOffset> now, IReadOnlyCollection<string>? only = null) : base(zone, now)
     {
@@ -411,9 +413,10 @@ public static class GoogleCalendarTools
 {
     /// <summary>Reading, and, when the user allowed it, adding, changing and deleting events.</summary>
     /// <param name="calendars">The calendars (by Google's id) the user chose for the tools to use; null for the ones switched on in Google Calendar.</param>
-    public static IAgentTool[] For(GoogleCalendar google, bool canWrite, TimeZoneInfo? zone = null, Func<DateTimeOffset>? now = null, IReadOnlyCollection<string>? calendars = null)
+    /// <param name="defaultCalendar">The calendar (by Google's id) new events go to when none is named; null for the main one.</param>
+    public static IAgentTool[] For(GoogleCalendar google, bool canWrite, TimeZoneInfo? zone = null, Func<DateTimeOffset>? now = null, IReadOnlyCollection<string>? calendars = null, string? defaultCalendar = null)
     {
-        var context = new GoogleCalendarContext(google, zone ?? TimeZoneInfo.Local, now ?? (() => DateTimeOffset.Now), calendars);
+        var context = new GoogleCalendarContext(google, zone ?? TimeZoneInfo.Local, now ?? (() => DateTimeOffset.Now), calendars) { Default = defaultCalendar };
         var read = new GoogleCalendarEventsTool(context);
         return canWrite
             ? new IAgentTool[] { read, new GoogleCalendarAddTool(context), new GoogleCalendarChangeTool(context), new GoogleCalendarDeleteTool(context) }
@@ -492,7 +495,7 @@ public sealed class GoogleCalendarAddTool : IAgentTool
             ["all_day"] = CalendarContext.Json("""{"type":"boolean","description":"Optional: true for an all-day event. A start given as a date alone already means all day."}"""),
             ["location"] = CalendarContext.Json("""{"type":"string","description":"Optional: where it is."}"""),
             ["description"] = CalendarContext.Json("""{"type":"string","description":"Optional: notes for the event."}"""),
-            ["calendar"] = CalendarContext.Json("""{"type":"string","description":"Optional: the name of the calendar to add it to. Defaults to the user's own main calendar."}"""),
+            ["calendar"] = CalendarContext.Json("""{"type":"string","description":"Optional: the name of the calendar to add it to. Defaults to the user's own default calendar for new events (their main one unless they chose another)."}"""),
         },
         "title", "start");
 
@@ -510,7 +513,7 @@ public sealed class GoogleCalendarAddTool : IAgentTool
         if (CalendarContext.Text(input, "calendar") is { Length: > 0 } wanted)
             calendar = calendars.FirstOrDefault(c => c.Name.Equals(wanted, StringComparison.CurrentCultureIgnoreCase))
                 ?? throw new InvalidOperationException("There is no calendar called \"" + wanted + "\" that events can be added to. The calendars are: " + string.Join(", ", calendars.Select(c => c.Name)) + ".");
-        else calendar = calendars.FirstOrDefault(c => c.Primary) ?? calendars[0];
+        else calendar = calendars.FirstOrDefault(c => c.Id == _c.Default) ?? calendars.FirstOrDefault(c => c.Primary) ?? calendars[0];
 
         var (start, end) = GoogleCalendar.WhenJson(when);
         var body = new JsonObject { ["summary"] = title, ["start"] = start, ["end"] = end };

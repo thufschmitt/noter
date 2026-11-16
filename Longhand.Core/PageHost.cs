@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -61,6 +62,18 @@ public interface IPageView
     /// <summary>A typed note couldn't be sent, so the words go back where they were typed.</summary>
     void RestoreTyped(string text);
     void StateChanged(PageState state);
+
+    /// <summary>The calendar app shows this day now (<paramref name="today"/> when it is today). Only the calendar app is told.</summary>
+    void DayShown(DateOnly day, bool today) { }
+}
+
+/// <summary>What the calendar app needs besides <see cref="IPageData"/>: the connected calendars, read fresh each time so changes to them take effect at once.</summary>
+public interface IDayData
+{
+    /// <summary>The connected calendars; null when none is connected.</summary>
+    DayCalendar? DayCalendar();
+    /// <summary>The user's time zone, which says what day it is.</summary>
+    TimeZoneInfo Zone { get; }
 }
 
 /// <summary>What one Ask needs, gathered fresh each time so changes to settings and connected apps take effect at once.</summary>

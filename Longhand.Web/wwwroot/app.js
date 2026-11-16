@@ -9,6 +9,8 @@ const PEN = 2.4, PEN_HALF = 1.2;
 const HAND = '"Ink Free","Segoe Print","Bradley Hand","Caveat","Comic Neue","Comic Sans MS","Chalkboard SE",cursive';
 
 const $ = id => document.getElementById(id);
+// The calendar app (/calendar) is this page too: one day of the calendar instead of the notebook.
+const calendarMode = location.pathname.replace(/\/+$/, '') === '/calendar';
 const scroller = $('scroller'), sheet = $('sheet'), inkCanvas = $('ink'), notesLayer = $('notes');
 const inkCtx = inkCanvas.getContext('2d');
 
@@ -28,7 +30,7 @@ function send(message) {
 }
 
 function connect() {
-  socket = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+  socket = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws' + (calendarMode ? '?mode=calendar' : ''));
   socket.onopen = () => {
     if (devMode && connectedOnce) { location.reload(); return; }
     connectedOnce = true;
@@ -724,6 +726,11 @@ const handlers = {
     updateHeight();
     updateSelection();
   },
+  // The calendar app shows this day.
+  day(m) {
+    $('dayLabel').textContent = m.label;
+    $('dayToday').disabled = m.today;
+  },
   page(m) {
     strokes.clear();
     for (const s of m.strokes) strokes.set(s.id, s);
@@ -985,6 +992,7 @@ document.addEventListener('keydown', e => {
   else if (selection && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); deleteSelection(); }
   else if (selection && e.key === 'Escape') clearSelection();
   else if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); send({ t: 'ask' }); }
+  else if (calendarMode && !selection && e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { e.preventDefault(); send({ t: 'day', delta: e.key === 'ArrowLeft' ? -1 : 1 }); }
 });
 
 // ---------- conversations ----------
@@ -1238,6 +1246,7 @@ async function loadApps() {
   renderApps();
   renderNextcloud();
   renderGoogle();
+  renderDefaultCalendar();
   return appsData;
 }
 
@@ -1371,6 +1380,48 @@ function calendarPicker(provider) {
   else box.textContent = 'Loading your calendars…';
   api('GET', `/api/${provider}/calendars`).then(show, e => { if (!calendarLists[provider]) box.textContent = e.message; });
   return box;
+}
+
+// ----- the calendar new events go to -----
+
+function renderDefaultCalendar() {
+  const box = $('defaultCalendar');
+  if (!appsData.nextcloud.connected && !(appsData.google && appsData.google.connected)) {
+    box.innerHTML = '<p class="note-text">Connect a calendar above first.</p>';
+    return;
+  }
+  if (!box.firstChild) box.innerHTML = '<p class="note-text">Loading your calendars…</p>';
+  api('GET', '/api/calendar/default').then(data => {
+    box.textContent = '';
+    const p = document.createElement('p');
+    p.className = 'note-text';
+    p.textContent = 'The calendar new events go to, when you don\'t name one: those you draw in the calendar app, and those the model adds from the notebook.';
+    const select = document.createElement('select');
+    select.id = 'defaultCalendarSelect';
+    select.append(new Option('Each calendar\'s own default (Google\'s main one, Nextcloud\'s personal one)', ''));
+    for (const o of data.options) select.append(new Option(o.label, o.provider + '|' + o.id));
+    if (data.current && !data.options.some(o => o.provider === data.current.provider && o.id === data.current.id))
+      select.append(new Option(data.current.label + ' (not available now)', data.current.provider + '|' + data.current.id));
+    select.value = data.current ? data.current.provider + '|' + data.current.id : '';
+    select.onchange = async () => {
+      const [provider, ...rest] = select.value.split('|');
+      select.disabled = true;
+      try {
+        await api('PUT', '/api/calendar/default', select.value ? { provider, id: rest.join('|') } : {});
+        appsSay('Saved.');
+      } catch (e) {
+        appsSay(e.message);
+      }
+      select.disabled = false;
+    };
+    box.append(p, select);
+    if (data.problems.length) {
+      const note = document.createElement('p');
+      note.className = 'note-text';
+      note.textContent = 'Couldn\'t list: ' + data.problems.join(' ');
+      box.append(note);
+    }
+  }, e => { box.textContent = e.message; });
 }
 
 // ----- Nextcloud -----
@@ -1605,6 +1656,18 @@ $('apps').addEventListener('close', () => { watching++; });
 
 // ---------- start ----------
 
+if (calendarMode) {
+  document.title = 'Longhand Calendar';
+  $('title').textContent = 'CALENDAR';
+  $('date').hidden = true;
+  $('daybar').hidden = false;
+  $('conversations').hidden = $('keyboard').hidden = true;
+  $('dayPrev').onclick = () => send({ t: 'day', delta: -1 });
+  $('dayNext').onclick = () => send({ t: 'day', delta: 1 });
+  $('dayToday').onclick = () => send({ t: 'day', today: true });
+  // Coming back to the tab reads the day again: it may have changed elsewhere.
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) send({ t: 'day' }); });
+}
 $('date').textContent = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase();
 let resizeTimer = 0;
 addEventListener('resize', () => {

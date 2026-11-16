@@ -52,7 +52,7 @@ public sealed partial class MainPage : Page, IPageView
     public MainPage()
     {
         InitializeComponent();
-        _session = new PageSession(this, new WindowsPageData(() => Ink.InkPresenter.StrokeContainer, _oauth, _nextcloud));
+        _session = new PageSession(this, new WindowsPageData(() => Ink.InkPresenter.StrokeContainer, _oauth, _nextcloud), calendarDay: AppKind.IsCalendar);
 
         var presenter = Ink.InkPresenter;
         presenter.InputDeviceTypes = CoreInputDeviceTypes.Pen | CoreInputDeviceTypes.Mouse;
@@ -71,7 +71,8 @@ public sealed partial class MainPage : Page, IPageView
         BuildEditOverlay();
 
         _toastTimer.Tick += (_, _) => { _toastTimer.Stop(); ToastBox.Visibility = Visibility.Collapsed; };
-        BuildConversationsFlyout();
+        if (AppKind.IsCalendar) SetUpCalendar();
+        else BuildConversationsFlyout();
 
         var newConversation = new Windows.UI.Xaml.Input.KeyboardAccelerator
         {
@@ -81,7 +82,7 @@ public sealed partial class MainPage : Page, IPageView
         newConversation.Invoked += async (_, args) =>
         {
             args.Handled = true;
-            await _session.NewConversationAsync();
+            if (!AppKind.IsCalendar) await _session.NewConversationAsync();
         };
         KeyboardAccelerators.Add(newConversation);
 
@@ -109,7 +110,50 @@ public sealed partial class MainPage : Page, IPageView
         ApplyTheme(recolorInk: false);
         Window.Current.CoreWindow.KeyDown += OnWindowKeyDown;
         await _session.StartAsync();
+        _started = true;
         LayoutSheet();
+    }
+
+    // ---------- Longhand Calendar ----------
+
+    /// <summary>
+    /// Longhand Calendar: no conversations and no typing, a bar to change the day instead, and the day read again when the window
+    /// comes back to the front (it may have changed elsewhere).
+    /// </summary>
+    void SetUpCalendar()
+    {
+        ConversationsButton.Visibility = Visibility.Collapsed;
+        KeyboardButton.Visibility = Visibility.Collapsed;
+        DayBar.Visibility = Visibility.Visible;
+        DayBar.Background = _tray;
+        DayBar.BorderBrush = _trayLine;
+        DayLabel.Foreground = _uiText;
+        foreach (var (key, days) in new[] { (Windows.System.VirtualKey.Left, -1), (Windows.System.VirtualKey.Right, 1) })
+        {
+            var accelerator = new Windows.UI.Xaml.Input.KeyboardAccelerator { Key = key, Modifiers = Windows.System.VirtualKeyModifiers.Menu };
+            accelerator.Invoked += async (_, args) =>
+            {
+                args.Handled = true;
+                await _session.MoveDayAsync(days);
+            };
+            KeyboardAccelerators.Add(accelerator);
+        }
+        Window.Current.Activated += async (_, args) =>
+        {
+            if (args.WindowActivationState != CoreWindowActivationState.Deactivated && _started) await _session.RefreshDayAsync();
+        };
+    }
+
+    bool _started;
+
+    async void DayPrev_Click(object sender, RoutedEventArgs e) => await _session.MoveDayAsync(-1);
+    async void DayNext_Click(object sender, RoutedEventArgs e) => await _session.MoveDayAsync(1);
+    async void DayToday_Click(object sender, RoutedEventArgs e) => await _session.TodayAsync();
+
+    void IPageView.DayShown(DateOnly day, bool today)
+    {
+        DayLabel.Text = day.ToString("dddd d MMMM yyyy", System.Globalization.CultureInfo.CurrentCulture);
+        DayToday.IsEnabled = !today;
     }
 
     // ---------- theme ----------
@@ -1277,6 +1321,55 @@ public sealed partial class MainPage : Page, IPageView
         RenderNextcloud();
         RenderGoogle();
 
+        // ----- the calendar new events go to: those drawn in the calendar app, and those the model adds from the notebook -----
+        var defaultCalendar = new StackPanel { Spacing = 6, Width = 380 };
+        async Task RenderDefaultCalendarAsync()
+        {
+            defaultCalendar.Children.Clear();
+            defaultCalendar.Children.Add(new TextBlock { Text = "New events", FontWeight = Windows.UI.Text.FontWeights.SemiBold });
+            var nextcloudAccount = NextcloudStore.Load();
+            var book = GoogleStore.Book;
+            if (nextcloudAccount is null && !book.Connected)
+            {
+                defaultCalendar.Children.Add(new TextBlock { Text = "Connect a calendar above first.", FontSize = 12, Opacity = 0.75 });
+                return;
+            }
+            var loading = new TextBlock { Text = "Loading your calendars…", FontSize = 12, Opacity = 0.75 };
+            defaultCalendar.Children.Add(loading);
+            try
+            {
+                var (options, problems) = await DefaultCalendar.OptionsAsync(
+                    book.Connected ? new GoogleCalendar(token => book.AccessTokenAsync(_oauth, token)) : null, book.CanWrite, book.Calendars(),
+                    _nextcloud, nextcloudAccount, NextcloudStore.Calendars(), cts.Token);
+                defaultCalendar.Children.Remove(loading);
+                defaultCalendar.Children.Add(new TextBlock
+                {
+                    Text = "The calendar new events go to when you don't name one: those you draw in Longhand Calendar, and those the model adds from the notebook.",
+                    TextWrapping = TextWrapping.Wrap,
+                    FontSize = 12,
+                    Opacity = 0.75,
+                });
+                var current = DefaultCalendar.Read(WindowsSettings.Local);
+                var choices = new List<DefaultCalendar.Choice?> { null };
+                choices.AddRange(options);
+                if (current is not null && !options.Contains(current)) choices.Add(current);
+                var combo = new ComboBox { Width = 380 };
+                foreach (var c in choices)
+                    combo.Items.Add(c is null ? "Each calendar's own default (Google's main one, Nextcloud's personal one)" : DefaultCalendar.Label(c) + (options.Contains(c) ? "" : " (not available now)"));
+                combo.SelectedIndex = current is null ? 0 : choices.IndexOf(current);
+                combo.SelectionChanged += (_, _) =>
+                {
+                    if (combo.SelectedIndex < 0) return;
+                    DefaultCalendar.Write(WindowsSettings.Local, choices[combo.SelectedIndex]);
+                    message.Text = "Saved.";
+                };
+                defaultCalendar.Children.Add(combo);
+                if (problems.Count > 0) defaultCalendar.Children.Add(new TextBlock { Text = "Couldn't list: " + string.Join(" ", problems), TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.75 });
+            }
+            catch (OperationCanceledException) { }
+        }
+        _ = RenderDefaultCalendarAsync();
+
         var panel = new StackPanel { Spacing = 12 };
         panel.Children.Add(new TextBlock
         {
@@ -1286,6 +1379,7 @@ public sealed partial class MainPage : Page, IPageView
         });
         panel.Children.Add(nextcloud);
         panel.Children.Add(google);
+        panel.Children.Add(defaultCalendar);
         panel.Children.Add(new TextBlock { Text = "Other apps (MCP servers)", FontWeight = Windows.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 0) });
         panel.Children.Add(list);
         panel.Children.Add(message);

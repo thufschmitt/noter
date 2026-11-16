@@ -17,9 +17,10 @@ namespace Longhand.Services;
 public static class CalendarTools
 {
     /// <param name="calendars">The calendars (by <see cref="CalendarInfo.Segment"/>) the user chose for the tools to use; null for all of them.</param>
-    public static IAgentTool[] For(Nextcloud nextcloud, NextcloudAccount account, TimeZoneInfo? zone = null, Func<DateTimeOffset>? now = null, IReadOnlyCollection<string>? calendars = null)
+    /// <param name="defaultCalendar">The calendar (by <see cref="CalendarInfo.Segment"/>) new events go to when none is named; null for the personal one.</param>
+    public static IAgentTool[] For(Nextcloud nextcloud, NextcloudAccount account, TimeZoneInfo? zone = null, Func<DateTimeOffset>? now = null, IReadOnlyCollection<string>? calendars = null, string? defaultCalendar = null)
     {
-        var context = new CalendarContext(nextcloud, account, zone ?? TimeZoneInfo.Local, now ?? (() => DateTimeOffset.Now), calendars);
+        var context = new CalendarContext(nextcloud, account, zone ?? TimeZoneInfo.Local, now ?? (() => DateTimeOffset.Now), calendars) { Default = defaultCalendar };
         return new IAgentTool[] { new CalendarTool(context), new CalendarAddTool(context), new CalendarChangeTool(context), new CalendarDeleteTool(context) };
     }
 }
@@ -150,6 +151,8 @@ public sealed class CalendarContext : CalendarClock
     public NextcloudAccount Account { get; }
     /// <summary>The calendars (by <see cref="CalendarInfo.Segment"/>) the user chose to use; null when all of them are.</summary>
     public IReadOnlyCollection<string>? Only { get; }
+    /// <summary>The calendar (by <see cref="CalendarInfo.Segment"/>) the user chose for new events; null for the personal one.</summary>
+    public string? Default { get; init; }
 
     public CalendarContext(Nextcloud nextcloud, NextcloudAccount account, TimeZoneInfo zone, Func<DateTimeOffset> now, IReadOnlyCollection<string>? only = null) : base(zone, now)
     {
@@ -281,7 +284,7 @@ public sealed class CalendarAddTool : IAgentTool
             ["all_day"] = CalendarContext.Json("""{"type":"boolean","description":"Optional: true for an all-day event. A start given as a date alone already means all day."}"""),
             ["location"] = CalendarContext.Json("""{"type":"string","description":"Optional: where it is."}"""),
             ["description"] = CalendarContext.Json("""{"type":"string","description":"Optional: notes for the event."}"""),
-            ["calendar"] = CalendarContext.Json("""{"type":"string","description":"Optional: the name of the calendar to add it to. Defaults to the user's own default calendar."}"""),
+            ["calendar"] = CalendarContext.Json("""{"type":"string","description":"Optional: the name of the calendar to add it to. Defaults to the user's own default calendar for new events."}"""),
         },
         "title", "start");
 
@@ -299,7 +302,7 @@ public sealed class CalendarAddTool : IAgentTool
         if (CalendarContext.Text(input, "calendar") is { Length: > 0 } wanted)
             calendar = calendars.FirstOrDefault(c => c.Name.Equals(wanted, StringComparison.CurrentCultureIgnoreCase))
                 ?? throw new InvalidOperationException("There is no calendar called \"" + wanted + "\" that events can be added to. The calendars are: " + string.Join(", ", calendars.Select(c => c.Name)) + ".");
-        else calendar = calendars.FirstOrDefault(c => c.Segment == "personal") ?? calendars[0];
+        else calendar = calendars.FirstOrDefault(c => c.Segment == _c.Default) ?? calendars.FirstOrDefault(c => c.Segment == "personal") ?? calendars[0];
 
         var uid = Guid.NewGuid().ToString("N") + "@longhand";
         var id = calendar.Segment + "/" + Guid.NewGuid().ToString("N") + ".ics";
