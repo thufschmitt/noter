@@ -13,7 +13,8 @@
 html, body { margin: 0; height: 100%; background: var(--desk); color: var(--text); font: 14px system-ui, sans-serif; overscroll-behavior: none; }
 #scroller { position: fixed; inset: 0; overflow-y: auto; overflow-x: hidden; }
 #sheet { position: relative; margin: 0 auto; background: var(--paper); box-shadow: 0 1px 12px rgba(0, 0, 0, .12); min-height: 100%; }
-#ink { position: sticky; top: 0; display: block; z-index: 3; touch-action: none; cursor: crosshair; }
+/* One finger is the page's own (scrolling, or writing); two fingers are the browser's, to zoom. */
+#ink { position: sticky; top: 0; display: block; z-index: 3; touch-action: pinch-zoom; cursor: crosshair; }
 #rules { position: absolute; left: 0; right: 0; top: 120px; bottom: 0; z-index: 0; background: linear-gradient(var(--rule) 1px, transparent 1px) 0 0 / 100% 40px; pointer-events: none; }
 #margin { position: absolute; top: 0; bottom: 0; left: 60px; width: 1.5px; background: var(--margin); z-index: 0; pointer-events: none; }
 #title, #date { position: absolute; top: 48px; font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: .08em; pointer-events: none; z-index: 0; }

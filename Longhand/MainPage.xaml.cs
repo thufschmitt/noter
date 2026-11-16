@@ -372,8 +372,10 @@ public sealed partial class MainPage : Page, IPageView
 
     void EnsureVisible(double bottom)
     {
-        double visibleBottom = Scroller.VerticalOffset + Scroller.ViewportHeight - 90;
-        if (bottom > visibleBottom) Scroller.ChangeView(null, bottom - Scroller.ViewportHeight + 90, null);
+        // The scroller's offsets and viewport are in zoomed pixels; the sheet's are not.
+        double zoom = Scroller.ZoomFactor, margin = 90 / zoom;
+        double visibleBottom = (Scroller.VerticalOffset + Scroller.ViewportHeight) / zoom - margin;
+        if (bottom > visibleBottom) Scroller.ChangeView(null, (bottom + margin) * zoom - Scroller.ViewportHeight, null);
     }
 
     // ---------- ink events ----------

@@ -63,7 +63,7 @@ function layout() {
   sheet.style.width = w + 'px';
   for (const n of notes.values()) n.el.style.width = textWidth() + 'px';
   updateSelection();
-  const h = scroller.clientHeight, dpr = devicePixelRatio || 1;
+  const h = scroller.clientHeight, dpr = ratioUsed = inkRatio();
   inkCanvas.width = Math.round(w * dpr);
   inkCanvas.height = Math.round(h * dpr);
   inkCanvas.style.width = w + 'px';
@@ -116,8 +116,12 @@ function paintStroke(c, pts, color) {
   c.stroke();
 }
 
+// The ink is drawn at the screen's pixels, and more when the page is pinched larger, so it stays sharp (up to 4 to a pixel of the page).
+let ratioUsed = 1;
+const inkRatio = () => Math.min(4, (devicePixelRatio || 1) * (window.visualViewport ? visualViewport.scale : 1));
+
 function viewTransform() {
-  const dpr = devicePixelRatio || 1;
+  const dpr = ratioUsed;
   inkCtx.setTransform(dpr, 0, 0, dpr, 0, -scroller.scrollTop * dpr);
 }
 
@@ -260,7 +264,16 @@ function finishPointer(e) {
   }
 }
 inkCanvas.addEventListener('pointerup', finishPointer);
-inkCanvas.addEventListener('pointercancel', finishPointer);
+// A second finger coming down to pinch takes the first one away from the page: what it had started is dropped, not finished.
+inkCanvas.addEventListener('pointercancel', e => {
+  if (!active || active.id !== e.pointerId) return;
+  if (active.mode === 'pan' || active.mode === 'draw') {
+    active = null;
+    redraw();
+    return;
+  }
+  finishPointer(e);
+});
 inkCanvas.addEventListener('contextmenu', e => e.preventDefault());
 
 // ---------- editing Claude's layouts ----------
@@ -1708,6 +1721,14 @@ if (calendarMode) {
 }
 $('date').textContent = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase();
 let resizeTimer = 0;
+// Pinching changes how large the page is drawn, not its layout: only the ink's sharpness follows.
+if (window.visualViewport) {
+  let zoomTimer = 0;
+  visualViewport.addEventListener('resize', () => {
+    clearTimeout(zoomTimer);
+    zoomTimer = setTimeout(() => { if (Math.abs(inkRatio() - ratioUsed) > 0.05) layout(); }, 120);
+  });
+}
 addEventListener('resize', () => {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => { if (layout()) send({ t: 'width', width: sheetWidth }); }, 150);
