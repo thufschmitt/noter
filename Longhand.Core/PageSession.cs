@@ -26,6 +26,8 @@ public sealed class PageSession
     sealed record EditedDrawing(NoteModel Note, DrawingModel Drawing, string Markup, Dictionary<string, Layout.EditEntry> Edits) : UndoStep;
     /// <summary>The calendar app: an event the user moved or resized, with where it was (its local times) and its id now.</summary>
     sealed record MovedEvent(DateOnly Day, string Id, string Title, DateTime Start, DateTime End) : UndoStep;
+    /// <summary>The calendar app: events added from the user's drawing, and the ink they were drawn with (taken off the page).</summary>
+    sealed record AddedEvents(DateOnly Day, IReadOnlyList<(string Id, string Title)> Events, IReadOnlyList<object> Ink) : UndoStep;
 
     /// <summary>One answer being written, so the layout updates that follow it can be merged.</summary>
     sealed class Answer
@@ -57,14 +59,14 @@ public sealed class PageSession
     readonly bool _dayMode;
     DateOnly _day;
     DayLayout? _dayLayout;
-    NoteModel? _dayNote, _dayReply;
-    readonly List<Turn> _dayTurns = new();
+    NoteModel? _dayNote;
     readonly SemaphoreSlim _dayLock = new(1, 1);
     int _dayLoads;
 
     /// <param name="calendarDay">
     /// The calendar app: the page shows one day of the user's calendar (<paramref name="data"/> must be an <see cref="IDayData"/>),
-    /// moving and resizing its events changes the calendar at once, and only what is drawn goes to the model. Nothing is saved.
+    /// moving and resizing its events changes the calendar at once, and events drawn on it are added (<see cref="InkEvents"/>). No
+    /// model is asked, and nothing is saved.
     /// </param>
     public PageSession(IPageView view, IPageData data, bool calendarDay = false)
     {
@@ -92,8 +94,6 @@ public sealed class PageSession
         if (_dayMode)
         {
             await ShowDayAsync(Today());
-            if (_data.SignIn is null)
-                _view.Toast("Sign in with ChatGPT (gear button) to have your drawings turned into events. Moving events works without it.", 6);
             return;
         }
         _index = await _data.LoadIndexAsync();
@@ -198,6 +198,10 @@ public sealed class PageSession
             case MovedEvent moved:
                 _ = MoveBackAsync(moved);
                 break;
+            case AddedEvents added:
+                foreach (var token in added.Ink) _view.RestoreStrokes(token);
+                _ = RemoveAddedAsync(added);
+                break;
             case AddedStroke added:
                 _view.DeleteStroke(added.StrokeId);
                 _pending.Remove(added.StrokeId);
@@ -219,6 +223,8 @@ public sealed class PageSession
                 }
                 break;
         }
+        // In the calendar app all ink on the page is waiting to be added, also what came back.
+        if (_dayMode) foreach (var s in _view.Strokes()) _pending.Add(s.Id);
         UpdateState();
         ScheduleSave();
     }
@@ -256,6 +262,13 @@ public sealed class PageSession
 
     async Task AskCoreAsync(string? typed)
     {
+        if (_dayMode)
+        {
+            // The calendar app asks no model: Add reads the events from the ink itself.
+            if (typed is not null) _view.RestoreTyped(typed);
+            await AddDrawnEventsAsync();
+            return;
+        }
         if (_busy || (_pending.Count == 0 && typed is null && !HasEdits)) return;
 
         var conversation = _currentId;
@@ -279,10 +292,7 @@ public sealed class PageSession
         var strokeIds = spans.Select(s => s.Id).ToList();
 
         // Writing over earlier replies (annotating them) sends those replies along, so Claude sees what the ink refers to.
-        // In the calendar app the picture always shows the day it was drawn on, with any older ink of the user's in grey.
-        var context = spans.Count == 0 ? null
-            : _dayMode ? (_dayNote is { } dayNote ? new SnapshotContext(_view.Strokes().Where(s => !ids.Contains(s.Id)).Select(s => s.Id).ToList(), new[] { dayNote }) : null)
-            : ContextAround(spans, ids);
+        var context = spans.Count > 0 ? ContextAround(spans, ids) : null;
 
         // A typed note on its own has no picture.
         byte[]? png = null;
@@ -332,19 +342,9 @@ public sealed class PageSession
             ShiftBelow(typedNote.Y, typedOccupied, typedNote, ids);
         }
 
-        // The calendar app keeps only the latest answer, under the day.
-        if (_dayMode && _dayReply is { } oldReply && _notes.Contains(oldReply))
-        {
-            RemoveNote(oldReply);
-            _dayReply = null;
-        }
-        var askedDay = _day;
-        var dayBefore = _dayLayout?.Markup;
-
         // The answer goes at the end of the page, so it never lands in the middle of what is already there. Anything the user
         // writes below it while it streams is pushed down out of the way.
         var note = await AddNoteAsync(EndOfPage(), "…", isHint: false, done: false);
-        if (_dayMode) _dayReply = note;
         note.Text = "";
         var answer = new Answer { Note = note, Ids = ids, Occupied = note.Span, Typed = typedNote, TypedOccupied = typedOccupied, TakenEdits = takenEdits };
         ShiftBelow(note.Y, answer.Occupied, note, ids);
@@ -377,8 +377,7 @@ public sealed class PageSession
                 note.Shown = status;
                 _view.NoteChanged(note);
                 RequestGrow(answer);
-            }, hasContext: context is not null, legend: prepared.Legend, typed: typed, cacheKey: _dayMode ? null : conversation, edits: editReport, canEdit: _view.CanEdit,
-               day: _dayMode ? new CalendarDayAsk(DayLayout.Title(_day), _dayLayout?.Agenda ?? "(none)") : null);
+            }, hasContext: context is not null, legend: prepared.Legend, typed: typed, cacheKey: conversation, edits: editReport, canEdit: _view.CanEdit);
 
             note.Heard = result.Heard;
             AddNewDrawings(note, result.Drawings);
@@ -400,7 +399,6 @@ public sealed class PageSession
             note.Shown = note.Text;
             _view.NoteChanged(note);
             await FlushGrowAsync(answer);
-            if (_dayMode && result.Outcome == ReplyOutcome.Done) await AfterDayAnswerAsync(askedDay, dayBefore, ToTurn(note), ids);
         }
         catch (OperationCanceledException)
         {
@@ -471,7 +469,7 @@ public sealed class PageSession
     }
 
     /// <summary>What Claude is told of the earlier exchanges on the page, top to bottom.</summary>
-    public IReadOnlyList<Turn> History() => _dayMode ? _dayTurns.ToList() : Exchanges().Select(ToTurn).ToList();
+    public IReadOnlyList<Turn> History() => Exchanges().Select(ToTurn).ToList();
 
     // ----- keeping the layout in step with a growing answer -----
 
@@ -535,7 +533,6 @@ public sealed class PageSession
     {
         await a.Pump; // let a measurement in flight finish first
         RemoveNote(a.Note);
-        if (_dayReply == a.Note) _dayReply = null;
         ShiftBelow(a.Note.Y + a.Occupied, -a.Occupied, null, a.Ids);
         if (a.Typed is { } typed)
         {
@@ -791,9 +788,8 @@ public sealed class PageSession
         if (day != _day || _dayNote is null)
         {
             ResetPage();
-            _dayNote = _dayReply = null;
+            _dayNote = null;
             _dayLayout = null;
-            _dayTurns.Clear();
             _day = day;
             _view.PageShown();
         }
@@ -852,19 +848,90 @@ public sealed class PageSession
     public Task RefreshDayAsync() => _dayMode && !_busy ? ShowDayAsync(_day) : Task.CompletedTask;
 
     /// <summary>
-    /// After the model answered a drawing: the day is read again, since it may have added events. When the day changed, the ink it
-    /// answered has done its job and comes off the page (one undo puts it back).
+    /// Add (or the star) in the calendar app: the events drawn over the day are read from the ink (<see cref="InkEvents"/>), each one's
+    /// title is read from its handwriting on the device or typed, and they are added to the calendar. The ink they were drawn with
+    /// comes off the page; one undo deletes them again and puts it back. Ink that marks no event stays.
     /// </summary>
-    async Task AfterDayAnswerAsync(DateOnly day, string? before, Turn turn, HashSet<uint> answered)
+    async Task AddDrawnEventsAsync()
     {
-        _dayTurns.Add(turn);
-        if (day != _day) return;
-        await ReloadDayAsync();
-        if (_dayLayout is null || _dayLayout.Markup == before) return;
-        var tokens = new List<object>();
-        foreach (var id in answered)
-            if (_view.TakeStroke(id) is { } token) tokens.Add(token);
-        if (tokens.Count > 0) _undo.Push(new ErasedByModel(tokens));
+        if (_busy || _pending.Count == 0 || _dayNote is not { Drawings.Count: > 0 } note) return;
+        var day = _day;
+        _busy = true;
+        UpdateState();
+        var added = new List<(string Id, string Title)>();
+        var used = new List<uint>();
+        string? problem = null;
+        try
+        {
+            var calendar = DayData.DayCalendar();
+            var grid = await _view.TimelineAsync(note, note.Drawings[0]);
+            if (calendar is null) problem = "Connect a calendar (Google or Nextcloud, with the link button) to add events.";
+            else if (!calendar.CanAdd) problem = "None of your calendars can be changed from Longhand (Google Calendar is connected read-only). Allow changes in the connected apps.";
+            else if (grid is null) problem = "The day isn't shown yet. Try again in a moment.";
+            else
+            {
+                var ink = _pending.Select(id => _view.StrokePoints(id) is { } p ? new InkPath(id, p) : null).OfType<InkPath>().ToList();
+                var found = InkEvents.Find(ink, grid);
+                if (found.Count == 0) problem = "No event found in the ink. Draw a box over its hours (or a line down them) and write its title in it, then tap Add.";
+                var midnight = day.ToDateTime(TimeOnly.MinValue);
+                foreach (var e in found)
+                {
+                    var title = (await _view.EventTitleAsync(e.Words, Layout.Hhmm(e.Start) + "–" + Layout.Hhmm(e.End)))?.Trim();
+                    if (day != _day) return; // the user went to another day meanwhile
+                    if (string.IsNullOrEmpty(title)) continue; // skipped
+                    try
+                    {
+                        var (id, _) = await calendar.AddAsync(title, midnight.AddMinutes(e.Start), midnight.AddMinutes(e.End), CancellationToken.None);
+                        added.Add((id, title));
+                        used.AddRange(e.Shape.Concat(e.Words));
+                    }
+                    catch (Exception ex)
+                    {
+                        problem = $"Couldn't add \"{title}\": {ex.Message}";
+                        break;
+                    }
+                }
+            }
+        }
+        finally
+        {
+            _busy = false;
+            if (day == _day && added.Count > 0)
+            {
+                var tokens = new List<object>();
+                foreach (var id in used)
+                    if (_view.TakeStroke(id) is { } token) tokens.Add(token);
+                _pending.ExceptWith(used);
+                _undo.Push(new AddedEvents(day, added, tokens));
+            }
+            UpdateState();
+        }
+        if (added.Count > 0)
+            _view.Toast((added.Count == 1 ? $"Added \"{added[0].Title}\"." : $"Added {added.Count} events: " + string.Join(", ", added.Select(a => $"\"{a.Title}\"")) + ".")
+                + " Ctrl+Z takes " + (added.Count == 1 ? "it" : "them") + " back." + (problem is null ? "" : " " + problem), problem is null ? 5 : 9);
+        else if (problem is not null) _view.Toast(problem, 7);
+        if (added.Count > 0 && day == _day) await ReloadDayAsync();
+    }
+
+    /// <summary>Undo of events added from a drawing: they are deleted from the calendar (the ink is already back).</summary>
+    async Task RemoveAddedAsync(AddedEvents step)
+    {
+        await _dayLock.WaitAsync();
+        try
+        {
+            var calendar = DayData.DayCalendar() ?? throw new InvalidOperationException("No calendar is connected any more.");
+            foreach (var (id, _) in step.Events.Where(e => e.Id.Length > 0)) await calendar.DeleteAsync(id, CancellationToken.None);
+            _view.Toast(step.Events.Count == 1 ? $"Removed \"{step.Events[0].Title}\" again." : $"Removed those {step.Events.Count} events again.");
+        }
+        catch (Exception ex)
+        {
+            _view.Toast("Couldn't remove it again: " + ex.Message, 7);
+        }
+        finally
+        {
+            _dayLock.Release();
+        }
+        if (step.Day == _day) await ReloadDayAsync();
     }
 
     /// <summary>

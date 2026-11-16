@@ -65,6 +65,15 @@ public interface IPageView
 
     /// <summary>The calendar app shows this day now (<paramref name="today"/> when it is today). Only the calendar app is told.</summary>
     void DayShown(DateOnly day, bool today) { }
+
+    /// <summary>The calendar app: where the day's timeline is on the page now; null when it isn't shown.</summary>
+    Task<TimelineGeometry?> TimelineAsync(NoteModel note, DrawingModel drawing) => Task.FromResult<TimelineGeometry?>(null);
+
+    /// <summary>
+    /// The calendar app: the title of an event the user drew, from the handwriting in <paramref name="words"/> (read on the device), or
+    /// typed by the user when it can't be read. <paramref name="when"/> says which event (like "14:00–15:00"). Null skips the event.
+    /// </summary>
+    Task<string?> EventTitleAsync(IReadOnlyList<uint> words, string when) => Task.FromResult<string?>("New event");
 }
 
 /// <summary>What the calendar app needs besides <see cref="IPageData"/>: the connected calendars, read fresh each time so changes to them take effect at once.</summary>

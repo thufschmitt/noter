@@ -124,6 +124,8 @@ public sealed partial class MainPage : Page, IPageView
     {
         ConversationsButton.Visibility = Visibility.Collapsed;
         KeyboardButton.Visibility = Visibility.Collapsed;
+        AskLabel.Text = "Add";
+        ToolTipService.SetToolTip(AskButton, "Add the events drawn on the day (Ctrl+Enter)");
         DayBar.Visibility = Visibility.Visible;
         DayBar.Background = _tray;
         DayBar.BorderBrush = _trayLine;
@@ -149,6 +151,87 @@ public sealed partial class MainPage : Page, IPageView
     async void DayPrev_Click(object sender, RoutedEventArgs e) => await _session.MoveDayAsync(-1);
     async void DayNext_Click(object sender, RoutedEventArgs e) => await _session.MoveDayAsync(1);
     async void DayToday_Click(object sender, RoutedEventArgs e) => await _session.TodayAsync();
+
+    /// <summary>Where the day's hour grid is on the sheet: the native timeline's place (layouts aren't scaled on Windows), past its hours' labels.</summary>
+    Task<TimelineGeometry?> IPageView.TimelineAsync(NoteModel note, DrawingModel drawing)
+    {
+        if (drawing.View is not DrawingVisual { Built: { } built } || built.Grids.Values.FirstOrDefault() is not { } grid || grid.ActualHeight <= 0)
+            return Task.FromResult<TimelineGeometry?>(null);
+        var r = PageRect(grid);
+        return Task.FromResult<TimelineGeometry?>(new TimelineGeometry(r.Top, Layout.PxPerHour / 60.0, grid.FromMinutes, grid.ToMinutes, r.Left + grid.Gutter, r.Right));
+    }
+
+    /// <summary>
+    /// The title of an event drawn on the day: its handwriting read by Windows' own recognizer, on this PC (no network). When there is
+    /// none, or it can't be read, the user types it; Skip leaves the event out.
+    /// </summary>
+    async Task<string?> IPageView.EventTitleAsync(IReadOnlyList<uint> words, string when)
+    {
+        var read = words.Count > 0 ? await RecognizeAsync(words) : null;
+        if (!string.IsNullOrWhiteSpace(read)) return read;
+
+        var box = new TextBox { PlaceholderText = "What is it?", MaxLength = 200, Width = 320 };
+        var panel = new StackPanel { Spacing = 8 };
+        panel.Children.Add(new TextBlock
+        {
+            Text = "From " + when.Replace("–", " to ") + ". " + (words.Count > 0 ? "The writing couldn't be read: type its title." : "Type its title:"),
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 320,
+        });
+        panel.Children.Add(box);
+        var dialog = new ContentDialog
+        {
+            Title = "New event",
+            Content = panel,
+            PrimaryButtonText = "Add",
+            CloseButtonText = "Skip",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+        box.KeyDown += (_, e) =>
+        {
+            if (e.Key != Windows.System.VirtualKey.Enter) return;
+            e.Handled = true;
+            dialog.Hide();
+            _typedTitle = box.Text;
+        };
+        _typedTitle = null;
+        var result = await dialog.ShowAsync();
+        var typed = result == ContentDialogResult.Primary ? box.Text : _typedTitle;
+        return string.IsNullOrWhiteSpace(typed) ? null : typed.Trim();
+    }
+
+    string? _typedTitle;
+
+    /// <summary>The words in these strokes, as Windows' handwriting recognizer reads them; null when it can't (no recognizer for the language, say).</summary>
+    async Task<string?> RecognizeAsync(IReadOnlyList<uint> ids)
+    {
+        var wanted = ids.ToHashSet();
+        var all = Strokes.GetStrokes();
+        var selected = new List<InkStroke>();
+        try
+        {
+            foreach (var stroke in all)
+            {
+                stroke.Selected = wanted.Contains(stroke.Id);
+                if (stroke.Selected) selected.Add(stroke);
+            }
+            if (selected.Count == 0) return null;
+            var recognizer = new InkRecognizerContainer();
+            if (recognizer.GetRecognizers().Count == 0) return null;
+            var results = await recognizer.RecognizeAsync(Strokes, InkRecognitionTarget.Selected);
+            var words = results.Select(r => r.GetTextCandidates().FirstOrDefault()).Where(w => !string.IsNullOrWhiteSpace(w));
+            var text = string.Join(" ", words).Trim();
+            return text.Length > 0 ? text : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+        finally
+        {
+            foreach (var stroke in selected) stroke.Selected = false;
+        }
+    }
 
     void IPageView.DayShown(DateOnly day, bool today)
     {
@@ -771,7 +854,7 @@ public sealed partial class MainPage : Page, IPageView
 
     void IPageView.StateChanged(PageState state)
     {
-        AskLabel.Text = state.Busy ? "Stop" : "Ask";
+        AskLabel.Text = AppKind.IsCalendar ? "Add" : state.Busy ? "Stop" : "Ask";
         BusyRing.IsActive = state.Busy;
         AskIcon.Visibility = state.Busy ? Visibility.Collapsed : Visibility.Visible;
         AskButton.IsEnabled = state.CanAsk;

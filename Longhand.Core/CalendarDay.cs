@@ -102,6 +102,8 @@ public interface IDaySource
     /// <summary>Moves an event (one occurrence of a repeating one). Returns the event's id afterwards, which can change.</summary>
     Task<string> MoveAsync(string id, DateTime start, DateTime end, CancellationToken ct);
     Task DeleteAsync(string id, CancellationToken ct);
+    /// <summary>Adds a timed event to the default calendar (the user's choice, else the provider's own). Returns a sentence saying where, and its id.</summary>
+    Task<(string Id, string Said)> AddAsync(string title, DateTime start, DateTime end, CancellationToken ct);
 }
 
 /// <summary>
@@ -123,6 +125,12 @@ static class DayTools
 
     public static Task DeleteAsync(IAgentTool delete, string id, CancellationToken ct) =>
         delete.RunAsync(new Dictionary<string, JsonElement> { ["id"] = Str(id) }, ct);
+
+    public static async Task<(string Id, string Said)> AddAsync(IAgentTool add, string title, DateTime start, DateTime end, CancellationToken ct)
+    {
+        var said = await add.RunAsync(new Dictionary<string, JsonElement> { ["title"] = Str(title), ["start"] = Str(Local(start)), ["end"] = Str(Local(end)) }, ct);
+        return (IdIn.Match(said.TrimEnd()) is { Success: true } m ? m.Groups[1].Value : "", said);
+    }
 }
 
 public sealed class NextcloudDaySource : IDaySource
@@ -130,12 +138,15 @@ public sealed class NextcloudDaySource : IDaySource
     readonly CalendarContext _c;
     readonly CalendarChangeTool _change;
     readonly CalendarDeleteTool _delete;
+    readonly CalendarAddTool _add;
 
-    public NextcloudDaySource(Nextcloud nextcloud, NextcloudAccount account, TimeZoneInfo zone, IReadOnlyCollection<string>? calendars)
+    /// <param name="defaultCalendar">The calendar (by segment) new events go to; null for the personal one.</param>
+    public NextcloudDaySource(Nextcloud nextcloud, NextcloudAccount account, TimeZoneInfo zone, IReadOnlyCollection<string>? calendars, string? defaultCalendar = null)
     {
-        _c = new CalendarContext(nextcloud, account, zone, () => DateTimeOffset.Now, calendars);
+        _c = new CalendarContext(nextcloud, account, zone, () => DateTimeOffset.Now, calendars) { Default = defaultCalendar };
         _change = new CalendarChangeTool(_c);
         _delete = new CalendarDeleteTool(_c);
+        _add = new CalendarAddTool(_c);
     }
 
     public string Provider => DefaultCalendar.Nextcloud;
@@ -152,6 +163,7 @@ public sealed class NextcloudDaySource : IDaySource
 
     public Task<string> MoveAsync(string id, DateTime start, DateTime end, CancellationToken ct) => DayTools.MoveAsync(_change, id, start, end, ct);
     public Task DeleteAsync(string id, CancellationToken ct) => DayTools.DeleteAsync(_delete, id, ct);
+    public Task<(string Id, string Said)> AddAsync(string title, DateTime start, DateTime end, CancellationToken ct) => DayTools.AddAsync(_add, title, start, end, ct);
 }
 
 public sealed class GoogleDaySource : IDaySource
@@ -159,12 +171,15 @@ public sealed class GoogleDaySource : IDaySource
     readonly GoogleCalendarContext _c;
     readonly GoogleCalendarChangeTool _change;
     readonly GoogleCalendarDeleteTool _delete;
+    readonly GoogleCalendarAddTool _add;
 
-    public GoogleDaySource(GoogleCalendar google, bool canWrite, TimeZoneInfo zone, IReadOnlyCollection<string>? calendars)
+    /// <param name="defaultCalendar">The calendar (by Google's id) new events go to; null for the main one.</param>
+    public GoogleDaySource(GoogleCalendar google, bool canWrite, TimeZoneInfo zone, IReadOnlyCollection<string>? calendars, string? defaultCalendar = null)
     {
-        _c = new GoogleCalendarContext(google, zone, () => DateTimeOffset.Now, calendars);
+        _c = new GoogleCalendarContext(google, zone, () => DateTimeOffset.Now, calendars) { Default = defaultCalendar };
         _change = new GoogleCalendarChangeTool(_c);
         _delete = new GoogleCalendarDeleteTool(_c);
+        _add = new GoogleCalendarAddTool(_c);
         CanWrite = canWrite;
     }
 
@@ -189,6 +204,10 @@ public sealed class GoogleDaySource : IDaySource
     public Task DeleteAsync(string id, CancellationToken ct) => CanWrite
         ? DayTools.DeleteAsync(_delete, id, ct)
         : throw new InvalidOperationException("Google Calendar is connected read-only. Allow changes in the connected apps to delete events.");
+
+    public Task<(string Id, string Said)> AddAsync(string title, DateTime start, DateTime end, CancellationToken ct) => CanWrite
+        ? DayTools.AddAsync(_add, title, start, end, ct)
+        : throw new InvalidOperationException("Google Calendar is connected read-only. Allow changes in the connected apps to add events.");
 }
 
 /// <summary>Every connected calendar, as one: what the day view shows and changes.</summary>
@@ -213,8 +232,9 @@ public sealed class DayCalendar
         Nextcloud? nextcloud, NextcloudAccount? account, IReadOnlyCollection<string>? nextcloudOnly, TimeZoneInfo zone, DefaultCalendar.Choice? @default)
     {
         var sources = new List<IDaySource>();
-        if (nextcloud is not null && account is not null) sources.Add(new NextcloudDaySource(nextcloud, account, zone, nextcloudOnly));
-        if (google is not null) sources.Add(new GoogleDaySource(google, googleCanWrite, zone, googleOnly));
+        string? DefaultIn(string provider) => @default is { } d && d.Provider == provider ? d.Id : null;
+        if (nextcloud is not null && account is not null) sources.Add(new NextcloudDaySource(nextcloud, account, zone, nextcloudOnly, DefaultIn(DefaultCalendar.Nextcloud)));
+        if (google is not null) sources.Add(new GoogleDaySource(google, googleCanWrite, zone, googleOnly, DefaultIn(DefaultCalendar.Google)));
         return sources.Count == 0 ? null : new DayCalendar(sources, zone, @default);
     }
 
@@ -246,6 +266,17 @@ public sealed class DayCalendar
 
     public Task<string> MoveAsync(string id, DateTime start, DateTime end, CancellationToken ct) => SourceOf(id).MoveAsync(id, start, end, ct);
     public Task DeleteAsync(string id, CancellationToken ct) => SourceOf(id).DeleteAsync(id, ct);
+
+    /// <summary>
+    /// Adds a timed event where new events go: the default calendar's provider, else the first that can be written to (Nextcloud,
+    /// then Google). Returns its id.
+    /// </summary>
+    public Task<(string Id, string Said)> AddAsync(string title, DateTime start, DateTime end, CancellationToken ct)
+    {
+        var source = Sources.FirstOrDefault(s => s.CanWrite && s.Provider == Default?.Provider) ?? Sources.FirstOrDefault(s => s.CanWrite)
+            ?? throw new InvalidOperationException("None of your calendars can be changed from Longhand (Google Calendar is connected read-only). Allow changes in the connected apps.");
+        return source.AddAsync(title, start, end, ct);
+    }
 }
 
 /// <summary>
@@ -263,20 +294,16 @@ public sealed class DayLayout
     public string Markup { get; }
     /// <summary>The event each item stands for, by the item's id.</summary>
     public IReadOnlyDictionary<string, DayEvent> Events { get; }
-    /// <summary>The day's events as the agenda the model reads, with their ids.</summary>
-    public string Agenda { get; }
 
     static readonly string[] Colors = { "", "blue", "green", "purple", "orange", "teal", "pink", "brown" };
 
-    DayLayout(DateOnly day, string markup, Dictionary<string, DayEvent> events, string agenda)
+    DayLayout(DateOnly day, string markup, Dictionary<string, DayEvent> events)
     {
         Day = day;
         Markup = markup;
         Events = events;
-        Agenda = agenda;
     }
 
-    public static string Title(DateOnly day) => day.ToString("dddd d MMMM yyyy", CultureInfo.InvariantCulture);
 
     public static DayLayout Build(DateOnly day, IReadOnlyList<DayEvent> events, TimeZoneInfo zone)
     {
@@ -331,9 +358,7 @@ public sealed class DayLayout
         sb.Append("</col></layout>");
 
         var markup = Layout.Sanitize(sb.ToString()) ?? throw new InvalidOperationException("The day couldn't be laid out.");
-        var (from, to) = (new DateTimeOffset(midnight, zone.GetUtcOffset(midnight)), new DateTimeOffset(midnight.AddDays(1), zone.GetUtcOffset(midnight.AddDays(1))));
-        var agenda = CalendarText.Agenda(events.Select(e => e.Event).ToList(), from, to, zone, null);
-        return new DayLayout(day, markup, map, agenda);
+        return new DayLayout(day, markup, map);
     }
 
     static string ColorAttr(string color) => color.Length > 0 ? $" color=\"{color}\"" : "";

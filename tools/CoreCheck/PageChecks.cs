@@ -92,6 +92,19 @@ sealed class FakeView : IPageView
     public readonly List<string> Restored = new();
     public void RestoreTyped(string text) => Restored.Add(text);
     public void StateChanged(PageState state) => State = state;
+
+    // ----- the calendar app -----
+    /// <summary>Where the day's timeline is: from 07:00 at y 200, at 64 pixels to the hour, between x 120 and 800.</summary>
+    public TimelineGeometry? Timeline = new(200, 64 / 60.0, 7 * 60, 21 * 60, 120, 800);
+    public Task<TimelineGeometry?> TimelineAsync(NoteModel note, DrawingModel drawing) => Task.FromResult(Timeline);
+    /// <summary>What an event's title reads as, from the strokes of its words; and the times each was asked for.</summary>
+    public Func<IReadOnlyList<uint>, string?> Title = words => words.Count > 0 ? "Gym" : null;
+    public readonly List<string> TitlesAsked = new();
+    public Task<string?> EventTitleAsync(IReadOnlyList<uint> words, string when)
+    {
+        TitlesAsked.Add(when);
+        return Task.FromResult(Title(words));
+    }
 }
 
 /// <summary>Conversations kept in memory, with the ink of each saved alongside its notes.</summary>

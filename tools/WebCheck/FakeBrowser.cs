@@ -17,6 +17,8 @@ sealed class FakeBrowser : IAsyncDisposable
     readonly List<JsonElement> _log = new();
     Task _loop = Task.CompletedTask;
     public int Snapshots;
+    /// <summary>The events (their times) whose titles the calendar app asked for; each is answered "Lunch".</summary>
+    public readonly List<string> Titles = new();
     public JsonElement LastSnapshotRequest;
 
     public static async Task<FakeBrowser> ConnectAsync(string httpUrl, double width = 800, string? zone = null, bool calendar = false)
@@ -52,6 +54,14 @@ sealed class FakeBrowser : IAsyncDisposable
                 {
                     case "measure":
                         await SendAsync(new { t = "reply", req = m.GetProperty("req").GetInt32(), value = (int)Math.Ceiling(m.GetProperty("text").GetString()!.Length / 30.0) });
+                        break;
+                    case "timeline":
+                        // The day's grid: 07:00 at y 200, 64 pixels to the hour, between x 120 and 800.
+                        await SendAsync(new { t = "reply", req = m.GetProperty("req").GetInt32(), value = new { top = 200.0, pxPerMinute = 64 / 60.0, from = 420, to = 1260, left = 120.0, right = 800.0 } });
+                        break;
+                    case "title":
+                        Titles.Add(m.GetProperty("when").GetString()!);
+                        await SendAsync(new { t = "reply", req = m.GetProperty("req").GetInt32(), value = "Lunch" });
                         break;
                     case "snapshot":
                         Snapshots++;

@@ -433,6 +433,23 @@ public sealed class WebConnection : IPageView, IPageData, IDayData
         Send("day", ("date", day.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)),
             ("label", day.ToString("dddd d MMMM yyyy", System.Globalization.CultureInfo.InvariantCulture)), ("today", today));
 
+    /// <summary>The browser measures where the day's timeline grid is on the page (it lays the block out).</summary>
+    public async Task<TimelineGeometry?> TimelineAsync(NoteModel note, DrawingModel drawing)
+    {
+        var v = await RequestAsync("timeline", MeasureTimeout, ("note", NoteId(note)), ("drawing", DrawingId(drawing)));
+        if (v.ValueKind != JsonValueKind.Object) return null;
+        double N(string name) => v.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.Number ? p.GetDouble() : double.NaN;
+        var g = new TimelineGeometry(N("top"), N("pxPerMinute"), (int)N("from"), (int)N("to"), N("left"), N("right"));
+        return double.IsFinite(g.Top) && g.PxPerMinute > 0 && double.IsFinite(g.Left) && double.IsFinite(g.Right) && g.To > g.From ? g : null;
+    }
+
+    /// <summary>A browser can't read handwriting, so the user types the title of each event they drew; null skips it.</summary>
+    public async Task<string?> EventTitleAsync(IReadOnlyList<uint> words, string when)
+    {
+        var v = await RequestAsync("title", TimeSpan.FromMinutes(10), ("when", when));
+        return v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+    }
+
     // ---------- IDayData ----------
 
     public TimeZoneInfo Zone => _zone;

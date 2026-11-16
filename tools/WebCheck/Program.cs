@@ -374,6 +374,18 @@ try
         Check("moving it there changes it in Google Calendar at once", await cb.UntilAsync(_ => googleApi.Writes.Count > writes, 10000)
             && googleApi.Writes[^1].Method == "PATCH" && googleApi.Writes[^1].Body!.ToJsonString().Contains("2026-11-11T16:30"));
         Check("and the day is shown again from the calendar", await cb.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "drawingChanged" && m.GetProperty("text").GetString()!.Contains("start=\"16:30\"")), 10000));
+
+        // A box drawn from 12:00 to 13:00 (07:00 is at y 200, 64 pixels to the hour), with Add: the event goes in, with no model.
+        int asksBefore = api.Requests.Count(r => r.Path.EndsWith("/responses"));
+        double yAt(int h) => 200 + (h - 7) * 64;
+        await cb.SendAsync(new { t = "stroke", stroke = new { id = 901, pts = new[] { new[] { 300.0, yAt(12) }, new[] { 600.0, yAt(12) }, new[] { 600.0, yAt(13) }, new[] { 300.0, yAt(13) }, new[] { 302.0, yAt(12) + 3 } } } });
+        writes = googleApi.Writes.Count;
+        await cb.SendAsync(new { t = "ask" });
+        Check("a box drawn on the day becomes an event at its times, titled as typed, in the default calendar", await cb.UntilAsync(_ => googleApi.Writes.Count > writes, 10000)
+            && googleApi.Writes[^1].Method == "POST" && googleApi.Writes[^1].Path.Contains("team")
+            && googleApi.Writes[^1].Body!["summary"]!.GetValue<string>() == "Lunch" && googleApi.Writes[^1].Body!.ToJsonString().Contains("2026-11-11T12:00") && cb.Titles.SequenceEqual(new[] { "12:00–13:00" }));
+        Check("no model was asked", api.Requests.Count(r => r.Path.EndsWith("/responses")) == asksBefore);
+        Check("the ink comes off and the event shows on the day", await cb.UntilAsync(l => l.Any(m => m.GetProperty("t").GetString() == "delete") && l.Any(m => m.GetProperty("t").GetString() == "drawingChanged" && m.GetProperty("text").GetString()!.Contains("Lunch")), 10000));
     }
 
     var gsame = await Json(await http.SendAsync(ApiReq(HttpMethod.Put, "/api/google/client", new { clientId = "gcid", write = true })));

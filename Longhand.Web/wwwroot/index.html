@@ -84,6 +84,16 @@
   <div class="buttons end"><button id="appsClose" type="button" class="accent">Done</button></div>
 </dialog>
 
+<dialog id="eventTitle">
+  <h2>New event</h2>
+  <p id="eventWhen" class="note-text"></p>
+  <input id="eventTitleInput" maxlength="200" placeholder="What is it?" autocomplete="off">
+  <div class="buttons end">
+    <button id="eventSkip" type="button">Skip</button>
+    <button id="eventAdd" type="button" class="accent">Add</button>
+  </div>
+</dialog>
+
 <dialog id="settings">
   <h2>Settings</h2>
   <p class="note-text">Longhand sends your handwriting to OpenAI's models through your ChatGPT subscription, the way the Codex CLI does. Sign in to the Codex CLI with ChatGPT, then paste the contents of ~/.codex/auth.json here. The sign-in stays on the server this page came from. This uses ChatGPT's private Codex service: it may stop working without notice. Longhand renews the sign-in when it runs out, after which the Codex CLI's copy stops working (and the other way round), so you may have to sign in there again.</p>

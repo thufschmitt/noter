@@ -726,6 +726,34 @@ const handlers = {
     updateHeight();
     updateSelection();
   },
+  // The calendar app: where the day's hour grid is on the page, so ink can be read as times.
+  timeline(m) {
+    const n = notes.get(m.note), d = n && n.drawings.get(m.drawing), doc = d && frameDoc(d);
+    const tl = doc && doc.querySelector('.tl');
+    if (!tl) { reply(m, null); return; }
+    const r = pageRect(d, tl), perMinute = (+tl.dataset.ph * frameScale(d)) / 60, from = +tl.dataset.from;
+    reply(m, { top: r.top, pxPerMinute: perMinute, from, to: from + Math.round((r.bottom - r.top) / perMinute), left: r.left, right: r.right });
+  },
+  // The calendar app: the title of an event drawn on the day, typed, since a browser can't read handwriting. Skip leaves it out.
+  title(m) {
+    const dialog = $('eventTitle'), input = $('eventTitleInput');
+    $('eventWhen').textContent = 'From ' + m.when.replace('–', ' to ') + '. Type its title:';
+    input.value = '';
+    let done = false;
+    const finish = value => {
+      if (done) return;
+      done = true;
+      dialog.onclose = null;
+      if (dialog.open) dialog.close();
+      reply(m, value);
+    };
+    $('eventAdd').onclick = () => finish(input.value.trim() || null);
+    $('eventSkip').onclick = () => finish(null);
+    input.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); finish(input.value.trim() || null); } };
+    dialog.onclose = () => finish(null);
+    dialog.showModal();
+    input.focus();
+  },
   // The calendar app shows this day.
   day(m) {
     $('dayLabel').textContent = m.label;
@@ -790,7 +818,7 @@ const handlers = {
   toast: m => toast(m.message, m.seconds),
   state(m) {
     state = m;
-    $('askLabel').textContent = m.busy ? 'Stop' : 'Ask';
+    $('askLabel').textContent = calendarMode ? 'Add' : m.busy ? 'Stop' : 'Ask';
     $('spinner').hidden = !m.busy;
     $('askIcon').style.display = m.busy ? 'none' : '';
     $('ask').disabled = !m.canAsk;
@@ -1662,6 +1690,8 @@ if (calendarMode) {
   $('date').hidden = true;
   $('daybar').hidden = false;
   $('conversations').hidden = $('keyboard').hidden = true;
+  $('askLabel').textContent = 'Add';
+  $('ask').title = 'Add the events drawn on the day (Ctrl+Enter)';
   $('dayPrev').onclick = () => send({ t: 'day', delta: -1 });
   $('dayNext').onclick = () => send({ t: 'day', delta: 1 });
   $('dayToday').onclick = () => send({ t: 'day', today: true });

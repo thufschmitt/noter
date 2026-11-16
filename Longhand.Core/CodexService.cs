@@ -18,9 +18,6 @@ public sealed record Turn(string Heard, string Reply);
 
 public enum ReplyOutcome { Done, Truncated, Refused }
 
-/// <summary>An Ask from the calendar app: the day it shows (as words) and its events, as the agenda with their ids.</summary>
-public sealed record CalendarDayAsk(string Day, string Agenda);
-
 public sealed record ReplyResult(ReplyOutcome Outcome, string Heard, string Body, IReadOnlyList<string> Drawings, IReadOnlyList<EraseRequest>? Erases = null);
 
 /// <summary>ChatGPT is limiting requests (the plan's usage, or too many at once).</summary>
@@ -76,20 +73,6 @@ public sealed class CodexService
         - What my edits mean is up to you: for example, a card moved into the column of another status can mean "change its status". Act on it with your tools only when the meaning is clear; otherwise say what you think I did and ask, and change nothing. A box of an agenda stands for an event: its words are the event's title, and its id is only the layout's own (a calendar's ids aren't valid here), so when I reschedule one and you act on it, find the event again in the calendar by its title and old time before you change it (for a repeating event, that is the occurrence I moved, and only it changes). When you have acted, say what you did. To redraw a layout in place, write a new <layout> with the same id as the old one (<layout id="board">): it replaces the old one where it is, and I can undo that. Give a layout an id on its root when you expect it to change. A new id adds a new layout below.
         """;
 
-    /// <summary>
-    /// The calendar app: the page is one day of the user's calendar, and what they draw on it goes to the model. {0} is the day,
-    /// {1} its events with their ids.
-    /// </summary>
-    const string CalendarDayPrompt = """
-        This time you are not in the notebook but in the user's calendar app. It shows one day of their calendar, {0}, as a timeline: the hours down the left, and a box for each event, as tall as it lasts (events with no time of day are listed above the hours). The user moves and resizes events themselves, by hand, and those changes are made in the calendar directly: you never hear about them. What they draw or write over the day comes to you.
-        - The picture shows the day as it is on the screen, in blue, with the user's newest ink in black on top (and any earlier ink of theirs that is still there in grey). What they draw is most likely meant to create new events on that day: a box, a bracket or a line drawn down across some hours, or words written at a height, usually means "add an event there", with the words as its title (if there are none, ask what it is, or use a short title that the drawing makes clear). Read the times from where the ink sits against the hour lines of the timeline: the top of a box or bracket is the start and its bottom the end; words alone start where they are written and last an hour. Round to the nearest 15 minutes unless the writing says a time. Several drawings mean several events.
-        - Create them with the calendar's add tool, on {0}, in the default calendar unless the writing names another; you don't need to read the calendar first, the day's events are below. Don't add an event that is already there.
-        - Ink over an existing event (crossed out, an arrow to another time, a correction of its title) may mean changing or deleting it: do that only when it is clear, with the event's id from the list below; otherwise ask.
-        - Your reply is shown in a small space under the day: one short line saying what you did (or what you need to know), in plain words. Don't write a layout, a timeline or a picture: the day redraws itself from the calendar once you are done.
-        The day's events now:
-        {1}
-        """;
-
     const string NotEditablePrompt = "- The user cannot select, move, turn or delete parts of your layouts on this device, so don't use edit or drop and don't offer to make them interactive.";
 
     static readonly HttpClient SharedHttp = new() { Timeout = Timeout.InfiniteTimeSpan };
@@ -129,11 +112,10 @@ public sealed class CodexService
 
     public async Task<ReplyResult> AskAsync(byte[]? png, IReadOnlyList<Turn> history, Action<ReplyParser.Parsed> onProgress, CancellationToken ct,
         Action<string>? onStatus = null, bool hasContext = false, IReadOnlyList<LegendEntry>? legend = null, string? typed = null, string? cacheKey = null,
-        string? edits = null, bool canEdit = false, CalendarDayAsk? day = null)
+        string? edits = null, bool canEdit = false)
     {
         var prompt = SystemPrompt.TrimEnd() + "\n" + DrawingPrompt.TrimEnd() + "\n" + (canEdit ? EditablePrompt : NotEditablePrompt).TrimEnd();
         if (_instructions is { Length: > 0 }) prompt += "\n" + _instructions.TrimEnd();
-        if (day is not null) prompt += "\n\n" + CalendarDayPrompt.Replace("{0}", day.Day).Replace("{1}", day.Agenda).TrimEnd();
         var input = new JsonArray { Message("developer", Text(prompt)) };
         foreach (var turn in history.Skip(Math.Max(0, history.Count - MaxTurns)))
         {
@@ -156,9 +138,7 @@ public sealed class CodexService
         if (png is not null)
         {
             content.Add(Image(png));
-            content.Add(Text(day is not null
-                ? $"This is my calendar's day view of {day.Day} (in blue), with what I just drew or wrote over it in black."
-                : hasContext
+            content.Add(Text(hasContext
                 ? "This is my newest handwriting: the black ink. The grey ink and blue text are earlier parts of the page that it was written over (my earlier writing and your earlier replies)."
                 : "This is my newest handwriting."));
         }
