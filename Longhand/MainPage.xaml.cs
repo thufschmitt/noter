@@ -79,11 +79,11 @@ public sealed partial class MainPage : Page, IPageView
             Key = Windows.System.VirtualKey.N,
             Modifiers = Windows.System.VirtualKeyModifiers.Control,
         };
-        newConversation.Invoked += async (_, args) =>
+        newConversation.Invoked += (_, args) => Guard(async () =>
         {
             args.Handled = true;
             if (!AppKind.IsCalendar) await _session.NewConversationAsync();
-        };
+        });
         KeyboardAccelerators.Add(newConversation);
 
         Root.Background = _desk;
@@ -105,7 +105,9 @@ public sealed partial class MainPage : Page, IPageView
         Loaded += OnLoaded;
     }
 
-    async void OnLoaded(object sender, RoutedEventArgs e)
+    void OnLoaded(object sender, RoutedEventArgs e) => Guard(OnLoadedAsync);
+
+    async Task OnLoadedAsync()
     {
         ApplyTheme(recolorInk: false);
         Window.Current.CoreWindow.KeyDown += OnWindowKeyDown;
@@ -118,6 +120,28 @@ public sealed partial class MainPage : Page, IPageView
     }
 
     // ---------- crashes ----------
+
+    /// <summary>
+    /// Runs an event handler's work, catching what it throws. An error escaping an async handler can end the app whatever the app's
+    /// last-chance handler says, and arrives there without its stack; caught here it keeps both. It is written to the crash log, with
+    /// where (the method and line that started the work), and the page says so.
+    /// </summary>
+    async void Guard(Func<Task> work, [System.Runtime.CompilerServices.CallerMemberName] string member = "", [System.Runtime.CompilerServices.CallerLineNumber] int line = 0)
+    {
+        try
+        {
+            await work();
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                CrashLog.Write(ex, $"{member} (MainPage.xaml.cs, line {line})", fatal: false);
+                ShowToast("Something went wrong: " + ex.Message + " It's in the crash report (gear button → Copy crash report).", 8);
+            }
+            catch (Exception) { /* nothing more can be done */ }
+        }
+    }
 
     void IPageView.ErrorCaught(Exception error, string where) => CrashLog.Write(error, where, fatal: false);
 
@@ -187,24 +211,24 @@ public sealed partial class MainPage : Page, IPageView
         foreach (var (key, days) in new[] { (Windows.System.VirtualKey.Left, -1), (Windows.System.VirtualKey.Right, 1) })
         {
             var accelerator = new Windows.UI.Xaml.Input.KeyboardAccelerator { Key = key, Modifiers = Windows.System.VirtualKeyModifiers.Menu };
-            accelerator.Invoked += async (_, args) =>
+            accelerator.Invoked += (_, args) => Guard(async () =>
             {
                 args.Handled = true;
                 await _session.MoveDayAsync(days);
-            };
+            });
             KeyboardAccelerators.Add(accelerator);
         }
-        Window.Current.Activated += async (_, args) =>
+        Window.Current.Activated += (_, args) => Guard(async () =>
         {
             if (args.WindowActivationState != CoreWindowActivationState.Deactivated && _started) await _session.RefreshDayAsync();
-        };
+        });
     }
 
     bool _started;
 
-    async void DayPrev_Click(object sender, RoutedEventArgs e) => await _session.MoveDayAsync(-1);
-    async void DayNext_Click(object sender, RoutedEventArgs e) => await _session.MoveDayAsync(1);
-    async void DayToday_Click(object sender, RoutedEventArgs e) => await _session.TodayAsync();
+    void DayPrev_Click(object sender, RoutedEventArgs e) => Guard(() => _session.MoveDayAsync(-1));
+    void DayNext_Click(object sender, RoutedEventArgs e) => Guard(() => _session.MoveDayAsync(1));
+    void DayToday_Click(object sender, RoutedEventArgs e) => Guard(() => _session.TodayAsync());
 
     /// <summary>Where the day's hour grid is on the sheet: the native timeline's place (layouts aren't scaled on Windows), past its hours' labels.</summary>
     Task<TimelineGeometry?> IPageView.TimelineAsync(NoteModel note, DrawingModel drawing)
@@ -499,9 +523,9 @@ public sealed partial class MainPage : Page, IPageView
         await _session.TypeAsync(text);
     }
 
-    async void TypeSend_Click(object sender, RoutedEventArgs e) => await SendTypedAsync();
+    void TypeSend_Click(object sender, RoutedEventArgs e) => Guard(() => SendTypedAsync());
 
-    async void TypeBox_KeyDown(object sender, Windows.UI.Xaml.Input.KeyRoutedEventArgs e)
+    void TypeBox_KeyDown(object sender, Windows.UI.Xaml.Input.KeyRoutedEventArgs e) => Guard(async () =>
     {
         if (e.Key == Windows.System.VirtualKey.Escape)
         {
@@ -514,7 +538,7 @@ public sealed partial class MainPage : Page, IPageView
         if (shift) return; // a new line
         e.Handled = true;
         await SendTypedAsync();
-    }
+    });
 
     // ---------- toolbar ----------
 
@@ -601,11 +625,11 @@ public sealed partial class MainPage : Page, IPageView
         addLabel.Children.Add(new FontIcon { Glyph = "\uE710", FontSize = 14 });
         addLabel.Children.Add(new TextBlock { Text = "New conversation" });
         add.Content = addLabel;
-        add.Click += async (_, _) =>
+        add.Click += (_, _) => Guard(async () =>
         {
             _conversationsFlyout.Hide();
             await _session.NewConversationAsync();
-        };
+        });
         _conversationList.Children.Add(add);
 
         foreach (var c in _session.Index.Active()) _conversationList.Children.Add(ConversationRow(c));
@@ -666,7 +690,7 @@ public sealed partial class MainPage : Page, IPageView
                 await _session.RenameConversationAsync(c.Id, box.Text);
                 RenderConversations();
             }
-            box.KeyDown += async (_, e) =>
+            box.KeyDown += (_, e) => Guard(async () =>
             {
                 if (e.Key == Windows.System.VirtualKey.Enter) await Commit();
                 else if (e.Key == Windows.System.VirtualKey.Escape)
@@ -674,10 +698,10 @@ public sealed partial class MainPage : Page, IPageView
                     _renaming = null;
                     RenderConversations();
                 }
-            };
+            });
             var ok = new Button { Content = new FontIcon { Glyph = "\uE73E", FontSize = 14 } };
             ToolTipService.SetToolTip(ok, "Save the name (an empty name goes back to the automatic one)");
-            ok.Click += async (_, _) => await Commit();
+            ok.Click += (_, _) => Guard(() => Commit());
             Grid.SetColumnSpan(box, 2);
             Grid.SetColumn(ok, 2);
             row.Children.Add(box);
@@ -706,11 +730,11 @@ public sealed partial class MainPage : Page, IPageView
             HorizontalContentAlignment = HorizontalAlignment.Left,
             Background = new SolidColorBrush(Colors.Transparent),
         };
-        open.Click += async (_, _) =>
+        open.Click += (_, _) => Guard(async () =>
         {
             _conversationsFlyout.Hide();
             await _session.OpenConversationAsync(c.Id);
-        };
+        });
 
         var rename = new Button { Content = new FontIcon { Glyph = "\uE70F", FontSize = 14 } };
         ToolTipService.SetToolTip(rename, "Rename");
@@ -729,12 +753,12 @@ public sealed partial class MainPage : Page, IPageView
         {
             var archive = new Button { Content = new FontIcon { Glyph = "\uE7B8", FontSize = 14 } };
             ToolTipService.SetToolTip(archive, "Archive (it stays under Archived)");
-            archive.Click += async (_, _) =>
+            archive.Click += (_, _) => Guard(async () =>
             {
                 _armedDelete = null;
                 await _session.ArchiveConversationAsync(c.Id, true);
                 RenderConversations();
-            };
+            });
             Grid.SetColumn(archive, 2);
             row.Children.Add(archive);
             return row;
@@ -743,17 +767,17 @@ public sealed partial class MainPage : Page, IPageView
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var restore = new Button { Content = new FontIcon { Glyph = "\uE7A7", FontSize = 14 } };
         ToolTipService.SetToolTip(restore, "Back to the conversations");
-        restore.Click += async (_, _) =>
+        restore.Click += (_, _) => Guard(async () =>
         {
             _armedDelete = null;
             await _session.ArchiveConversationAsync(c.Id, false);
             RenderConversations();
-        };
+        });
 
         bool armed = _armedDelete == c.Id;
         var delete = new Button { Content = armed ? new TextBlock { Text = "Delete?" } : new FontIcon { Glyph = "\uE74D", FontSize = 14 } };
         ToolTipService.SetToolTip(delete, armed ? "Tap again to delete this conversation for good" : "Delete");
-        delete.Click += async (_, _) =>
+        delete.Click += (_, _) => Guard(async () =>
         {
             if (!armed)
             {
@@ -764,7 +788,7 @@ public sealed partial class MainPage : Page, IPageView
             _armedDelete = null;
             await _session.DeleteConversationAsync(c.Id);
             RenderConversations();
-        };
+        });
 
         Grid.SetColumn(restore, 2);
         Grid.SetColumn(delete, 3);
@@ -773,9 +797,9 @@ public sealed partial class MainPage : Page, IPageView
         return row;
     }
 
-    async void Settings_Click(object sender, RoutedEventArgs e) => await PromptForSignInAsync();
+    void Settings_Click(object sender, RoutedEventArgs e) => Guard(() => PromptForSignInAsync());
 
-    async void Ask_Click(object sender, RoutedEventArgs e) => await _session.AskOrStopAsync();
+    void Ask_Click(object sender, RoutedEventArgs e) => Guard(() => _session.AskOrStopAsync());
 
     // ---------- the page's screen (IPageView) ----------
 
@@ -961,7 +985,7 @@ public sealed partial class MainPage : Page, IPageView
     readonly McpOAuth _oauth = new();
     readonly McpRegistry _registry = new();
 
-    async void Apps_Click(object sender, RoutedEventArgs e) => await ShowAppsAsync();
+    void Apps_Click(object sender, RoutedEventArgs e) => Guard(() => ShowAppsAsync());
 
     async Task ShowAppsAsync()
     {
@@ -998,7 +1022,7 @@ public sealed partial class MainPage : Page, IPageView
                 if (app.Access != AppAccess.Open)
                 {
                     var action = new Button { Content = app.Access == AppAccess.Token ? (app.Ready ? "Remove token" : "Add token") : (app.Ready ? "Sign out" : "Sign in") };
-                    action.Click += async (_, _) =>
+                    action.Click += (_, _) => Guard(async () =>
                     {
                         if (app.Ready)
                         {
@@ -1028,7 +1052,7 @@ public sealed partial class MainPage : Page, IPageView
                             message.Text = $"Couldn't sign in to {app.Name}: {ex.Message}";
                         }
                         Render();
-                    };
+                    });
                     Grid.SetColumn(action, 1);
                     row.Children.Add(action);
                 }
@@ -1140,7 +1164,7 @@ public sealed partial class MainPage : Page, IPageView
             row.Children.Add(addButton);
             box.Children.Add(row);
 
-            addButton.Click += async (_, _) =>
+            addButton.Click += (_, _) => Guard(async () =>
             {
                 if (server.Remote.Variables.Count == 0)
                 {
@@ -1172,7 +1196,7 @@ public sealed partial class MainPage : Page, IPageView
                     }
                 }
                 var confirm = new Button { Content = "Add " + server.Title };
-                confirm.Click += async (_, _) =>
+                confirm.Click += (_, _) => Guard(async () =>
                 {
                     var url = server.Remote.Resolve(getters.ToDictionary(g => g.Key, g => g.Value()));
                     if (url is null)
@@ -1184,10 +1208,10 @@ public sealed partial class MainPage : Page, IPageView
                     await AddAppAsync(McpRegistry.Slug(server.Name), url, server.Remote.TokenRequired);
                     box.Children.Remove(form);
                     addButton.IsEnabled = true;
-                };
+                });
                 form.Children.Add(confirm);
                 box.Children.Add(form);
-            };
+            });
             return box;
         }
 
@@ -1223,12 +1247,12 @@ public sealed partial class MainPage : Page, IPageView
             }
             searchButton.IsEnabled = moreButton.IsEnabled = true;
         }
-        searchButton.Click += async (_, _) => await SearchRegistryAsync(more: false);
-        moreButton.Click += async (_, _) => await SearchRegistryAsync(more: true);
-        searchBox.KeyDown += async (_, e) =>
+        searchButton.Click += (_, _) => Guard(() => SearchRegistryAsync(more: false));
+        moreButton.Click += (_, _) => Guard(() => SearchRegistryAsync(more: true));
+        searchBox.KeyDown += (_, e) => Guard(async () =>
         {
             if (e.Key == Windows.System.VirtualKey.Enter) await SearchRegistryAsync(more: false);
-        };
+        });
 
         // ----- adding one by address -----
         var presets = new ComboBox { PlaceholderText = "Pick a service, or fill in the two boxes", Width = 380, ItemsSource = AppPresets.Select(p => p.Name).ToList() };
@@ -1254,7 +1278,7 @@ public sealed partial class MainPage : Page, IPageView
             urlBox.Text = preset.Url;
         };
         var add = new Button { Content = "Add" };
-        add.Click += async (_, _) =>
+        add.Click += (_, _) => Guard(async () =>
         {
             // Names go to the API as server names, so keep them to letters, digits and dashes.
             var name = System.Text.RegularExpressions.Regex.Replace(nameBox.Text.Trim().ToLowerInvariant(), "[^a-z0-9]+", "-").Trim('-');
@@ -1277,7 +1301,7 @@ public sealed partial class MainPage : Page, IPageView
             nameBox.Text = urlBox.Text = clientIdBox.Text = clientSecretBox.Password = scopeBox.Text = "";
             presets.SelectedIndex = -1;
             add.IsEnabled = true;
-        };
+        });
 
         // ----- which calendars the model may use: the account's calendars as check boxes; a tick is kept as soon as it is made -----
         StackPanel CalendarPicker(Func<CancellationToken, Task<List<(string Id, string Label, bool Used)>>> load, Action<IEnumerable<string>> save)
@@ -1363,9 +1387,9 @@ public sealed partial class MainPage : Page, IPageView
                     RenderGoogle();
                 }
                 var disconnect = new Button { Content = "Disconnect" };
-                disconnect.Click += async (_, _) => await Disconnect(false);
+                disconnect.Click += (_, _) => Guard(() => Disconnect(false));
                 var forgetButton = new Button { Content = "Forget client" };
-                forgetButton.Click += async (_, _) => await Disconnect(true);
+                forgetButton.Click += (_, _) => Guard(() => Disconnect(true));
                 buttons.Children.Add(disconnect);
                 buttons.Children.Add(forgetButton);
                 google.Children.Add(buttons);
@@ -1388,7 +1412,7 @@ public sealed partial class MainPage : Page, IPageView
             google.Children.Add(googleSecretBox);
             google.Children.Add(googleWrite);
             var connect = new Button { Content = "Connect" };
-            connect.Click += async (_, _) =>
+            connect.Click += (_, _) => Guard(async () =>
             {
                 connect.IsEnabled = false;
                 try
@@ -1416,7 +1440,7 @@ public sealed partial class MainPage : Page, IPageView
                     message.Text = "Couldn't connect to Google Calendar: " + ex.Message;
                 }
                 RenderGoogle();
-            };
+            });
             google.Children.Add(connect);
         }
 
@@ -1440,7 +1464,7 @@ public sealed partial class MainPage : Page, IPageView
                 });
                 nextcloud.Children.Add(serverBox);
                 var connect = new Button { Content = "Connect" };
-                connect.Click += async (_, _) =>
+                connect.Click += (_, _) => Guard(async () =>
                 {
                     connect.IsEnabled = false;
                     try
@@ -1463,7 +1487,7 @@ public sealed partial class MainPage : Page, IPageView
                         message.Text = "Couldn't connect to Nextcloud: " + ex.Message;
                     }
                     RenderNextcloud();
-                };
+                });
                 nextcloud.Children.Add(connect);
             }
             else
@@ -1479,14 +1503,14 @@ public sealed partial class MainPage : Page, IPageView
                     segments => NextcloudStore.SaveCalendars(segments)));
                 var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
                 var disconnect = new Button { Content = "Disconnect" };
-                disconnect.Click += async (_, _) =>
+                disconnect.Click += (_, _) => Guard(async () =>
                 {
                     disconnect.IsEnabled = false;
                     await _nextcloud.RevokeAsync(account, cts.Token);
                     NextcloudStore.Clear();
                     message.Text = "Disconnected from Nextcloud.";
                     RenderNextcloud();
-                };
+                });
                 buttons.Children.Add(disconnect);
                 nextcloud.Children.Add(buttons);
             }
@@ -1731,7 +1755,7 @@ public sealed partial class MainPage : Page, IPageView
 
                 var edit = new Button { Content = new FontIcon { Glyph = "\uE70F", FontSize = 14 } };
                 ToolTipService.SetToolTip(edit, "Edit");
-                edit.Click += async (_, _) =>
+                edit.Click += (_, _) => Guard(async () =>
                 {
                     ResetForm();
                     editingId = symbol.Id;
@@ -1746,12 +1770,12 @@ public sealed partial class MainPage : Page, IPageView
                         savedImage.Visibility = savedLabel.Visibility = dropSaved.Visibility = Visibility.Visible;
                     }
                     message.Text = "";
-                };
+                });
 
                 bool armed = armedDelete == symbol.Id;
                 var delete = new Button { Content = armed ? new TextBlock { Text = "Delete?" } : new FontIcon { Glyph = "\uE74D", FontSize = 14 } };
                 ToolTipService.SetToolTip(delete, armed ? "Tap again to delete this symbol" : "Delete");
-                delete.Click += async (_, _) =>
+                delete.Click += (_, _) => Guard(async () =>
                 {
                     if (!armed)
                     {
@@ -1772,7 +1796,7 @@ public sealed partial class MainPage : Page, IPageView
                         message.Text = "Couldn't delete the symbol: " + ex.Message;
                     }
                     Render();
-                };
+                });
 
                 Grid.SetColumn(label, 1);
                 Grid.SetColumn(edit, 2);
@@ -1798,7 +1822,7 @@ public sealed partial class MainPage : Page, IPageView
             ResetForm();
             message.Text = "";
         };
-        save.Click += async (_, _) =>
+        save.Click += (_, _) => Guard(async () =>
         {
             var problem = SymbolList.Problem(symbols, editingId, nameBox.Text, meaningBox.Text);
             if (problem is not null)
@@ -1833,7 +1857,7 @@ public sealed partial class MainPage : Page, IPageView
                 message.Text = "Couldn't save the symbol: " + ex.Message;
             }
             save.IsEnabled = true;
-        };
+        });
 
         section.Children.Add(new TextBlock
         {

@@ -13,12 +13,14 @@ namespace Longhand.Services;
 
 /// <summary>
 /// What went wrong, kept for the user to pass on: every error nothing else caught is written to crash.log in the app's local folder,
-/// with when, which app and version, which Windows, where it happened and the whole exception. An error on the UI thread (a button,
-/// the pen) is logged and the app carries on; one that ends the app is logged before it goes, and the next start says so.
+/// with when, which app and version, which Windows, where it happened and the whole exception. The page's own handlers catch and
+/// log their errors (MainPage.Guard) and carry on. An error that gets past them reaches the UI thread's last-chance handler, which
+/// asks Windows to carry on but can't be sure it will (async errors can still end the app): it is logged as possibly fatal, and if
+/// the app is gone a few seconds later, the next start says so, as for an error that ends the app.
 /// </summary>
 public static class CrashLog
 {
-    const string FileName = "crash.log", UnreadKey = "crash-unread";
+    const string FileName = "crash.log", UnreadKey = "crash-unread", MaybeKey = "crash-maybe";
     const int MaxBytes = 256 * 1024, EntriesCopied = 3;
     const string Separator = "==================== ";
     static readonly object Gate = new();
@@ -64,9 +66,13 @@ public static class CrashLog
         app.UnhandledException += (_, e) =>
         {
             // The message Windows gives here is sometimes all that is left of the original error, so both go in.
-            Write(e.Exception, "UI thread (a button, the pen, a page event)", fatal: false, e.Message);
+            Write(e.Exception, "UI thread (a button, the pen, a page event)", fatal: false, e.Message, mayClose: true);
             e.Handled = true;
             Reported?.Invoke(e.Exception?.Message ?? e.Message);
+            // Still here a few seconds later: it didn't end the app after all.
+            var alive = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+            alive.Tick += (_, _) => { alive.Stop(); WindowsSettings.Local.Remove(MaybeKey); };
+            alive.Start();
         };
         TaskScheduler.UnobservedTaskException += (_, e) =>
         {
@@ -78,13 +84,14 @@ public static class CrashLog
     }
 
     /// <summary>Appends an entry. Never throws: a log that can't be written mustn't make things worse.</summary>
-    public static void Write(Exception? error, string where, bool fatal, string? message = null)
+    /// <param name="mayClose">The app may end because of it, or not: the entry says so, and the next start asks if it did.</param>
+    public static void Write(Exception? error, string where, bool fatal, string? message = null, bool mayClose = false)
     {
         try
         {
             var sb = new StringBuilder();
             var now = DateTimeOffset.Now;
-            sb.Append(Separator).Append(now.ToString("yyyy-MM-dd HH:mm:ss zzz")).Append(fatal ? " — the app closed" : " — the app carried on").Append('\n');
+            sb.Append(Separator).Append(now.ToString("yyyy-MM-dd HH:mm:ss zzz")).Append(fatal ? " — the app closed" : mayClose ? " — reached the last-chance handler (the app may have closed)" : " — caught, the app carried on").Append('\n');
             sb.Append("App: ").Append(AppKind.IsCalendar ? "Longhand Calendar" : "Longhand").Append(' ').Append(Version()).Append('\n');
             sb.Append("Windows: ").Append(WindowsVersion()).Append(", ").Append(RuntimeInformation.ProcessArchitecture).Append(", .NET ").Append(Environment.Version).Append('\n');
             sb.Append("Where: ").Append(where).Append('\n');
@@ -119,6 +126,7 @@ public static class CrashLog
                 }
             }
             if (fatal) WindowsSettings.Local.Set(UnreadKey, now.ToString("o"));
+            else if (mayClose) WindowsSettings.Local.Set(MaybeKey, now.ToString("o"));
         }
         catch (Exception) { /* nothing more can be done */ }
     }
@@ -140,9 +148,13 @@ public static class CrashLog
     }
 
     /// <summary>True when the app closed because of an error since the user last looked.</summary>
-    public static bool HasUnreadCrash => WindowsSettings.Local.Get(UnreadKey) is { Length: > 0 };
+    public static bool HasUnreadCrash => WindowsSettings.Local.Get(UnreadKey) is { Length: > 0 } || WindowsSettings.Local.Get(MaybeKey) is { Length: > 0 };
 
-    public static void MarkRead() => WindowsSettings.Local.Remove(UnreadKey);
+    public static void MarkRead()
+    {
+        WindowsSettings.Local.Remove(UnreadKey);
+        WindowsSettings.Local.Remove(MaybeKey);
+    }
 
     /// <summary>Whether there is anything in the log.</summary>
     public static bool HasEntries
