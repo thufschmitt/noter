@@ -75,6 +75,9 @@ public interface IPageView
     /// is its title when the writing renames an event already there. Null leaves the event as it is (or not added).
     /// </summary>
     Task<string?> EventTitleAsync(IReadOnlyList<uint> words, string when, string? current = null) => Task.FromResult<string?>(current is null ? "New event" : null);
+
+    /// <summary>Something failed that the page caught and carried on from (the user is told in a note): kept for the user to report, with where it happened.</summary>
+    void ErrorCaught(Exception error, string where) { }
 }
 
 /// <summary>What the calendar app needs besides <see cref="IPageData"/>: the connected calendars, read fresh each time so changes to them take effect at once.</summary>

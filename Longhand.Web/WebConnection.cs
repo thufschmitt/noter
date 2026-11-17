@@ -429,6 +429,8 @@ public sealed class WebConnection : IPageView, IPageData, IDayData
     public void Toast(string message, double seconds = 3.5) => Send("toast", ("message", message), ("seconds", seconds));
     public void StateChanged(PageState state) => Send("state", ("busy", state.Busy), ("canAsk", state.CanAsk));
 
+    public void ErrorCaught(Exception error, string where) => Console.Error.WriteLine($"Error while {where}: {error}");
+
     public void DayShown(DateOnly day, bool today) =>
         Send("day", ("date", day.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)),
             ("label", day.ToString("dddd d MMMM yyyy", System.Globalization.CultureInfo.InvariantCulture)), ("today", today));

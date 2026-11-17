@@ -119,6 +119,8 @@ public sealed partial class MainPage : Page, IPageView
 
     // ---------- crashes ----------
 
+    void IPageView.ErrorCaught(Exception error, string where) => CrashLog.Write(error, where, fatal: false);
+
     /// <summary>The app closed because of an error last time: say so, and offer to copy what happened.</summary>
     async Task ShowLastCrashAsync()
     {

@@ -214,6 +214,17 @@ static class DayChecks
         view.Ink.Clear();
         view.Timeline = view.Timeline! with { Items = null };
 
+        // Reading the drawing fails (the screen's handwriting reading, say): the page says so and keeps the error, and nothing escapes.
+        view.Title = _ => throw new System.Runtime.InteropServices.COMException("insufficient buffer", unchecked((int)0x8007007A));
+        var failing = view.DrawPoints(Word(300, Y(13, 10)));
+        session.StrokesCollected(new[] { failing });
+        bool escaped = false;
+        try { await session.AskAsync(); } catch (Exception) { escaped = true; }
+        check("an error reading a drawing is caught, said, and kept for the crash report; the ink stays",
+            !escaped && view.Errors.Count == 1 && view.Errors[0].Contains("insufficient buffer") && view.Toasts.Last().StartsWith("Something went wrong reading the drawing") && view.Ink.Any(s => s.Id == failing) && !view.State.Busy);
+        view.Title = words => words.Count > 0 ? "Gym" : null;
+        view.Ink.Clear();
+
         session.StrokesCollected(new[] { view.DrawPoints(Word(300, 60)) });
         await session.AskAsync();
         check("ink that marks no event says how to draw one", view.Toasts.Last().StartsWith("No event found"));

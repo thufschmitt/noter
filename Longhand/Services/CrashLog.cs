@@ -28,9 +28,39 @@ public static class CrashLog
 
     static string PathOf() => Path.Combine(ApplicationData.Current.LocalFolder.Path, FileName);
 
+    /// <summary>
+    /// The last few exceptions thrown anywhere, with the stack where each was thrown, caught or not. An error that reaches the UI
+    /// thread's handler from an async method has lost its stack by then; the one it came from is usually among these, still with it.
+    /// </summary>
+    sealed record Thrown(DateTimeOffset At, int Thread, string Type, string Message, int HResult, string Stack);
+    const int ThrownKept = 6;
+    static readonly Queue<Thrown> Recent = new();
+    [ThreadStatic] static bool _recording;
+
+    static void Record(Exception error)
+    {
+        if (_recording) return; // an exception thrown while recording one isn't recorded
+        _recording = true;
+        try
+        {
+            // The handler runs where the exception was thrown, so the current stack is the place it came from.
+            var stack = new System.Diagnostics.StackTrace(2, true).ToString();
+            var lines = stack.Split('\n').Select(l => l.TrimEnd()).Where(l => l.Length > 0).Take(30);
+            var thrown = new Thrown(DateTimeOffset.Now, Environment.CurrentManagedThreadId, error.GetType().FullName ?? "?", error.Message, error.HResult, string.Join("\n", lines));
+            lock (Recent)
+            {
+                Recent.Enqueue(thrown);
+                while (Recent.Count > ThrownKept) Recent.Dequeue();
+            }
+        }
+        catch (Exception) { }
+        finally { _recording = false; }
+    }
+
     /// <summary>Catches what nothing else does: on the UI thread, in tasks nobody waited for, and anything that ends the process.</summary>
     public static void Install(Application app)
     {
+        AppDomain.CurrentDomain.FirstChanceException += (_, e) => Record(e.Exception);
         app.UnhandledException += (_, e) =>
         {
             // The message Windows gives here is sometimes all that is left of the original error, so both go in.
@@ -61,6 +91,20 @@ public static class CrashLog
             if (!string.IsNullOrWhiteSpace(message) && message != error?.ToString()) sb.Append("Message: ").Append(message.Trim()).Append('\n');
             sb.Append(error?.ToString() ?? "(no exception was given)").Append('\n');
             if (error is not null && error.HResult != 0) sb.Append("HResult: 0x").Append(error.HResult.ToString("X8")).Append('\n');
+            if (error is null || string.IsNullOrEmpty(error.StackTrace))
+            {
+                // No stack: say where the latest exceptions were thrown, the same kind first, newest first.
+                List<Thrown> recent;
+                lock (Recent) recent = Recent.Reverse().ToList();
+                var likely = recent.OrderByDescending(t => error is not null && t.HResult == error.HResult).ToList();
+                if (likely.Count > 0)
+                {
+                    sb.Append("This error came without its stack. The latest exceptions thrown before it, and where (the same kind first):\n");
+                    foreach (var t in likely)
+                        sb.Append("- ").Append(t.At.ToString("HH:mm:ss.fff")).Append(" thread ").Append(t.Thread).Append(": ").Append(t.Type).Append(" (0x").Append(t.HResult.ToString("X8")).Append(") ").Append(t.Message.Trim()).Append('\n')
+                          .Append(string.Join("\n", t.Stack.Split('\n').Select(l => "    " + l.Trim()))).Append('\n');
+                }
+            }
             lock (Gate)
             {
                 var path = PathOf();

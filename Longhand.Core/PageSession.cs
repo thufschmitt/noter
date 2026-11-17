@@ -925,6 +925,12 @@ public sealed class PageSession
                 }
             }
         }
+        catch (Exception ex)
+        {
+            // Reading the drawing failed (the screen's handwriting reading, say): say so, keep what was added, and keep the error.
+            _view.ErrorCaught(ex, "adding the events drawn on the day");
+            problem = "Something went wrong reading the drawing: " + ex.Message;
+        }
         finally
         {
             _busy = false;

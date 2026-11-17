@@ -100,6 +100,8 @@ sealed class FakeView : IPageView
     /// <summary>What an event's title reads as, from the strokes of its words; and the times each was asked for (with the title it had, when renamed).</summary>
     public Func<IReadOnlyList<uint>, string?> Title = words => words.Count > 0 ? "Gym" : null;
     public readonly List<string> TitlesAsked = new();
+    public readonly List<string> Errors = new();
+    public void ErrorCaught(Exception error, string where) => Errors.Add(where + ": " + error.Message);
     public Task<string?> EventTitleAsync(IReadOnlyList<uint> words, string when, string? current = null)
     {
         TitlesAsked.Add(current is null ? when : $"{when} {current}");
