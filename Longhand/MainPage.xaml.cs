@@ -38,6 +38,8 @@ public sealed partial class MainPage : Page, IPageView
 
     /// <summary>The page itself: what is on it, asking, saving, conversations. This class is its screen.</summary>
     readonly PageSession _session;
+    /// <summary>Writing, erasing and the lasso, from the pen's raw input.</summary>
+    readonly PenInput _pen;
     readonly DispatcherTimer _toastTimer = new() { Interval = TimeSpan.FromSeconds(4) };
     double _sheetWidth = 800, _rulesDrawnTo, _rulesWidth;
 
@@ -54,17 +56,17 @@ public sealed partial class MainPage : Page, IPageView
         InitializeComponent();
         _session = new PageSession(this, new WindowsPageData(() => Ink.InkPresenter.StrokeContainer, _oauth, _nextcloud), calendarDay: AppKind.IsCalendar);
 
-        var presenter = Ink.InkPresenter;
-        presenter.InputDeviceTypes = CoreInputDeviceTypes.Pen | CoreInputDeviceTypes.Mouse;
-        presenter.StrokesCollected += OnStrokesCollected;
-        presenter.StrokesErased += OnStrokesErased;
-        // The barrel button (or a mouse's right button) leaves the pen's input alone, and the page draws a lasso with it to select
-        // parts of a layout (MainPage.Editing.cs).
-        presenter.InputProcessingConfiguration.RightDragAction = InkInputRightDragAction.LeaveUnprocessed;
-        presenter.UnprocessedInput.PointerPressed += OnLassoPressed;
-        presenter.UnprocessedInput.PointerMoved += OnLassoMoved;
-        presenter.UnprocessedInput.PointerReleased += OnLassoReleased;
-        presenter.UnprocessedInput.PointerLost += OnLassoLost;
+        // The ink canvas only keeps and draws the strokes; the pen's input is read raw, and the stroke being written drawn ahead of
+        // it, by PenInput.
+        Ink.InkPresenter.IsInputEnabled = false;
+        _pen = new PenInput(InkSurface, Sheet, WetInk, () => Ink.InkPresenter.StrokeContainer);
+        _pen.StrokesCollected += OnStrokesCollected;
+        _pen.StrokesErased += OnStrokesErased;
+        // The barrel button (or a mouse's right button) draws a lasso to select parts of a layout (MainPage.Editing.cs).
+        _pen.LassoPressed += OnLassoPressed;
+        _pen.LassoMoved += OnLassoMoved;
+        _pen.LassoReleased += OnLassoReleased;
+        _pen.LassoLost += OnLassoLost;
         Sheet.Tapped += Sheet_Tapped;
         // Handled or not: the page follows the pointer to know whether the pen is over what takes hold of a selected part.
         Sheet.AddHandler(PointerMovedEvent, new PointerEventHandler(Sheet_PointerMoved), true);
@@ -375,7 +377,7 @@ public sealed partial class MainPage : Page, IPageView
             IgnorePressure = false,
             PenTip = PenTipShape.Circle,
         };
-        Ink.InkPresenter.UpdateDefaultDrawingAttributes(attrs);
+        _pen.DrawingAttributes = attrs;
         if (recolorInk)
         {
             foreach (var stroke in Strokes.GetStrokes())
@@ -489,20 +491,20 @@ public sealed partial class MainPage : Page, IPageView
 
     // ---------- ink events ----------
 
-    void OnStrokesCollected(InkPresenter sender, InkStrokesCollectedEventArgs args)
+    void OnStrokesCollected(IReadOnlyList<InkStroke> strokes)
     {
         // A tap on a part of a layout selects it and leaves no dot; anything else is ink, and writing puts the selection away.
-        if (Safe(() => TapSelects(args.Strokes), false)) return;
+        if (Safe(() => TapSelects(strokes), false)) return;
         Safe(() =>
         {
-            NoteInk(args.Strokes);
+            NoteInk(strokes);
             ClearSelection();
         });
-        _session.StrokesCollected(args.Strokes.Select(s => s.Id).ToList());
+        _session.StrokesCollected(strokes.Select(s => s.Id).ToList());
     }
 
-    void OnStrokesErased(InkPresenter sender, InkStrokesErasedEventArgs args) =>
-        _session.StrokesErased(args.Strokes.Select(s => s.Id).ToList(), args.Strokes.Select(s => s.Clone()).ToList());
+    void OnStrokesErased(IReadOnlyList<InkStroke> strokes) =>
+        _session.StrokesErased(strokes.Select(s => s.Id).ToList(), strokes.Select(s => s.Clone()).ToList());
 
     // ---------- typing ----------
 
@@ -547,7 +549,7 @@ public sealed partial class MainPage : Page, IPageView
 
     void SetErasing(bool erasing)
     {
-        Ink.InkPresenter.InputProcessingConfiguration.Mode = erasing ? InkInputProcessingMode.Erasing : InkInputProcessingMode.Inking;
+        _pen.Erasing = erasing;
         PenButton.IsChecked = !erasing;
         EraserButton.IsChecked = erasing;
     }
@@ -555,8 +557,7 @@ public sealed partial class MainPage : Page, IPageView
     void Touch_Click(object sender, RoutedEventArgs e)
     {
         bool on = TouchButton.IsChecked == true;
-        var types = CoreInputDeviceTypes.Pen | CoreInputDeviceTypes.Mouse;
-        Ink.InkPresenter.InputDeviceTypes = on ? types | CoreInputDeviceTypes.Touch : types;
+        _pen.FingersWrite = on;
         ShowToast(on ? "Finger writing is on. Scroll with the scroll bar or mouse wheel." : "Fingers scroll the page again. Write with a pen or mouse.");
     }
 
@@ -1693,10 +1694,18 @@ public sealed partial class MainPage : Page, IPageView
         };
 
         // A small pad to draw the symbol on once, so Claude knows what yours looks like. Optional.
-        var pad = new InkCanvas { Width = 378, Height = 140 };
-        pad.InkPresenter.InputDeviceTypes = CoreInputDeviceTypes.Pen | CoreInputDeviceTypes.Mouse;
-        pad.InkPresenter.UpdateDefaultDrawingAttributes(new InkDrawingAttributes { Color = _uiText.Color, Size = new Size(2.4, 2.4), FitToCurve = true, PenTip = PenTipShape.Circle });
-        var padFrame = new Border { Child = pad, BorderBrush = _muted, BorderThickness = new Thickness(1), Background = _paper, Width = 380 };
+        // Written on like the page: raw pen input (PenInput), with the ink canvas only drawing the strokes.
+        var pad = new InkCanvas { Width = 378, Height = 140, IsHitTestVisible = false };
+        pad.InkPresenter.IsInputEnabled = false;
+        var padWet = new Canvas { Width = 378, Height = 140, IsHitTestVisible = false };
+        var padSurface = new Grid { Width = 378, Height = 140, Background = new SolidColorBrush(Colors.Transparent) };
+        padSurface.Children.Add(pad);
+        padSurface.Children.Add(padWet);
+        var padPen = new PenInput(padSurface, padSurface, padWet, () => pad.InkPresenter.StrokeContainer)
+        {
+            DrawingAttributes = new InkDrawingAttributes { Color = _uiText.Color, Size = new Size(2.4, 2.4), FitToCurve = true, PenTip = PenTipShape.Circle },
+        };
+        var padFrame = new Border { Child = padSurface, BorderBrush = _muted, BorderThickness = new Thickness(1), Background = _paper, Width = 380 };
         var padHint = new TextBlock { Text = "Optional: draw the symbol here (pen or mouse) so the model can recognise it.", TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.75 };
         var savedImage = new Image { Height = 56, Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Left, Visibility = Visibility.Collapsed };
         var savedLabel = new TextBlock { Text = "Saved drawing (draw above to replace it):", FontSize = 12, Opacity = 0.75, Visibility = Visibility.Collapsed };

@@ -39,7 +39,12 @@
             <Grid x:Name="Sheet" HorizontalAlignment="Center" VerticalAlignment="Top">
                 <Canvas x:Name="RuleLayer" IsHitTestVisible="False" />
                 <Canvas x:Name="NoteLayer" IsHitTestVisible="False" />
-                <InkCanvas x:Name="Ink" />
+                <!-- Pen input is taken raw, from the pointer, by InkSurface (Services/PenInput.cs): the stroke being written is drawn in
+                     WetInk, a little ahead of the pen, and finished strokes go to Ink, which only draws them and takes no input. -->
+                <Grid x:Name="InkSurface" Background="Transparent">
+                    <InkCanvas x:Name="Ink" IsHitTestVisible="False" />
+                    <Canvas x:Name="WetInk" IsHitTestVisible="False" />
+                </Grid>
                 <!-- The frame, knobs, drag preview and lasso for editing a layout. It sits above the ink, so the pen grabs them
                      instead of writing; where it has nothing, the pen writes. -->
                 <Canvas x:Name="EditLayer" />

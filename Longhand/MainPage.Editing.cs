@@ -159,7 +159,7 @@ public sealed partial class MainPage
 
     /// <summary>
     /// Where the pen takes hold of the selected part: its knobs, and the band along the frame's line (not the inside, so that the pen
-    /// still writes, or taps another part, inside a big frame). The ink presenter is switched off only while the pointer is over one,
+    /// still writes, or taps another part, inside a big frame). Writing is switched off only while the pointer is over one,
     /// so that a press there grabs instead of writing.
     /// </summary>
     bool OnGrab(Point p)
@@ -172,14 +172,14 @@ public sealed partial class MainPage
     }
 
     /// <summary>
-    /// Switches the ink presenter off while the pen is over somewhere it takes hold, and on everywhere else. The pen's barrel button and
+    /// Switches writing off while the pen is over somewhere it takes hold, and on everywhere else. The pen's barrel button and
     /// its eraser end are not for taking hold (they lasso and erase), so they never switch it off.
     /// </summary>
     void UpdateInkEnabled(PointerPoint point)
     {
         var props = point.Properties;
         bool grabs = !(props.IsBarrelButtonPressed || props.IsRightButtonPressed || props.IsEraser);
-        Ink.InkPresenter.IsInputEnabled = _drag is not null || !(grabs && OnGrab(point.Position));
+        _pen.IsInputEnabled = _drag is not null || !(grabs && OnGrab(point.Position));
     }
 
     static bool OverElement(FrameworkElement e, Point p, double tolerance)
@@ -192,7 +192,7 @@ public sealed partial class MainPage
     /// <summary>The pointer left, or was lost: writing is back on (a neighbouring knob that it entered switches it off again). Its last position can't be trusted, as a pen going out of range leaves it over the frame.</summary>
     void InkBack()
     {
-        if (_drag is null) Ink.InkPresenter.IsInputEnabled = true;
+        if (_drag is null) _pen.IsInputEnabled = true;
     }
 
     void Wire(UIElement element, DragKind kind)
@@ -328,7 +328,7 @@ public sealed partial class MainPage
         _selected = null;
         _selectedIds.Clear();
         foreach (var e in new UIElement[] { _frame, _edge, _knobRotate, _knobDelete, _knobResize, _knobMove }) e.Visibility = Visibility.Collapsed;
-        Ink.InkPresenter.IsInputEnabled = true;
+        _pen.IsInputEnabled = true;
     }
 
     /// <summary>A block was built again or moved: the frame is put round the selected parts once it has been laid out.</summary>
@@ -417,7 +417,7 @@ public sealed partial class MainPage
     /// <summary>A finger tap selects too (a finger otherwise scrolls the page).</summary>
     void Sheet_Tapped(object sender, TappedRoutedEventArgs e) => Safe(() =>
     {
-        if (e.PointerDeviceType != PointerDeviceType.Touch) return;
+        if (e.PointerDeviceType != PointerDeviceType.Touch || _pen.FingersWrite) return; // a finger that writes made a dot
         var p = e.GetPosition(Sheet);
         if (OnGrab(p)) return;
         if (!SelectAt(p.X, p.Y)) ClearSelection();
@@ -442,29 +442,25 @@ public sealed partial class MainPage
 
     // ---------- the lasso ----------
 
-    // The ink presenter reports unprocessed input in the window's coordinates; the page's are the sheet's.
-    Point ToSheet(Point windowPoint) => Sheet.TransformToVisual(Window.Current.Content).Inverse.TransformPoint(windowPoint);
-
-    void OnLassoPressed(InkUnprocessedInput sender, PointerEventArgs args) => Safe(() =>
+    // The points come in the sheet's coordinates (PenInput).
+    void OnLassoPressed(Point p) => Safe(() =>
     {
-        var p = ToSheet(args.CurrentPoint.Position);
         _lassoPoints = new List<Point> { p };
         _lasso.Points.Clear();
         _lasso.Points.Add(p);
         _lasso.Visibility = Visibility.Visible;
     });
 
-    void OnLassoMoved(InkUnprocessedInput sender, PointerEventArgs args) => Safe(() =>
+    void OnLassoMoved(Point p) => Safe(() =>
     {
         if (_lassoPoints is null) return;
-        var p = ToSheet(args.CurrentPoint.Position);
         _lassoPoints.Add(p);
         _lasso.Points.Add(p);
     });
 
-    void OnLassoReleased(InkUnprocessedInput sender, PointerEventArgs args) => Safe(EndLasso);
+    void OnLassoReleased() => Safe(EndLasso);
 
-    void OnLassoLost(InkUnprocessedInput sender, PointerEventArgs args) => Safe(() =>
+    void OnLassoLost() => Safe(() =>
     {
         _lassoPoints = null;
         _lasso.Visibility = Visibility.Collapsed;
@@ -617,7 +613,7 @@ public sealed partial class MainPage
         d.Source.ReleasePointerCapture(e.Pointer);
         var p = e.GetCurrentPoint(Sheet).Position;
         FinishDrag(d, p, cancelled);
-        Ink.InkPresenter.IsInputEnabled = true; // the next move of the pen over the page decides again, with the frame where it is by then
+        _pen.IsInputEnabled = true; // the next move of the pen over the page decides again, with the frame where it is by then
         e.Handled = true;
     }
 
