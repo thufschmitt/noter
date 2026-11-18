@@ -11,8 +11,16 @@ const HAND = '"Ink Free","Segoe Print","Bradley Hand","Caveat","Comic Neue","Com
 const $ = id => document.getElementById(id);
 // The calendar app (/calendar) is this page too: one day of the calendar instead of the notebook.
 const calendarMode = location.pathname.replace(/\/+$/, '') === '/calendar';
-const scroller = $('scroller'), sheet = $('sheet'), inkCanvas = $('ink'), notesLayer = $('notes');
-const inkCtx = inkCanvas.getContext('2d');
+const scroller = $('scroller'), sheet = $('sheet'), inkCanvas = $('ink'), wetCanvas = $('wet'), notesLayer = $('notes');
+// Desynchronized: where the browser can (Chrome, Edge), what is drawn shows without waiting for the rest of the page to be painted,
+// a frame or more sooner. Elsewhere the option is ignored.
+const inkCtx = inkCanvas.getContext('2d', { desynchronized: true });
+// The guess of where the pen is going is drawn on a canvas of its own, cleared and drawn again with every move (predictor.js).
+const wetCtx = wetCanvas.getContext('2d', { desynchronized: true });
+// How far ahead of the last sample the stroke being written is drawn, in seconds: about the time from a sample to the screen.
+const PREDICTION_HORIZON = 0.025;
+const predictor = new StrokePredictor(PREDICTION_HORIZON);
+let guessShown = false;
 
 const strokes = new Map();   // id -> { id, pts: [[x, y], ...] }, in page coordinates
 const notes = new Map();     // id -> { id, y, hint, text, lines, drawLines, el, tick, drawings: Map }
@@ -69,6 +77,11 @@ function layout() {
   inkCanvas.style.width = w + 'px';
   inkCanvas.style.height = h + 'px';
   inkCanvas.style.marginBottom = -h + 'px';
+  wetCanvas.width = inkCanvas.width;
+  wetCanvas.height = inkCanvas.height;
+  wetCanvas.style.width = w + 'px';
+  wetCanvas.style.height = h + 'px';
+  wetCanvas.style.marginBottom = -h + 'px';
   updateHeight();
   redraw();
   return changed;
@@ -125,7 +138,31 @@ function viewTransform() {
   inkCtx.setTransform(dpr, 0, 0, dpr, 0, -scroller.scrollTop * dpr);
 }
 
+function clearGuess() {
+  if (!guessShown) return;
+  guessShown = false;
+  wetCtx.setTransform(1, 0, 0, 1, 0, 0);
+  wetCtx.clearRect(0, 0, wetCanvas.width, wetCanvas.height);
+}
+
+// Draws the predictor's guess from the stroke's last point on, in place of the last guess.
+function paintGuess(last) {
+  clearGuess();
+  const n = predictor.predict();
+  if (n === 0) return;
+  wetCtx.setTransform(ratioUsed, 0, 0, ratioUsed, 0, -scroller.scrollTop * ratioUsed);
+  wetCtx.beginPath();
+  wetCtx.moveTo(last[0], last[1]);
+  for (let i = 0; i < n; i++) wetCtx.lineTo(predictor.gx[i], predictor.gy[i]);
+  wetCtx.strokeStyle = inkColor();
+  wetCtx.lineWidth = PEN;
+  wetCtx.lineCap = wetCtx.lineJoin = 'round';
+  wetCtx.stroke();
+  guessShown = true;
+}
+
 function redraw() {
+  clearGuess();
   inkCtx.setTransform(1, 0, 0, 1, 0, 0);
   inkCtx.clearRect(0, 0, inkCanvas.width, inkCanvas.height);
   viewTransform();
@@ -195,6 +232,8 @@ inkCanvas.addEventListener('pointerdown', e => {
     redraw();
   } else {
     active = { id: e.pointerId, mode: 'draw', pts: [p], t0: performance.now() };
+    predictor.reset();
+    predictor.add(p[0], p[1], e.pressure, e.timeStamp / 1000);
     viewTransform();
     paintStroke(inkCtx, [p], inkColor());
   }
@@ -217,6 +256,8 @@ inkCanvas.addEventListener('pointermove', e => {
     } else if (active.mode === 'lasso') {
       active.pts.push(p);
     } else {
+      // Each coalesced sample has its own time, when the pen was there: the predictor needs that, not when this handler runs.
+      predictor.add(p[0], p[1], ev.pressure, ev.timeStamp / 1000);
       const last = active.pts[active.pts.length - 1];
       if (Math.hypot(p[0] - last[0], p[1] - last[1]) < 0.5) continue;
       active.pts.push(p);
@@ -226,6 +267,7 @@ inkCanvas.addEventListener('pointermove', e => {
   }
   if (active.mode === 'erase') redraw();
   if (active.mode === 'lasso') { redraw(); paintLasso(active.pts); }
+  if (active.mode === 'draw') paintGuess(active.pts[active.pts.length - 1]);
 });
 
 // A tap is a pen or mouse press that hardly moves and is over quickly.
@@ -240,6 +282,7 @@ function finishPointer(e) {
   if (!active || active.id !== e.pointerId) return;
   const done = active;
   active = null;
+  clearGuess();
   if (done.mode === 'edit') {
     finishEdit(done, pagePoint(e));
   } else if (done.mode === 'lasso') {

@@ -281,6 +281,23 @@ await sleep(300);
 await shot('7-settings');
 await evaluate(`(() => { document.getElementById('modelSelect').value = 'gpt-6.1-terra'; document.getElementById('settingsSave').click(); })()`);
 check('choosing a model there changes this conversation\'s', await until(`!document.getElementById('settings').open && conversationState.model === 'gpt-6.1-terra'`));
+// Writing draws a guess of where the pen is going ahead of the ink (predictor.js), on its own canvas; it goes when the pen lifts, and
+// the stroke kept is the samples alone.
+{
+  const px = (await evaluate(`document.getElementById('sheet').getBoundingClientRect().left`)) + 200;
+  const before = await evaluate(`strokes.size`);
+  await mouse('mousePressed', px, 420);
+  let guessed = false;
+  for (let i = 1; i <= 30; i++) {
+    await mouse('mouseMoved', px + 4 * i, 420 + 1 * i);
+    await sleep(8);
+    if (i > 6 && await evaluate(`guessShown && predictor.confidence > 0`)) guessed = true;
+  }
+  check('while writing, the guess of where the pen goes is drawn ahead of the ink', guessed);
+  await mouse('mouseReleased', px + 120, 450);
+  check('when the pen lifts, the guess is gone', await until(`!guessShown && strokes.size === ${before} + 1`, 3000));
+  check('the stroke kept goes no further than where the pen went', await evaluate(`(() => { const s = [...strokes.values()].pop(); const r = inkCanvas.getBoundingClientRect(); return Math.max(...s.pts.map(q => q[0])) <= ${px + 120} - r.left + 0.5; })()`));
+}
 console.log('console:', JSON.stringify(logs.slice(0, 10)));
 check('no script errors', !logs.some(l => l.startsWith('EXCEPTION')));
 ws.close();

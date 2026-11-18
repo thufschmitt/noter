@@ -1,6 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
 using System.Linq;
+using System.Text;
 using Longhand.Services;
 
 /// <summary>
@@ -190,5 +194,125 @@ static class PredictorChecks
         var pressed = new StrokePredictor(Latency);
         foreach (var s in Sample(line, 0.2, seed: 20)) pressed.Add(s with { Pressure = 0.8 });
         check("predictor: the guess keeps the last pressure", pressed.Predict() is { Count: > 0 } pg && pg.All(p => p.Pressure == 0.8));
+    }
+
+    /// <summary>
+    /// The browser draws its wet ink with a port of the predictor (Longhand.Web/wwwroot/predictor.js). Both are fed the same samples
+    /// (handwriting, a line, a stop, a corner, a pause, repeated and out-of-order samples) and must give the same guess after each
+    /// one, so that a change to one without the other is caught. Runs the port with node.
+    /// </summary>
+    public static void Parity(Action<string, bool> check)
+    {
+        var script = FindUp(System.IO.Path.Combine("Longhand.Web", "wwwroot", "predictor.js"));
+        if (script is null)
+        {
+            check("predictor: the browser's port is found (Longhand.Web/wwwroot/predictor.js)", false);
+            return;
+        }
+        var strokes = new List<List<PenSample>>
+        {
+            Sample(Cursive(4, 5, 0), 1.5, seed: 30),
+            Sample(Cursive(6, 5, 0.5), 1.0, seed: 31),
+            Sample(t => (500 * t, 200 * t), 0.3, seed: 32),
+            Sample(t => t < 0.2 ? (600 * t, 0) : (120, 0), 0.4, seed: 33),
+            Sample(t => t < 0.15 ? (400 * t, 400 * t) : (60 + 400 * (t - 0.15), 60 - 400 * (t - 0.15)), 0.3, seed: 34),
+            Sample(t => (20 * t, 10 * t), 0.5, seed: 35),
+            Sample(t => (100 + 40 * Math.Cos(4 * Math.PI * t), 100 + 40 * Math.Sin(4 * Math.PI * t)), 0.8, seed: 36, rate: 133, jitter: 0.004),
+        };
+        // A pause mid-stroke, and repeated and out-of-order samples.
+        var odd = Sample(t => (300 * t, 50 * t), 0.2, seed: 37);
+        odd.AddRange(Sample(t => (60 + 300 * t, 10 - 80 * t), 0.2, seed: 38).Select(s => s with { Time = s.Time + 0.5 }));
+        strokes.Add(odd.SelectMany((s, i) => i % 7 == 3 ? new[] { s, s, s with { Time = s.Time - 0.002 } } : new[] { s }).ToList());
+
+        // What the C# guesses after each sample: one line per sample, the points as x,y pairs.
+        var expected = new List<string>();
+        var input = new StringBuilder();
+        foreach (var stroke in strokes)
+        {
+            var predictor = new StrokePredictor(Latency);
+            input.Append("reset\n");
+            foreach (var s in stroke)
+            {
+                predictor.Add(s);
+                expected.Add(string.Join(" ", predictor.Predict().Select(p => F(p.X) + "," + F(p.Y))));
+                input.Append(F(s.X)).Append(' ').Append(F(s.Y)).Append(' ').Append(F(s.Pressure)).Append(' ').Append(F(s.Time)).Append('\n');
+            }
+        }
+
+        const string Driver = """
+            const { StrokePredictor } = require(process.argv[1]);
+            const lines = require('fs').readFileSync(0, 'utf8').split('\n');
+            let p = null; const out = [];
+            for (const line of lines) {
+              if (line === 'reset') { p = new StrokePredictor(0.025); continue; }
+              if (!line) continue;
+              const [x, y, pressure, time] = line.split(' ').map(Number);
+              p.add(x, y, pressure, time);
+              const n = p.predict(), pts = [];
+              for (let i = 0; i < n; i++) pts.push(p.gx[i] + ',' + p.gy[i]);
+              out.push(pts.join(' '));
+            }
+            process.stdout.write(out.join('\n'));
+            """;
+        string output;
+        try
+        {
+            var start = new ProcessStartInfo("node") { RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            start.ArgumentList.Add("-e");
+            start.ArgumentList.Add(Driver);
+            start.ArgumentList.Add(script);
+            using var node = Process.Start(start)!;
+            node.StandardInput.Write(input.ToString());
+            node.StandardInput.Close();
+            var reading = node.StandardOutput.ReadToEndAsync();
+            var errors = node.StandardError.ReadToEndAsync();
+            node.WaitForExit();
+            output = reading.Result;
+            if (node.ExitCode != 0) throw new Exception(errors.Result);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("      couldn't run the browser's predictor with node: " + ex.Message);
+            check("predictor: the browser's port runs (needs node)", false);
+            return;
+        }
+
+        var actual = output.Split('\n');
+        int guessed = expected.Count(e => e.Length > 0), mismatches = 0;
+        string? firstMismatch = null;
+        for (int i = 0; i < expected.Count; i++)
+        {
+            var a = i < actual.Length ? actual[i] : "<missing>";
+            if (Same(expected[i], a)) continue;
+            mismatches++;
+            firstMismatch ??= $"sample {i}: C# [{expected[i]}] JS [{a}]";
+        }
+        if (firstMismatch is not null) Console.WriteLine("      first difference: " + firstMismatch);
+        check($"predictor: the browser's port guesses the same as the C# after every one of {expected.Count} samples ({guessed} with a guess)",
+            mismatches == 0 && actual.Length == expected.Count && guessed > expected.Count / 3);
+    }
+
+    static string F(double v) => v.ToString("R", CultureInfo.InvariantCulture);
+
+    /// <summary>The same guess: as many points, each within a millionth of a pixel (the two languages round a hypotenuse differently).</summary>
+    static bool Same(string a, string b)
+    {
+        var pa = a.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var pb = b.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (pa.Length != pb.Length) return false;
+        for (int i = 0; i < pa.Length; i++)
+        {
+            var xa = pa[i].Split(',').Select(v => double.Parse(v, CultureInfo.InvariantCulture)).ToArray();
+            var xb = pb[i].Split(',').Select(v => double.Parse(v, CultureInfo.InvariantCulture)).ToArray();
+            if (Math.Abs(xa[0] - xb[0]) > 1e-6 || Math.Abs(xa[1] - xb[1]) > 1e-6) return false;
+        }
+        return true;
+    }
+
+    static string? FindUp(string relative)
+    {
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+            if (File.Exists(System.IO.Path.Combine(dir.FullName, relative))) return System.IO.Path.Combine(dir.FullName, relative);
+        return null;
     }
 }

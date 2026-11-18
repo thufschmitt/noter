@@ -160,6 +160,7 @@ await GoogleChecks.RunAsync(Check);
 await DayChecks.RunAsync(Check);
 HandwritingChecks.Run(Check);
 PredictorChecks.Run(Check);
+PredictorChecks.Parity(Check);
 
 Console.WriteLine(failures == 0 ? "All checks passed." : $"{failures} check(s) failed.");
 return failures == 0 ? 0 : 1;
