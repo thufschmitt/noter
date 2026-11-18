@@ -67,6 +67,7 @@
             cd "$root"
             dotnet run --project tools/CoreCheck
             dotnet build tools/XamlCheck
+            dotnet build Longhand.PenDemo
             dotnet run --project tools/WebCheck
             ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "tools/BrowserCheck/run.sh chromium"}
           '';

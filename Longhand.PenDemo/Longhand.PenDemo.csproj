@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- A plain Windows .exe to try the pen predictor on a real device, outside UWP: Win32 pointer input, WinForms drawing, and the same
+       StrokePredictor as the app. Published as one self-contained file (see the README); builds on any OS, runs on Windows. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>Longhand.PenDemo</RootNamespace>
+    <AssemblyName>LonghandPenDemo</AssemblyName>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\Longhand.Core\StrokePredictor.cs" Link="Shared\StrokePredictor.cs" />
+    <Compile Include="..\Longhand.Core\EraserHit.cs" Link="Shared\EraserHit.cs" />
+  </ItemGroup>
+</Project>
