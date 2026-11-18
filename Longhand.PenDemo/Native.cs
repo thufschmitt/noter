@@ -53,6 +53,31 @@ static class Native
         public int tiltY;
     }
 
+    public const int WM_SETCURSOR = 0x0020;
+
+    /// <summary>The visuals Windows draws for pen and touch input on its own (FEEDBACK_TYPE).</summary>
+    public enum FeedbackType
+    {
+        TouchContactVisualization = 1, PenBarrelVisualization = 2, PenTap = 3, PenDoubleTap = 4, PenPressAndHold = 5, PenRightTap = 6,
+        TouchTap = 7, TouchDoubleTap = 8, TouchPressAndHold = 9, TouchRightTap = 10, GesturePressAndTap = 11,
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool SetWindowFeedbackSetting(IntPtr hwnd, FeedbackType feedback, uint flags, uint size, ref int configuration);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetCursor(IntPtr cursor);
+
+    /// <summary>Turns off every visual Windows draws on its own for pen and touch in this window (they trail the pen).</summary>
+    public static void NoFeedback(IntPtr hwnd)
+    {
+        foreach (FeedbackType type in Enum.GetValues<FeedbackType>())
+        {
+            int off = 0;
+            SetWindowFeedbackSetting(hwnd, type, 0, sizeof(int), ref off);
+        }
+    }
+
     public static uint PointerId(IntPtr wParam) => (uint)((long)wParam & 0xFFFF);
 
     [DllImport("user32.dll", SetLastError = true)]

@@ -76,6 +76,31 @@ public sealed class PenInput
         // Losing the pointer mid-stroke (another element took it): a pen or mouse stroke is kept as far as it got; a finger's is
         // dropped, since it lost the pointer to a pinch or a scroll.
         surface.PointerCaptureLost += (_, e) => End(e, keep: _active?.Device != PointerDeviceType.Touch);
+        // No tap ripples or barrel-button rings: the system draws them behind the pen, as it does the pointer.
+        var feedback = Windows.UI.Input.PointerVisualizationSettings.GetForCurrentView();
+        feedback.IsContactFeedbackEnabled = false;
+        feedback.IsBarrelButtonFeedbackEnabled = false;
+    }
+
+    /// <summary>
+    /// The pointer (the pen's dot, the mouse's arrow) is hidden while a stroke is written: the system draws it a frame or more behind
+    /// the pen, and ink drawn ahead of the pen makes the lag plain. Windows Ink hides it too. This is what to put back.
+    /// </summary>
+    Windows.UI.Core.CoreCursor? _hiddenCursor;
+
+    void HidePointer()
+    {
+        var window = Windows.UI.Core.CoreWindow.GetForCurrentThread();
+        if (window?.PointerCursor is not { } cursor) return;
+        _hiddenCursor = cursor;
+        window.PointerCursor = null;
+    }
+
+    void ShowPointer()
+    {
+        if (_hiddenCursor is null) return;
+        if (Windows.UI.Core.CoreWindow.GetForCurrentThread() is { } window) window.PointerCursor = _hiddenCursor;
+        _hiddenCursor = null;
     }
 
     /// <summary>What new strokes are drawn with.</summary>
@@ -129,6 +154,7 @@ public sealed class PenInput
         var attrs = DrawingAttributes;
         _active = new Active { PointerId = e.Pointer.PointerId, Mode = mode, Device = device, Size = attrs.Size.Width, Brush = mode == Mode.Ink ? new SolidColorBrush(attrs.Color) : null };
         _predictor.Reset();
+        if (mode == Mode.Ink) HidePointer();
         if (mode == Mode.Lasso) LassoPressed?.Invoke(point.Position);
         Take(_active, new[] { point });
     }
@@ -290,6 +316,7 @@ public sealed class PenInput
     {
         if (_active is not { } a || e.Pointer.PointerId != a.PointerId) return;
         _active = null;
+        ShowPointer();
         _surface.ReleasePointerCapture(e.Pointer);
         switch (a.Mode)
         {

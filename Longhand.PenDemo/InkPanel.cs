@@ -53,6 +53,13 @@ sealed class InkPanel : Control
     /// <summary>Whether the guess is drawn at all, to compare with and without.</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public bool Predicting { get; set; } = true;
+    /// <summary>
+    /// Hides the pointer (the pen's dot, the mouse's arrow) while a stroke is written: it is drawn by the system a frame or more behind
+    /// the pen, and the ink drawn ahead of the pen makes the lag plain. Windows Ink hides it too.
+    /// </summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool HidePointer { get; set; } = true;
+
     /// <summary>Draws the guess in red, to see what it does.</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public bool ShowGuess { get; set; }
@@ -72,10 +79,20 @@ sealed class InkPanel : Control
 
     // ---------- pointer messages ----------
 
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Native.NoFeedback(Handle); // no tap ripples or barrel-button rings, which trail the pen like the pointer does
+    }
+
     protected override void WndProc(ref Message m)
     {
         switch (m.Msg)
         {
+            case Native.WM_SETCURSOR when _active && HidePointer:
+                Native.SetCursor(IntPtr.Zero);
+                m.Result = (IntPtr)1;
+                return;
             case Native.WM_POINTERDOWN:
                 OnPointer(Native.PointerId(m.WParam), down: true, up: false);
                 m.Result = IntPtr.Zero;
@@ -113,6 +130,7 @@ sealed class InkPanel : Control
             _lastTime = double.NegativeInfinity;
             _lastErase = null;
             if (type == Native.PointerType.Mouse) Capture = true;
+            if (HidePointer) Native.SetCursor(IntPtr.Zero);
             if (_mode == Mode.Ink)
             {
                 _current = new Stroke();
@@ -298,6 +316,7 @@ sealed class InkPanel : Control
     {
         _active = false;
         Capture = false;
+        Native.SetCursor(Cursor.Handle); // the pointer back
         _current = null;
         _lastErase = null;
         Present(Rectangle.Empty, guess: false); // takes the last guess away

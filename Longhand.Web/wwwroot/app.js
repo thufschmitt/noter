@@ -234,6 +234,8 @@ inkCanvas.addEventListener('pointerdown', e => {
     active = { id: e.pointerId, mode: 'draw', pts: [p], t0: performance.now() };
     predictor.reset();
     predictor.add(p[0], p[1], e.pressure, e.timeStamp / 1000);
+    // The pointer is hidden while writing: the browser draws it behind the pen, and the ink drawn ahead of it makes that plain.
+    inkCanvas.style.cursor = 'none';
     viewTransform();
     paintStroke(inkCtx, [p], inkColor());
   }
@@ -283,6 +285,7 @@ function finishPointer(e) {
   const done = active;
   active = null;
   clearGuess();
+  inkCanvas.style.cursor = '';
   if (done.mode === 'edit') {
     finishEdit(done, pagePoint(e));
   } else if (done.mode === 'lasso') {
@@ -312,6 +315,7 @@ inkCanvas.addEventListener('pointercancel', e => {
   if (!active || active.id !== e.pointerId) return;
   if (active.mode === 'pan' || active.mode === 'draw') {
     active = null;
+    inkCanvas.style.cursor = '';
     redraw();
     return;
   }

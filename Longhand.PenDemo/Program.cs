@@ -33,6 +33,7 @@ sealed class DemoForm : Form
         var ink = new InkPanel { Dock = DockStyle.Fill };
         var bar = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(8, 6, 8, 6), WrapContents = true };
         var predict = new CheckBox { Text = "Prediction (P)", Checked = true, AutoSize = true, Margin = new Padding(0, 6, 16, 0) };
+        var hide = new CheckBox { Text = "Hide the pointer while writing (H)", Checked = true, AutoSize = true, Margin = new Padding(0, 6, 16, 0) };
         var show = new CheckBox { Text = "Show the guess in red (R)", AutoSize = true, Margin = new Padding(0, 6, 16, 0) };
         var horizonLabel = new Label { AutoSize = true, Margin = new Padding(0, 8, 4, 0) };
         var horizon = new TrackBar { Minimum = 0, Maximum = 60, Value = 25, TickFrequency = 5, Width = 220, AutoSize = false, Height = 32 };
@@ -43,6 +44,7 @@ sealed class DemoForm : Form
         void ShowHorizon() => horizonLabel.Text = $"Horizon {horizon.Value} ms";
         predict.CheckedChanged += (_, _) => ink.Predicting = predict.Checked;
         show.CheckedChanged += (_, _) => ink.ShowGuess = show.Checked;
+        hide.CheckedChanged += (_, _) => ink.HidePointer = hide.Checked;
         horizon.ValueChanged += (_, _) => { ink.HorizonMs = horizon.Value; ShowHorizon(); };
         clear.Click += (_, _) => ink.Clear();
         ink.Status += s => status.Text = s;
@@ -53,12 +55,13 @@ sealed class DemoForm : Form
         {
             if (e.KeyCode == Keys.P) predict.Checked = !predict.Checked;
             else if (e.KeyCode == Keys.R) show.Checked = !show.Checked;
+            else if (e.KeyCode == Keys.H) hide.Checked = !hide.Checked;
             else if (e.KeyCode == Keys.C) ink.Clear();
             else return;
             e.Handled = e.SuppressKeyPress = true;
         };
 
-        bar.Controls.AddRange(new Control[] { predict, show, horizonLabel, horizon, clear, hint });
+        bar.Controls.AddRange(new Control[] { predict, hide, show, horizonLabel, horizon, clear, hint });
         Controls.Add(ink);
         Controls.Add(bar);
         Controls.Add(status);
