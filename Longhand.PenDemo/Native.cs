@@ -68,6 +68,21 @@ static class Native
     [DllImport("user32.dll")]
     public static extern IntPtr SetCursor(IntPtr cursor);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern IntPtr CreateCursor(IntPtr instance, int hotX, int hotY, int width, int height, byte[] andMask, byte[] xorMask);
+
+    /// <summary>
+    /// A cursor that draws nothing. Hiding the pointer with no cursor at all (SetCursor(NULL)) doesn't hide the pen's: Windows puts its
+    /// own pen cursor in place of a missing one. A real cursor that is transparent everywhere it does show.
+    /// </summary>
+    public static IntPtr TransparentCursor()
+    {
+        const int Size = 32, Bytes = Size * Size / 8;
+        var and = new byte[Bytes];
+        Array.Fill(and, (byte)0xFF); // keep the screen as it is
+        return CreateCursor(IntPtr.Zero, 0, 0, Size, Size, and, new byte[Bytes]); // and draw nothing on it
+    }
+
     /// <summary>Turns off every visual Windows draws on its own for pen and touch in this window (they trail the pen).</summary>
     public static void NoFeedback(IntPtr hwnd)
     {

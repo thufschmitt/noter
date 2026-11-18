@@ -21,6 +21,8 @@ const wetCtx = wetCanvas.getContext('2d', { desynchronized: true });
 const PREDICTION_HORIZON = 0.025;
 const predictor = new StrokePredictor(PREDICTION_HORIZON);
 let guessShown = false;
+// A 1×1 transparent PNG as the cursor, with 'none' for a browser that won't take an image.
+const TRANSPARENT_CURSOR = 'url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=") 0 0, none';
 
 const strokes = new Map();   // id -> { id, pts: [[x, y], ...] }, in page coordinates
 const notes = new Map();     // id -> { id, y, hint, text, lines, drawLines, el, tick, drawings: Map }
@@ -235,7 +237,8 @@ inkCanvas.addEventListener('pointerdown', e => {
     predictor.reset();
     predictor.add(p[0], p[1], e.pressure, e.timeStamp / 1000);
     // The pointer is hidden while writing: the browser draws it behind the pen, and the ink drawn ahead of it makes that plain.
-    inkCanvas.style.cursor = 'none';
+    // A transparent cursor image, not 'none': with no cursor at all, Windows shows its own pen cursor in its place.
+    inkCanvas.style.cursor = TRANSPARENT_CURSOR;
     viewTransform();
     paintStroke(inkCtx, [p], inkColor());
   }

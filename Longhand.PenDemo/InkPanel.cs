@@ -60,6 +60,24 @@ sealed class InkPanel : Control
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public bool HidePointer { get; set; } = true;
 
+    static readonly Lazy<Cursor> Transparent = new(() => new Cursor(Native.TransparentCursor()));
+    Cursor? _shownCursor;
+
+    void HideCursor()
+    {
+        _shownCursor ??= Cursor;
+        Cursor = Transparent.Value; // WinForms answers WM_SETCURSOR with it from now on
+        Native.SetCursor(Transparent.Value.Handle); // and now, without waiting for the next one
+    }
+
+    void ShowCursor()
+    {
+        if (_shownCursor is null) return;
+        Cursor = _shownCursor;
+        _shownCursor = null;
+        Native.SetCursor(Cursor.Handle);
+    }
+
     /// <summary>Draws the guess in red, to see what it does.</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public bool ShowGuess { get; set; }
@@ -89,10 +107,6 @@ sealed class InkPanel : Control
     {
         switch (m.Msg)
         {
-            case Native.WM_SETCURSOR when _active && HidePointer:
-                Native.SetCursor(IntPtr.Zero);
-                m.Result = (IntPtr)1;
-                return;
             case Native.WM_POINTERDOWN:
                 OnPointer(Native.PointerId(m.WParam), down: true, up: false);
                 m.Result = IntPtr.Zero;
@@ -130,7 +144,7 @@ sealed class InkPanel : Control
             _lastTime = double.NegativeInfinity;
             _lastErase = null;
             if (type == Native.PointerType.Mouse) Capture = true;
-            if (HidePointer) Native.SetCursor(IntPtr.Zero);
+            if (HidePointer) HideCursor();
             if (_mode == Mode.Ink)
             {
                 _current = new Stroke();
@@ -316,7 +330,7 @@ sealed class InkPanel : Control
     {
         _active = false;
         Capture = false;
-        Native.SetCursor(Cursor.Handle); // the pointer back
+        ShowCursor(); // the pointer back
         _current = null;
         _lastErase = null;
         Present(Rectangle.Empty, guess: false); // takes the last guess away

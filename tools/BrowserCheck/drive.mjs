@@ -294,7 +294,9 @@ check('choosing a model there changes this conversation\'s', await until(`!docum
     if (i > 6 && await evaluate(`guessShown && predictor.confidence > 0`)) guessed = true;
   }
   check('while writing, the guess of where the pen goes is drawn ahead of the ink', guessed);
+  check('while writing, the pointer is a transparent cursor', await evaluate(`getComputedStyle(inkCanvas).cursor.startsWith('url(')`));
   await mouse('mouseReleased', px + 120, 450);
+  check('when the pen lifts, the pointer is back', await until(`getComputedStyle(inkCanvas).cursor === 'crosshair'`, 3000));
   check('when the pen lifts, the guess is gone', await until(`!guessShown && strokes.size === ${before} + 1`, 3000));
   check('the stroke kept goes no further than where the pen went', await evaluate(`(() => { const s = [...strokes.values()].pop(); const r = inkCanvas.getBoundingClientRect(); return Math.max(...s.pts.map(q => q[0])) <= ${px + 120} - r.left + 0.5; })()`));
 }
