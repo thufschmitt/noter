@@ -236,6 +236,9 @@ public sealed class WebConnection : IPageView, IPageData, IDayData
             case "edit":
                 if (_started) HandleEdit(m);
                 break;
+            case "notes":
+                if (_started) HandleNotes(m);
+                break;
             case "type":
                 if (_started && Str(m, "text") is { } typed) await _session.TypeAsync(typed);
                 else if (Str(m, "text") is { } lost) RestoreTyped(lost);
@@ -287,6 +290,24 @@ public sealed class WebConnection : IPageView, IPageData, IDayData
                 if (c.ValueKind == JsonValueKind.Object && Str(c, "id") is { Length: > 0 } id && Str(c, "op") is { } op)
                     changes.Add(new DrawingChange(id, op, Str(c, "to"), Num(c, "index") is { } index && double.IsFinite(index) ? (int)Math.Clamp(index, 0, 10000) : 0, Num(c, "deg") is { } deg && double.IsFinite(deg) ? deg : 0, Str(c, "at"), Str(c, "end")));
         _session.EditDrawing(note, drawing, changes);
+    }
+
+    /// <summary>The user moved or erased whole notes, taken with the lasso: { op: "move", ids, dy } or { op: "erase", ids }.</summary>
+    void HandleNotes(JsonElement m)
+    {
+        if (!m.TryGetProperty("ids", out var list) || list.ValueKind != JsonValueKind.Array) return;
+        var ids = list.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.Number && e.TryGetInt32(out _)).Select(e => e.GetInt32()).ToHashSet();
+        var notes = _session.Notes.Where(n => n.View is int v && ids.Contains(v)).ToList();
+        if (notes.Count == 0) return;
+        switch (Str(m, "op"))
+        {
+            case "move" when Num(m, "dy") is { } dy && double.IsFinite(dy):
+                _session.MoveNotes(notes, Math.Clamp(dy, -1_000_000, 1_000_000));
+                break;
+            case "erase":
+                _session.EraseNotes(notes);
+                break;
+        }
     }
 
     // ---------- IPageView: the ink ----------

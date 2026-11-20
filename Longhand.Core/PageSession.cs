@@ -31,6 +31,10 @@ public sealed class PageSession
     /// that did it (taken off the page).
     /// </summary>
     sealed record AddedEvents(DateOnly Day, IReadOnlyList<(string Id, string Title)> Events, IReadOnlyList<(string Id, string Old, string New)> Renamed, IReadOnlyList<object> Ink) : UndoStep;
+    /// <summary>Notes the user moved with the lasso, with where each was.</summary>
+    sealed record MovedNotes(IReadOnlyList<(NoteModel Note, double Y)> Was) : UndoStep;
+    /// <summary>Notes the user erased with the lasso.</summary>
+    sealed record ErasedNotes(IReadOnlyList<NoteModel> Notes) : UndoStep;
 
     /// <summary>One answer being written, so the layout updates that follow it can be merged.</summary>
     sealed class Answer
@@ -214,6 +218,18 @@ public sealed class PageSession
                 break;
             case ErasedByModel byModel:
                 foreach (var token in byModel.Tokens) _view.RestoreStrokes(token);
+                break;
+            case MovedNotes moved:
+                foreach (var (note, y) in moved.Was)
+                    if (_notes.Contains(note))
+                    {
+                        note.Y = y;
+                        _view.Place(note);
+                    }
+                _view.ContentChanged();
+                break;
+            case ErasedNotes erased:
+                _ = PutBackNotesAsync(erased.Notes);
                 break;
             case EditedDrawing edit:
                 if (_notes.Contains(edit.Note) && edit.Note.Drawings.Contains(edit.Drawing))
@@ -701,6 +717,77 @@ public sealed class PageSession
         catch (Exception) { return; } // a view that can't measure keeps the last layout
         if (!_notes.Contains(note)) return;
         if (note.Span != before) ShiftBelow(note.Y + before, note.Span - before, note, new HashSet<uint>());
+    }
+
+    // ---------- the user moving and erasing notes ----------
+
+    /// <summary>
+    /// Whether the user can take hold of a note with the lasso, to move or erase it: a finished reply or a typed note. Not the hint, not
+    /// one being written, and not the calendar app's day.
+    /// </summary>
+    public bool CanTakeNote(NoteModel note) => _notes.Contains(note) && note.Done && !note.IsHint && !note.IsDay;
+
+    /// <summary>
+    /// The user dragged notes up or down the page. They move by whole rule lines (never above the first), over whatever is there: nothing
+    /// else moves. One undo puts them back. The model reads the page top to bottom, so a reply moved above another is read before it.
+    /// </summary>
+    /// <returns>False when nothing moved; the notes are then placed where they are, for a screen that showed them elsewhere.</returns>
+    public bool MoveNotes(IReadOnlyList<NoteModel> notes, double dy)
+    {
+        var list = notes.Distinct().Where(CanTakeNote).ToList();
+        double shift = list.Count > 0 ? LayoutHit.NoteShift(dy, list.Min(n => n.Y)) : 0;
+        if (shift != 0 && _busy) _view.Toast("Still answering. Move it in a moment.");
+        if (shift == 0 || _busy)
+        {
+            foreach (var n in notes.Where(_notes.Contains)) _view.Place(n);
+            return false;
+        }
+        _undo.Push(new MovedNotes(list.Select(n => (n, n.Y)).ToList()));
+        foreach (var n in list)
+        {
+            n.Y += shift;
+            _view.Place(n);
+        }
+        _view.ContentChanged();
+        ScheduleSave();
+        return true;
+    }
+
+    /// <summary>
+    /// The user erased notes: they come off the page, and the model no longer reads them (a reply erased is gone from the conversation).
+    /// Nothing below closes up, as with erased ink. One undo puts them back.
+    /// </summary>
+    public bool EraseNotes(IReadOnlyList<NoteModel> notes)
+    {
+        var list = notes.Distinct().Where(CanTakeNote).OrderBy(n => n.Y).ToList();
+        if (list.Count == 0) return false;
+        if (_busy)
+        {
+            _view.Toast("Still answering. Erase it in a moment.");
+            return false;
+        }
+        foreach (var n in list) RemoveNote(n);
+        _undo.Push(new ErasedNotes(list));
+        _view.ContentChanged();
+        UpdateState();
+        ScheduleSave();
+        return true;
+    }
+
+    async Task PutBackNotesAsync(IReadOnlyList<NoteModel> notes)
+    {
+        foreach (var n in notes)
+        {
+            if (_notes.Contains(n)) continue;
+            _notes.Add(n);
+            _view.NoteAdded(n);
+            foreach (var d in n.Drawings) _view.DrawingAdded(n, d);
+            try { await LayoutAsync(n); }
+            catch (Exception) { /* a view that can't measure keeps the last layout */ }
+        }
+        _view.ContentChanged();
+        UpdateState();
+        ScheduleSave();
     }
 
     // ---------- the user's edits to layouts ----------

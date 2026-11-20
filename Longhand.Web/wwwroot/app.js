@@ -286,8 +286,12 @@ inkCanvas.addEventListener('contextmenu', e => e.preventDefault());
 // Tap a part with the pen (or click it) to select it: a frame appears with a knob to turn it and a cross to delete it, and dragging
 // inside the frame moves it: drop it into a container that accepts drops. Hold the pen's barrel button (or the mouse's right button)
 // and circle parts to select several.
+//
+// The same lasso takes whole notes too (Claude's replies and typed notes) when it mostly encloses them, and a barrel press on a note's
+// words takes that note: dragging inside the frame moves them up or down by whole lines, the cross (or Delete) erases them. The server
+// does it (PageSession.MoveNotes and EraseNotes), and Ctrl+Z undoes it.
 
-let selection = null; // { d, els: [elements in d's frame] }
+let selection = null; // { d, els: [elements in d's frame] }, or { notes: [notes], dy } for whole notes
 
 const frameDoc = d => d.el.contentDocument;
 const frameScale = d => (d.nw > 0 && d.w < d.nw - 0.5 ? d.w / d.nw : 1);
@@ -340,9 +344,78 @@ function clearSelection() {
   selEl.hidden = true;
 }
 
+// ----- whole notes -----
+
+// Notes the lasso can take: not the hint, and not the calendar app's day.
+const takable = n => !n.hint && !calendarMode;
+
+// How wide a note's words are: their longest line, not the whole text width.
+function wordsWidth(n) {
+  if (!n.el.textContent) return 0;
+  const range = document.createRange();
+  range.selectNodeContents(n.el);
+  const left = n.el.getBoundingClientRect().left;
+  let right = left;
+  for (const r of range.getClientRects()) right = Math.max(right, r.right);
+  return right - left;
+}
+
+// Where a note is on the page: its words, and its blocks unless only the words are wanted (LayoutHit.NoteBox).
+function noteBox(n, wordsOnly) {
+  const words = n.lines > 0 && n.el.textContent;
+  let l = MARGIN_X, t = n.y, r = MARGIN_X + (words ? wordsWidth(n) : 0), b = n.y + (words ? n.lines * LINE : 0), any = !!words;
+  if (wordsOnly) return any ? { left: l, top: t, right: r, bottom: b } : null;
+  for (const d of n.drawings.values()) {
+    if (!(d.w > 0)) continue;
+    const q = { left: MARGIN_X, top: d.top, right: MARGIN_X + d.w, bottom: d.top + d.h };
+    if (!any) ({ left: l, top: t, right: r, bottom: b } = q);
+    else { l = Math.min(l, q.left); t = Math.min(t, q.top); r = Math.max(r, q.right); b = Math.max(b, q.bottom); }
+    any = true;
+  }
+  return any ? { left: l, top: t, right: r, bottom: b } : null;
+}
+
+function noteAt(p) {
+  for (const n of notes.values()) {
+    if (!takable(n)) continue;
+    const box = noteBox(n);
+    if (box && rectHas(box, p[0], p[1], 4)) return n;
+  }
+  return null;
+}
+
+function selectNotes(list) {
+  if (list.length === 0) { clearSelection(); return; }
+  selection = { notes: list, dy: 0 };
+  updateSelection();
+  // Delete and Escape are for the selection now, not for the typing box.
+  const focused = document.activeElement;
+  if (focused && focused.matches && focused.matches('input, textarea')) focused.blur();
+}
+
+// How far a drag moves notes: whole lines, never above the first rule (LayoutHit.NoteShift).
+const noteShift = (dy, highest) => Math.max(Math.sign(dy) * Math.round(Math.abs(dy) / LINE) * LINE, Math.min(0, TOP - highest)) || 0;
+
+// Shows a note moved by dy while it is dragged (0 puts it back where the page has it).
+function offsetNote(n, dy) {
+  const move = dy ? `translateY(${dy}px)` : '';
+  n.el.style.transform = n.tick.style.transform = move;
+  for (const d of n.drawings.values()) d.el.style.transform = [dy ? `translate(0, ${dy}px)` : '', d.w > 0 && d.w < d.nw - 0.5 ? `scale(${d.w / d.nw})` : ''].join(' ').trim();
+}
+
 // The frame around the selected parts, in page pixels.
 function selectionFrame() {
   if (!selection) return null;
+  if (selection.notes) {
+    let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+    for (const n of selection.notes) {
+      const q = notes.get(n.id) === n && noteBox(n);
+      if (!q) continue;
+      l = Math.min(l, q.left); t = Math.min(t, q.top + selection.dy); r = Math.max(r, q.right); b = Math.max(b, q.bottom + selection.dy);
+    }
+    if (!isFinite(l)) return null;
+    return { left: l - 6, top: t - 6, right: r + 6, bottom: b + 6, cx: (l + r) / 2, cy: (t + b) / 2 };
+  }
   const { d, els } = selection;
   if (!d.w || !frameDoc(d)) return null;
   let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
@@ -358,6 +431,7 @@ function selectionFrame() {
 
 // What the selection can be asked: parts of a timeline are placed by time, so they aren't turned; a single timed one can have its end moved.
 function selectionCan() {
+  if (selection && selection.notes) return { rotate: false, resize: false };
   const els = selection ? selection.els : [];
   return { rotate: !els.some(inTimeline), resize: els.length === 1 && inTimeline(els[0]) && els[0].hasAttribute('data-start') };
 }
@@ -420,23 +494,32 @@ function insidePolygon(x, y, poly) {
 
 // The editable parts that the loop mostly encloses (in one layout: the one with the most).
 function lassoSelect(poly) {
-  if (poly.length < 3 || isTap(poly)) { // a barrel press without a loop selects what is under it
-    tapAt(poly[0]);
+  if (poly.length < 3 || isTap(poly)) { // a barrel press without a loop selects what is under it: a part, or else a note
+    if (tapAt(poly[0], true)) return;
+    const n = noteAt(poly[0]);
+    if (n) selectNotes([n]); else clearSelection();
     return;
   }
+  const mostly = (r, need = 13) => {
+    let inside = 0;
+    for (let i = 0; i < 5; i++) for (let j = 0; j < 5; j++)
+      if (insidePolygon(r.left + ((r.right - r.left) * (i + 0.5)) / 5, r.top + ((r.bottom - r.top) * (j + 0.5)) / 5, poly)) inside++;
+    return inside >= need;
+  };
+  // A loop round a note's words takes the whole note (its blocks too); one round a layout takes its parts; one round a block of a
+  // note that has no words, and no parts in the loop, takes that note. Words must be well inside (LayoutHit.WordsNeed), so that a
+  // loop round a layout that clips the line above it still takes the layout's parts.
+  const taken = wordsOnly => [...notes.values()].filter(n => takable(n) && (box => box && mostly(box, wordsOnly ? 20 : 13))(noteBox(n, wordsOnly)) && (wordsOnly || !n.el.textContent));
+  const byWords = taken(true);
+  if (byWords.length > 0) { selectNotes(byWords); return; }
   let best = null;
   eachDrawing(d => {
     const els = [];
-    for (const el of frameDoc(d).querySelectorAll('[data-edit]')) {
-      const r = pageRect(d, el);
-      let inside = 0;
-      for (let i = 0; i < 5; i++) for (let j = 0; j < 5; j++)
-        if (insidePolygon(r.left + ((r.right - r.left) * (i + 0.5)) / 5, r.top + ((r.bottom - r.top) * (j + 0.5)) / 5, poly)) inside++;
-      if (inside >= 13) els.push(el);
-    }
+    for (const el of frameDoc(d).querySelectorAll('[data-edit]')) if (mostly(pageRect(d, el))) els.push(el);
     if (els.length > 0 && (!best || els.length > best.els.length)) best = { d, els };
   });
-  if (best) select(best.d, best.els); else clearSelection();
+  if (best) { select(best.d, best.els); return; }
+  selectNotes(taken(false));
 }
 
 // ----- moving, turning, resizing and deleting -----
@@ -461,6 +544,10 @@ const heightFor = (minutes, ph) => Math.max(14, (minutes * ph) / 60 - 2);
 
 function startEdit(e, kind, p) {
   inkCanvas.setPointerCapture(e.pointerId);
+  if (selection.notes) {
+    active = { id: e.pointerId, mode: 'edit', kind, notes: selection.notes.filter(n => notes.get(n.id) === n), start: p, moved: false, dy: 0 };
+    return;
+  }
   const { d, els } = selection, f = selectionFrame();
   const items = els.map(el => {
     const timed = inTimeline(el) && el.hasAttribute('data-start');
@@ -531,6 +618,15 @@ function showDropMark(a, drop) {
 
 function moveEdit(a, p) {
   if (a.kind === 'delete') return;
+  if (a.notes) {
+    if (a.kind !== 'move' || a.notes.length === 0) return;
+    a.dy = noteShift(p[1] - a.start[1], Math.min(...a.notes.map(n => n.y)));
+    for (const n of a.notes) offsetNote(n, a.dy);
+    a.moved = a.moved || Math.hypot(p[0] - a.start[0], p[1] - a.start[1]) > 4;
+    if (selection && selection.notes) selection.dy = a.dy;
+    updateSelection();
+    return;
+  }
   if (a.kind === 'move') {
     const s = frameScale(a.d), dx = (p[0] - a.start[0]) / s, dy = (p[1] - a.start[1]) / s;
     for (const it of a.items) it.el.style.transform = `translate(${dx}px, ${dy}px)` + (it.rot ? ` rotate(${it.rot}deg)` : '');
@@ -560,6 +656,22 @@ function reportEdit(d, changes) {
 function finishEdit(a, p) {
   if (a.kind === 'delete') {
     if (selection && grabAt(p) === 'delete') deleteSelection();
+    return;
+  }
+  if (a.notes) {
+    for (const n of a.notes) offsetNote(n, 0);
+    if (selection && selection.notes) selection.dy = 0;
+    if (a.moved && a.dy) {
+      // Shown where it lands at once; the server places it (or puts it back, if it can't move now).
+      for (const n of a.notes) {
+        n.y += a.dy;
+        for (const d of n.drawings.values()) d.top += a.dy;
+        positionNote(n);
+      }
+      send({ t: 'notes', op: 'move', ids: a.notes.map(n => n.id), dy: a.dy });
+    }
+    updateHeight();
+    updateSelection();
     return;
   }
   showDropMark(a, null);
@@ -602,6 +714,12 @@ function finishEdit(a, p) {
 
 function deleteSelection() {
   if (!selection) return;
+  if (selection.notes) {
+    const ids = selection.notes.map(n => n.id);
+    clearSelection();
+    send({ t: 'notes', op: 'erase', ids });
+    return;
+  }
   const { d, els } = selection, changes = els.map(el => ({ id: el.id, op: 'delete' }));
   for (const el of els) el.remove();
   clearSelection();
@@ -626,8 +744,24 @@ function addNote(m) {
   notes.set(m.id, { id: m.id, y: m.y, hint: m.hint, text: m.text, lines: 1, drawLines: 0, el, tick, drawings: new Map() });
 }
 
+// Puts a note's words, tick and blocks where its numbers say.
+function positionNote(n) {
+  n.el.style.top = n.y + TEXT_NUDGE + 'px';
+  n.tick.style.top = n.y + LINE * 0.35 + 'px';
+  n.tick.style.height = Math.max(4, (n.lines + n.drawLines) * LINE - LINE * 0.35 + 4) + 'px';
+  for (const d of n.drawings.values()) {
+    if (!(d.nw > 0)) continue;
+    // Laid out at its natural size, then scaled down if it is taller than a block may be.
+    Object.assign(d.el.style, { top: d.top + 'px', width: d.nw + 'px', height: d.nh + 'px', transform: d.w < d.nw - 0.5 ? `scale(${d.w / d.nw})` : '' });
+  }
+}
+
 function removeNote(n) {
-  if (selection && n.drawings.has(selection.d.id)) clearSelection();
+  if (selection && selection.d && n.drawings.has(selection.d.id)) clearSelection();
+  if (selection && selection.notes && selection.notes.includes(n)) {
+    const rest = selection.notes.filter(m => m !== n);
+    if (rest.length) selection.notes = rest; else clearSelection();
+  }
   n.el.remove();
   n.tick.remove();
   for (const d of n.drawings.values()) d.el.remove();
@@ -716,7 +850,7 @@ const handlers = {
   drawingsCleared(m) {
     const n = notes.get(m.note);
     if (!n) return;
-    if (selection && n.drawings.has(selection.d.id)) clearSelection();
+    if (selection && selection.d && n.drawings.has(selection.d.id)) clearSelection();
     for (const d of n.drawings.values()) d.el.remove();
     n.drawings.clear();
   },
@@ -726,16 +860,11 @@ const handlers = {
     n.y = m.y;
     n.lines = m.lines;
     n.drawLines = m.drawLines;
-    n.el.style.top = m.y + TEXT_NUDGE + 'px';
-    n.tick.style.top = m.y + LINE * 0.35 + 'px';
-    n.tick.style.height = Math.max(4, (m.lines + m.drawLines) * LINE - LINE * 0.35 + 4) + 'px';
     for (const p of m.drawings) {
       const d = n.drawings.get(p.id);
-      if (!d) continue;
-      Object.assign(d, { top: p.top, w: p.w, h: p.h, nw: p.nw, nh: p.nh });
-      // Laid out at its natural size, then scaled down if it is taller than a block may be.
-      Object.assign(d.el.style, { top: p.top + 'px', width: p.nw + 'px', height: p.nh + 'px', transform: p.w < p.nw - 0.5 ? `scale(${p.w / p.nw})` : '' });
+      if (d) Object.assign(d, { top: p.top, w: p.w, h: p.h, nw: p.nw, nh: p.nh });
     }
+    positionNote(n);
     updateHeight();
     updateSelection();
   },

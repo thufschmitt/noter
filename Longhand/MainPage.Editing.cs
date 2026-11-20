@@ -25,6 +25,10 @@ namespace Longhand;
 /// timeline, a handle below it to change its end; dragging inside the frame moves the part to another container, or to another time.
 /// Nothing is sent to the model: <see cref="PageSession.EditDrawing"/> changes the layout, which is built again, and the next Ask
 /// reports it. What the pointer means in numbers (which container, which place, which time) is <see cref="LayoutHit"/>.
+///
+/// The same lasso takes whole notes (the model's replies and typed notes) when it encloses their words, and a barrel press on a note
+/// takes that note: the frame's move knob or its line moves them up or down by whole lines, the cross (or Delete) erases them
+/// (<see cref="PageSession.MoveNotes"/>, <see cref="PageSession.EraseNotes"/>; Ctrl+Z undoes either).
 /// </summary>
 public sealed partial class MainPage
 {
@@ -68,6 +72,9 @@ public sealed partial class MainPage
         public DropSpot? Drop;
         /// <summary>The end an item is being dragged to, and the end it had.</summary>
         public int End, OriginalEnd;
+        /// <summary>Whole notes being dragged (instead of parts of a layout), and how far they would move.</summary>
+        public List<NoteModel>? Notes;
+        public double NotesDy;
     }
 
     /// <summary>Padding round a selected part; a knob's size; how far in and out of the frame's line the pen can take hold of it.</summary>
@@ -81,6 +88,9 @@ public sealed partial class MainPage
 
     DrawingVisual? _selected;
     readonly List<string> _selectedIds = new();
+    /// <summary>Whole notes taken with the lasso (never at the same time as parts of a layout).</summary>
+    readonly List<NoteModel> _selectedNotes = new();
+    bool HasSelection => _selected is not null || _selectedNotes.Count > 0;
     Drag? _drag;
     bool _frameQueued;
     List<Point>? _lassoPoints;
@@ -209,7 +219,7 @@ public sealed partial class MainPage
     /// <summary>The pointer moves anywhere on the page: the switch follows where it is, so it can never be left off.</summary>
     void Sheet_PointerMoved(object sender, PointerRoutedEventArgs e) => Safe(() =>
     {
-        if (_selected is null || _drag is not null) return;
+        if (!HasSelection || _drag is not null) return;
         UpdateInkEnabled(e.GetCurrentPoint(Sheet));
     });
 
@@ -316,6 +326,7 @@ public sealed partial class MainPage
             return;
         }
         if (_drag is not null) AbortDrag();
+        _selectedNotes.Clear();
         _selected = visual;
         _selectedIds.Clear();
         _selectedIds.AddRange(parts.Select(n => n.Id!));
@@ -327,6 +338,7 @@ public sealed partial class MainPage
         if (_drag is not null) AbortDrag();
         _selected = null;
         _selectedIds.Clear();
+        _selectedNotes.Clear();
         foreach (var e in new UIElement[] { _frame, _edge, _knobRotate, _knobDelete, _knobResize, _knobMove }) e.Visibility = Visibility.Collapsed;
         Ink.InkPresenter.IsInputEnabled = true;
     }
@@ -334,7 +346,7 @@ public sealed partial class MainPage
     /// <summary>A block was built again or moved: the frame is put round the selected parts once it has been laid out.</summary>
     void ScheduleFrameUpdate()
     {
-        if (_selected is null || _frameQueued) return;
+        if (!HasSelection || _frameQueued) return;
         _frameQueued = true;
         _ = Dispatcher.RunAsync(CoreDispatcherPriority.Low, () => Safe(UpdateSelectionFrame));
     }
@@ -342,7 +354,19 @@ public sealed partial class MainPage
     void UpdateSelectionFrame()
     {
         _frameQueued = false;
-        if (_selected is null || _drag is { Kind: DragKind.Move }) return;
+        if (!HasSelection || _drag is { Kind: DragKind.Move }) return;
+        if (_selectedNotes.Count > 0)
+        {
+            _selectedNotes.RemoveAll(n => !_session.Notes.Contains(n));
+            if (_selectedNotes.Count == 0)
+            {
+                ClearSelection();
+                return;
+            }
+            PlaceFrame(NotesFrame(_selectedNotes, 0));
+            return;
+        }
+        if (_selected is null) return;
         var nodes = SelectedNodes();
         if (nodes.Count == 0)
         {
@@ -362,14 +386,15 @@ public sealed partial class MainPage
     void PlaceFrame(HitRect r)
     {
         var nodes = SelectedNodes();
+        bool parts = _selectedNotes.Count == 0;
         PlaceAt(_frame, r.Left, r.Top, r.Width, r.Height);
         _frame.Visibility = Visibility.Visible;
         PlaceAt(_edge, r.Left - EdgeBand, r.Top - EdgeBand, r.Width + EdgeBand * 2, r.Height + EdgeBand * 2);
         _edge.Visibility = Visibility.Visible;
         PlaceKnob(_knobMove, r.Left, r.Top, true);
-        PlaceKnob(_knobRotate, r.CenterX, r.Top - 30, CanRotateSelection(nodes));
+        PlaceKnob(_knobRotate, r.CenterX, r.Top - 30, parts && CanRotateSelection(nodes));
         PlaceKnob(_knobDelete, r.Right, r.Top, true);
-        PlaceKnob(_knobResize, r.CenterX, r.Bottom, CanResizeSelection(nodes));
+        PlaceKnob(_knobResize, r.CenterX, r.Bottom, parts && CanResizeSelection(nodes));
     }
 
     static void PlaceKnob(Border knob, double centreX, double centreY, bool shown)
@@ -384,6 +409,79 @@ public sealed partial class MainPage
         if (EditableAt(x, y) is not { } hit) return false;
         Select(hit.Visual, new[] { hit.Node });
         return true;
+    }
+
+    // ---------- whole notes ----------
+
+    TextBlock? _wordsProbe;
+
+    /// <summary>How wide a note's words are: their longest line at the text width, not the whole width.</summary>
+    double WordsWidth(NoteModel n)
+    {
+        var block = Visual(n).Block;
+        if (block.Text.Length == 0) return 0;
+        _wordsProbe ??= new TextBlock
+        {
+            FontFamily = _handFont,
+            FontSize = FontPx,
+            LineHeight = LineHeight,
+            LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
+            TextWrapping = TextWrapping.WrapWholeWords,
+            IsTextScaleFactorEnabled = false,
+        };
+        _wordsProbe.Text = block.Text;
+        _wordsProbe.Measure(new Size(TextWidth, double.PositiveInfinity));
+        double w = _wordsProbe.DesiredSize.Width;
+        return w > 0 && w <= TextWidth + 1 ? w : TextWidth;
+    }
+
+    /// <summary>Where a note is on the page: its words, and its blocks unless only the words are wanted.</summary>
+    HitRect NoteRect(NoteModel n, bool wordsOnly = false)
+    {
+        int lines = Visual(n).Block.Text.Length > 0 ? n.Lines : 0;
+        var blocks = wordsOnly ? Enumerable.Empty<HitRect>() : n.Drawings.Select(d => PageRect(VisualOf(d).Host)).Where(r => r.Area > 0);
+        return LayoutHit.NoteBox(n.Y, lines, WordsWidth(n), blocks);
+    }
+
+    HitRect NotesFrame(IReadOnlyList<NoteModel> notes, double dy)
+    {
+        var rects = notes.Select(n => NoteRect(n)).ToList();
+        return new HitRect(rects.Min(r => r.Left) - Pad, rects.Min(r => r.Top) + dy - Pad, rects.Max(r => r.Right) + Pad, rects.Max(r => r.Bottom) + dy + Pad);
+    }
+
+    NoteModel? NoteAt(double x, double y) =>
+        _session.Notes.FirstOrDefault(n => _session.CanTakeNote(n) && NoteRect(n) is { Area: > 0 } r && r.Contains(x, y, 4));
+
+    void SelectNotes(IEnumerable<NoteModel> notes)
+    {
+        var list = notes.Where(_session.CanTakeNote).Distinct().ToList();
+        if (list.Count == 0)
+        {
+            ClearSelection();
+            return;
+        }
+        if (_drag is not null) AbortDrag();
+        _selected = null;
+        _selectedIds.Clear();
+        _selectedNotes.Clear();
+        _selectedNotes.AddRange(list);
+        UpdateSelectionFrame();
+        // Delete and Escape are for the selection now, not for the typing box.
+        if (FocusManager.GetFocusedElement() is TextBox) Scroller.Focus(FocusState.Programmatic);
+    }
+
+    /// <summary>Shows a note moved by <paramref name="dy"/> while it is dragged; 0 puts it where the page has it.</summary>
+    void ShowNoteAt(NoteModel n, double dy)
+    {
+        var visual = Visual(n);
+        Canvas.SetTop(visual.Block, n.Y + dy + TextNudge);
+        Canvas.SetTop(visual.Tick, n.Y + dy + LineHeight * 0.35);
+        double top = n.Y + dy + n.Lines * LineHeight;
+        foreach (var d in n.Drawings)
+        {
+            Canvas.SetTop(VisualOf(d).Host, top);
+            top += d.Lines * LineHeight;
+        }
     }
 
     // ---------- tapping ----------
@@ -425,7 +523,7 @@ public sealed partial class MainPage
 
     void OnWindowKeyDown(CoreWindow sender, KeyEventArgs args) => Safe(() =>
     {
-        if (_selected is null || FocusManager.GetFocusedElement() is TextBox or PasswordBox or RichEditBox or ComboBox or ListViewBase) return;
+        if (!HasSelection || FocusManager.GetFocusedElement() is TextBox or PasswordBox or RichEditBox or ComboBox or ListViewBase) return;
         bool modified = new[] { Windows.System.VirtualKey.Control, Windows.System.VirtualKey.Shift, Windows.System.VirtualKey.Menu }
             .Any(k => sender.GetKeyState(k).HasFlag(CoreVirtualKeyStates.Down));
         if (args.VirtualKey is Windows.System.VirtualKey.Delete or Windows.System.VirtualKey.Back && !modified)
@@ -481,8 +579,19 @@ public sealed partial class MainPage
         var polygon = points.Select(q => (X: q.X, Y: q.Y)).ToList();
         if (polygon.Count < 3 || LayoutHit.IsTap(polygon))
         {
-            // A barrel press without a loop selects what is under it.
-            if (!SelectAt(points[0].X, points[0].Y)) ClearSelection();
+            // A barrel press without a loop selects what is under it: a part of a layout, or else a note.
+            if (SelectAt(points[0].X, points[0].Y)) return;
+            if (NoteAt(points[0].X, points[0].Y) is { } note) SelectNotes(new[] { note });
+            else ClearSelection();
+            return;
+        }
+        // A loop round a note's words takes the whole note (its blocks too); one round a layout takes its parts; one round a block of a
+        // note that has no words, and no parts in the loop, takes that note.
+        var byWords = _session.Notes.Where(n => _session.CanTakeNote(n) && Visual(n).Block.Text.Length > 0
+            && LayoutHit.MostlyInside(NoteRect(n, wordsOnly: true), polygon, need: LayoutHit.WordsNeed)).ToList();
+        if (byWords.Count > 0)
+        {
+            SelectNotes(byWords);
             return;
         }
         DrawingVisual? best = null;
@@ -497,7 +606,8 @@ public sealed partial class MainPage
             }
         }
         if (best is not null) Select(best, chosen);
-        else ClearSelection();
+        else SelectNotes(_session.Notes.Where(n => _session.CanTakeNote(n) && Visual(n).Block.Text.Length == 0 && n.Drawings.Count > 0
+            && LayoutHit.MostlyInside(NoteRect(n), polygon)).ToList());
     }
 
     // ---------- dragging ----------
@@ -507,6 +617,14 @@ public sealed partial class MainPage
         // Only a plain press grabs: the pen's barrel button and a mouse's right button are for the lasso, and the eraser end is for erasing.
         var props = e.GetCurrentPoint(Sheet).Properties;
         if (!props.IsLeftButtonPressed || props.IsRightButtonPressed || props.IsBarrelButtonPressed || props.IsEraser) return;
+        if (_drag is null && _selectedNotes.Count > 0 && kind is DragKind.Move or DragKind.Delete)
+        {
+            var at = e.GetCurrentPoint(Sheet).Position;
+            source.CapturePointer(e.Pointer);
+            _drag = new Drag { Kind = kind, Pointer = e.Pointer, Source = source, Start = at, Items = new(), Notes = _selectedNotes.ToList(), Frame = NotesFrame(_selectedNotes, 0) };
+            e.Handled = true;
+            return;
+        }
         if (_drag is not null || _selected?.Built is not { } built) return;
         var nodes = SelectedNodes();
         if (nodes.Count == 0) return;
@@ -559,6 +677,19 @@ public sealed partial class MainPage
 
     void Drag_PointerMoved(object sender, PointerRoutedEventArgs e)
     {
+        if (_drag is { Notes: { } moving } nd && e.Pointer.PointerId == nd.Pointer.PointerId)
+        {
+            if (nd.Kind == DragKind.Move && moving.Count > 0)
+            {
+                var at = e.GetCurrentPoint(Sheet).Position;
+                nd.NotesDy = LayoutHit.NoteShift(at.Y - nd.Start.Y, moving.Min(n => n.Y));
+                foreach (var n in moving) ShowNoteAt(n, nd.NotesDy);
+                PlaceFrame(new HitRect(nd.Frame.Left, nd.Frame.Top + nd.NotesDy, nd.Frame.Right, nd.Frame.Bottom + nd.NotesDy));
+                nd.Moved |= double.Hypot(at.X - nd.Start.X, at.Y - nd.Start.Y) > 4;
+            }
+            e.Handled = true;
+            return;
+        }
         if (_drag is not { } d || e.Pointer.PointerId != d.Pointer.PointerId || _selected?.Built is not { } built) return;
         var p = e.GetCurrentPoint(Sheet).Position;
         switch (d.Kind)
@@ -624,6 +755,8 @@ public sealed partial class MainPage
     /// <summary>Puts everything a drag changed on screen back (the copies, the dimming, the mark); a drag that makes a change then builds the block again.</summary>
     void CleanUpDrag(Drag d)
     {
+        foreach (var n in d.Notes ?? new List<NoteModel>())
+            if (_session.Notes.Contains(n)) ShowNoteAt(n, 0);
         foreach (var item in d.Items)
         {
             if (item.Ghost is not null) EditLayer.Children.Remove(item.Ghost);
@@ -644,6 +777,19 @@ public sealed partial class MainPage
     void FinishDrag(Drag d, Point p, bool cancelled)
     {
         CleanUpDrag(d);
+        if (d.Notes is { } moved)
+        {
+            if (d.Kind == DragKind.Delete)
+            {
+                var cross = new HitRect(Canvas.GetLeft(_knobDelete), Canvas.GetTop(_knobDelete), Canvas.GetLeft(_knobDelete) + KnobSize, Canvas.GetTop(_knobDelete) + KnobSize);
+                if (!cancelled && cross.Contains(p.X, p.Y, 4)) DeleteSelection();
+                return;
+            }
+            // The session places them where they land (or where they were, if they can't move now), which puts the frame round them.
+            if (!cancelled && d.Moved && d.NotesDy != 0) _session.MoveNotes(moved, d.NotesDy);
+            UpdateSelectionFrame();
+            return;
+        }
         var visual = _selected;
         if (visual is null) return;
         if (d.Kind == DragKind.Delete)
@@ -699,6 +845,13 @@ public sealed partial class MainPage
 
     void DeleteSelection()
     {
+        if (_selectedNotes.Count > 0)
+        {
+            var notes = _selectedNotes.ToList();
+            ClearSelection();
+            _session.EraseNotes(notes);
+            return;
+        }
         if (_selected is not { } v) return;
         var changes = _selectedIds.Select(id => new DrawingChange(id, "delete")).ToList();
         ClearSelection();

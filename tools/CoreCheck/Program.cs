@@ -155,6 +155,7 @@ await PageChecks.RunAsync(Check);
 await EditChecks.RunAsync(Check);
 NativeChecks.Run(Check);
 await EraseChecks.RunAsync(Check);
+await NoteChecks.RunAsync(Check);
 await BookChecks.RunAsync(Check);
 await GoogleChecks.RunAsync(Check);
 await DayChecks.RunAsync(Check);

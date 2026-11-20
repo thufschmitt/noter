@@ -83,6 +83,37 @@ public static class LayoutHit
         return inside >= need;
     }
 
+    /// <summary>
+    /// Where a note is, for the lasso and the barrel button: its words from the margin as wide as their longest line, down the rule lines
+    /// they take (none for a note that is only blocks), and its blocks. The page's own coordinates.
+    /// </summary>
+    public static HitRect NoteBox(double y, int lines, double wordsWidth, IEnumerable<HitRect> blocks)
+    {
+        double left = PageLayout.MarginX, right = left, top = y, bottom = y + Math.Max(0, lines) * PageLayout.LineHeight;
+        if (lines > 0) right = left + Math.Max(0, wordsWidth);
+        bool any = lines > 0;
+        foreach (var b in blocks)
+        {
+            if (!any) (left, top, right, bottom) = (b.Left, b.Top, b.Right, b.Bottom);
+            else (left, top, right, bottom) = (Math.Min(left, b.Left), Math.Min(top, b.Top), Math.Max(right, b.Right), Math.Max(bottom, b.Bottom));
+            any = true;
+        }
+        return new HitRect(left, top, right, bottom);
+    }
+
+    /// <summary>
+    /// How much of a note's words a lasso must enclose to take the note (of <c>5 × 5</c>): more than a part of a layout needs, so a loop
+    /// round a layout that clips the line of words above it takes the layout's parts, not the note.
+    /// </summary>
+    public const int WordsNeed = 20;
+
+    /// <summary>How far notes dragged by <paramref name="dy"/> move: whole rule lines, so their words stay on the lines, and never above the first rule.</summary>
+    public static double NoteShift(double dy, double highestY)
+    {
+        double lines = Math.Round(dy / PageLayout.LineHeight, MidpointRounding.AwayFromZero) * PageLayout.LineHeight;
+        return Math.Max(lines, Math.Min(0, PageLayout.Top - highestY));
+    }
+
     /// <summary>True when every point of a stroke stays within <paramref name="size"/> of its first: a tap, not a line.</summary>
     public static bool IsTap(IReadOnlyList<(double X, double Y)> points, double size = 5) =>
         points.Count > 0 && points.All(p => double.Hypot(p.X - points[0].X, p.Y - points[0].Y) < size);

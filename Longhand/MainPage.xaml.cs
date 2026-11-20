@@ -881,6 +881,7 @@ public sealed partial class MainPage : Page, IPageView
         NoteLayer.Children.Remove(visual.Block);
         NoteLayer.Children.Remove(visual.Tick);
         foreach (var d in note.Drawings) RemoveDrawing(d);
+        if (_selectedNotes.Remove(note) && _selectedNotes.Count == 0) ClearSelection();
     }
 
     void IPageView.DrawingAdded(NoteModel note, DrawingModel drawing)

@@ -183,6 +183,44 @@ check('and Claude answers below it', await until(`[...document.querySelectorAll(
 await sleep(800);
 await shot('6b-typed');
 
+// ----- whole notes: the barrel button circles the typed note, which then moves by whole lines and is erased -----
+await until(`state && !state.busy`, 20000);
+const typedOnScreen = async () => JSON.parse(await evaluate(`(() => {
+  scroller.scrollTop = 0;
+  const n = [...notes.values()].find(n => n.el.classList.contains('typed')), b = noteBox(n), r = inkCanvas.getBoundingClientRect();
+  return JSON.stringify([r.left + b.left, r.top + b.top, r.left + b.right, r.top + b.bottom]);
+})()`));
+const typedLoop = async () => {
+  const [l, t, r, b] = await typedOnScreen();
+  const loop = [[l - 20, t - 12], [r + 20, t - 12], [r + 20, b + 12], [l - 20, b + 12]];
+  await barrel('mousePressed', ...loop[0]);
+  for (let i = 1; i <= 4; i++) for (let k = 1; k <= 5; k++) { const p = loop[i - 1], q = loop[i % 4]; await barrel('mouseMoved', p[0] + (q[0] - p[0]) * k / 5, p[1] + (q[1] - p[1]) * k / 5); await sleep(8); }
+  await barrel('mouseReleased', ...loop[0]);
+};
+check('a typed note\'s words are measured as wide as they are, not the whole line', await evaluate(`(() => { const n = [...notes.values()].find(n => n.el.classList.contains('typed')), b = noteBox(n); return b.right - b.left > 100 && b.right - b.left < textWidth() - 50 && b.top === 120 && b.bottom === 160; })()`));
+await typedLoop();
+check('circling it with the barrel button selects the whole note, with no turn knob', await until(`selection && selection.notes && selection.notes.length === 1 && selection.notes[0].el.classList.contains('typed') && !document.getElementById('selection').hidden`)
+  && await evaluate(`getComputedStyle(selEl.querySelector('.rotate')).display === 'none'`));
+await shot('6c-note-lasso');
+{
+  const f = await selFrame();
+  await mouse('mousePressed', f.cx, f.cy);
+  for (let k = 1; k <= 10; k++) { await mouse('mouseMoved', f.cx + k, f.cy + 8.5 * k); await sleep(8); }
+  check('while dragged, the note follows by whole lines', await evaluate(`selection.notes[0].el.style.transform === 'translateY(80px)'`));
+  await mouse('mouseReleased', f.cx + 10, f.cy + 85);
+}
+check('dropping it moves it two lines down, and the server keeps it there', await until(`(() => { const n = [...notes.values()].find(n => n.el.classList.contains('typed')); return n.y === 200 && n.el.style.top === '203px' && !n.el.style.transform; })()`, 5000));
+await sleep(300);
+check('it is still where it was dropped, still selected', await evaluate(`[...notes.values()].find(n => n.el.classList.contains('typed')).y === 200 && selection && selection.notes.length === 1`));
+await evaluate(`send({ t: 'undo' })`);
+check('undo puts it back on its line', await until(`[...notes.values()].find(n => n.el.classList.contains('typed')).y === 120`, 5000));
+await typedLoop();
+await until(`selection && selection.notes`);
+await key('Delete', 'Delete', 46);
+check('Delete erases the note', await until(`!document.querySelector('.note.typed') && !selection`, 5000));
+await evaluate(`send({ t: 'undo' })`);
+check('and undo brings it back', await until(`[...document.querySelectorAll('.note.typed')].some(n => n.textContent === 'What is the capital of France?' && n.style.top === '123px')`, 5000));
+
 // ----- a timeline: drag an item to another day and time, drag its end, and ask -----
 await evaluate(`window.firstDrawing = () => [...notes.values()].flatMap(n => [...n.drawings.values()]).find(d => d.kind === 'layout')`);
 await until(`state && !state.busy`, 20000); // the last answer is still being written until then
