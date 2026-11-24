@@ -86,11 +86,18 @@ dialog textarea { resize: vertical; margin-top: 6px; }
 #symbolList .sym .text b { display: block; }
 #symbolList .sym .text span { font-size: 12px; opacity: .75; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 
-@media (max-width: 440px) {
+@media (max-width: 500px) {
   #tray { gap: 1px; padding: 4px; }
   .tool { padding: 7px 6px; }
   #tray .sep { margin: 0 2px; }
   button.accent { padding: 6px 9px; gap: 6px; }
+}
+@media (max-width: 390px) {
+  .tool { padding: 7px 4px; }
+}
+@media (max-width: 360px) {
+  #tray { gap: 0; }
+  #tray button svg { width: 16px; height: 16px; }
 }
 
 #typebar { position: fixed; z-index: 11; left: 50%; bottom: 76px; transform: translateX(-50%); width: min(94vw, 560px); display: flex; gap: 8px; align-items: flex-end; padding: 8px; border-radius: 12px; background: var(--tray); border: 1px solid var(--trayline); box-shadow: 0 4px 18px rgba(0, 0, 0, .18); backdrop-filter: blur(8px); }

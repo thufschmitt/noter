@@ -103,6 +103,7 @@ public sealed partial class MainPage : Page, IPageView
             RefreshDrawings();
         };
         Loaded += OnLoaded;
+        Windows.UI.ViewManagement.ApplicationView.GetForCurrentView().VisibleBoundsChanged += (_, _) => ShowFullScreenState();
     }
 
     void OnLoaded(object sender, RoutedEventArgs e) => Guard(OnLoadedAsync);
@@ -561,6 +562,24 @@ public sealed partial class MainPage : Page, IPageView
     }
 
     void Undo_Click(object sender, RoutedEventArgs e) => _session.Undo();
+
+    void FullScreen_Click(object sender, RoutedEventArgs e)
+    {
+        var view = Windows.UI.ViewManagement.ApplicationView.GetForCurrentView();
+        if (view.IsFullScreenMode) view.ExitFullScreenMode();
+        else if (!view.TryEnterFullScreenMode()) ShowToast("Windows won't make Longhand full screen here.");
+        ShowFullScreenState();
+    }
+
+    /// <summary>Keeps the button in step with the window, which also leaves full screen by itself (Esc in tablet mode, the title bar's button).</summary>
+    void ShowFullScreenState()
+    {
+        bool on = Windows.UI.ViewManagement.ApplicationView.GetForCurrentView().IsFullScreenMode;
+        FullScreenButton.IsChecked = on;
+        FullScreenIcon.Glyph = on ? "\uE73F" : "\uE740";
+        ToolTipService.SetToolTip(FullScreenButton, on ? "Leave full screen (F11)" : "Full screen (F11)");
+        Windows.UI.Xaml.Automation.AutomationProperties.SetName(FullScreenButton, on ? "Leave full screen" : "Full screen");
+    }
 
     // ---------- drawings ----------
     // (what they are built from, and how they are sized, is in MainPage.Drawings.cs)

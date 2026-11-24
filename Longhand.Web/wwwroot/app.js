@@ -1013,6 +1013,22 @@ $('touch').onclick = () => {
 };
 $('ask').onclick = () => send({ t: 'ask' });
 
+// Full screen: hidden where the browser can't do it (Safari on the iPhone). Esc or F11 leave it too, so the button follows the document.
+const enterIcon = '<svg viewBox="0 0 24 24"><path d="M3 8V3h5M16 3h5v5M21 16v5h-5M8 21H3v-5"/></svg>';
+const leaveIcon = '<svg viewBox="0 0 24 24"><path d="M8 3v5H3M21 8h-5V3M16 21v-5h5M3 16h5v5"/></svg>';
+if (!document.fullscreenEnabled) $('fullscreen').hidden = true;
+$('fullscreen').onclick = () => {
+  const done = document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+  done.catch(() => toast("The browser won't go full screen here."));
+};
+document.addEventListener('fullscreenchange', () => {
+  const on = !!document.fullscreenElement, button = $('fullscreen');
+  button.classList.toggle('on', on);
+  button.innerHTML = on ? leaveIcon : enterIcon;
+  button.title = on ? 'Leave full screen' : 'Full screen';
+  button.setAttribute('aria-label', button.title);
+});
+
 // ---------- typing ----------
 
 function showTypeBar(on) {

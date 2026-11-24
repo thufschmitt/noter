@@ -157,6 +157,13 @@
                         ToolTipService.ToolTip="Connected apps" AutomationProperties.Name="Connected apps">
                     <FontIcon Glyph="&#xE71B;" FontSize="18" />
                 </Button>
+                <ToggleButton x:Name="FullScreenButton" Click="FullScreen_Click" Style="{StaticResource ToolToggle}"
+                              ToolTipService.ToolTip="Full screen (F11)" AutomationProperties.Name="Full screen">
+                    <ToggleButton.KeyboardAccelerators>
+                        <KeyboardAccelerator Key="F11" />
+                    </ToggleButton.KeyboardAccelerators>
+                    <FontIcon x:Name="FullScreenIcon" Glyph="&#xE740;" FontSize="18" />
+                </ToggleButton>
                 <Rectangle Width="1" Height="22" Margin="4,0" x:Name="TraySeparator" />
                 <Button x:Name="AskButton" Click="Ask_Click" Style="{StaticResource AccentButtonStyle}"
                         Height="40" Padding="14,0" CornerRadius="20" IsEnabled="False"
