@@ -123,8 +123,9 @@ jobs:
 
   release:
     name: GitHub release
-    # Every push to main becomes a release; other branches and pull requests only keep build artifacts.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Every push to main becomes a release, and so does a run started by hand on main (to retry one that failed); other branches
+    # and pull requests only keep build artifacts.
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     needs: [checks, version, app]
     runs-on: ubuntu-latest
     permissions:
@@ -159,7 +160,7 @@ jobs:
     name: Update feed
     # Serves the .appinstaller files from GitHub Pages, pointing at the packages on the Release, so installed copies update
     # themselves. It waits for the Release so a feed never names packages that aren't there yet.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     needs: [checks, version, app, release]
     runs-on: ubuntu-latest
     permissions:
@@ -192,7 +193,11 @@ jobs:
             echo "- ARM64: $BASE_URL/Longhand-arm64.appinstaller"
             echo "- Certificate: $BASE_URL/Longhand.cer"
           } >> "$GITHUB_STEP_SUMMARY"
+      # Named per attempt: "Re-run failed jobs" keeps the first attempt's upload, and two of the same name stop the deployment.
       - uses: actions/upload-pages-artifact@v4
         with:
           path: site
+          name: github-pages-${{ github.run_attempt }}
       - uses: actions/deploy-pages@v4
+        with:
+          artifact_name: github-pages-${{ github.run_attempt }}
