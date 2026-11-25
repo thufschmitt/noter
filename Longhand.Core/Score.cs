@@ -119,8 +119,12 @@ public sealed class ScoreSheet
     /// <summary>The score drawn as clean notation (see <see cref="ScoreEngraver"/>).</summary>
     public string Svg() => ScoreEngraver.Svg(this);
 
-    /// <summary>Rubs out what an eraser went over: every item whose shape is within reach of its path. True when something went.</summary>
-    public bool EraseAlong(IReadOnlyList<(double X, double Y)> path, double reach = 8)
+    /// <summary>
+    /// Rubs out what an eraser went over: every item whose shape is within reach of its path. True when something went. A screen
+    /// that erases as the eraser moves passes <paramref name="remember"/> false after the first time, so the whole stroke of the
+    /// eraser is one undo.
+    /// </summary>
+    public bool EraseAlong(IReadOnlyList<(double X, double Y)> path, double reach = 8, bool remember = true)
     {
         if (path.Count == 0) return false;
         var hit = Items.Where(i => i.Kind != ScoreKind.Slur && Touches(Bounds(i), path, reach)).Select(i => i.Id).ToHashSet();
@@ -128,7 +132,7 @@ public sealed class ScoreSheet
         foreach (var slur in Items.Where(i => i.Kind == ScoreKind.Slur))
             if (hit.Contains(slur.From!) || hit.Contains(slur.To!) || Touches(Bounds(slur), path, reach)) hit.Add(slur.Id);
         if (hit.Count == 0) return false;
-        Remember();
+        if (remember) Remember();
         Remove(hit);
         return true;
     }

@@ -218,6 +218,12 @@ static class ScoreChecks
         check("a scribble over a note rubs it out, and only it", read.Changed && sheet.Items.Count == 1 && sheet.Items[0].X > 350);
         check("undo brings it back", sheet.Undo() && sheet.Items.Count == 2);
         check("the eraser rubs out what it goes over", sheet.EraseAlong(new[] { (360.0, y - 30), (360.0, y + 30) }) && sheet.Items.Count == 1 && sheet.Items[0].X < 350);
+        // Erasing as it moves: a stroke of the eraser over both notes, in pieces, is one undo.
+        sheet.Undo();
+        bool firstGone = sheet.EraseAlong(new[] { (300.0, y - 30), (300.0, y + 30) });
+        bool secondGone = sheet.EraseAlong(new[] { (360.0, y - 30), (360.0, y + 30) }, remember: false);
+        check("rubbing out as the eraser moves takes each note it reaches, and one undo brings them all back",
+            firstGone && secondGone && sheet.Items.Count == 0 && sheet.Undo() && sheet.Items.Count == 2);
 
         // ----- engraving, saving, playing -----
         sheet = new ScoreSheet();

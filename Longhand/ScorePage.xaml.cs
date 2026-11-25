@@ -11,10 +11,12 @@ using Windows.Storage;
 using Windows.Storage.Streams;
 using Windows.UI;
 using Windows.UI.Core;
+using Windows.UI.Input;
 using Windows.UI.Input.Inking;
 using Windows.UI.Input.Inking.Core;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
+using Windows.UI.Xaml.Input;
 using Windows.UI.Xaml.Media;
 
 namespace Longhand;
@@ -38,8 +40,17 @@ public sealed partial class ScorePage : Page
     readonly SolidColorBrush _desk = new(), _paper = new(), _muted = new(), _tray = new(), _trayLine = new(), _uiText = new();
     Color _engraving, _pendingInk;
     MediaPlayer? _player;
-    List<Point>? _eraserPath;
-    // The pen's eraser end is reported on the ink thread, so its path is gathered under a lock.
+    /// <summary>The eraser being drawn over the page: its pointer, where it has been, and whether it has rubbed anything out yet.</summary>
+    sealed class Rub
+    {
+        public uint Pointer;
+        public Point Last;
+        public bool Changed;
+    }
+    Rub? _rub;
+    /// <summary>True while a pen with its eraser end down is near the page: the pen is then taken from Windows Ink, so the page gets it.</summary>
+    bool _penIsEraser;
+    // The pen's eraser end as Windows Ink reports it, on the ink thread (when it reaches the ink before the page notices it).
     readonly object _penEraserLock = new();
     List<Point>? _penEraserPath;
     CoreInkIndependentInputSource? _independent;
@@ -53,10 +64,13 @@ public sealed partial class ScorePage : Page
         presenter.InputDeviceTypes = CoreInputDeviceTypes.Pen | CoreInputDeviceTypes.Mouse;
         presenter.StrokeInput.StrokeStarted += (_, _) => _readTimer.Stop();
         presenter.StrokesCollected += (_, _) => { _readTimer.Stop(); _readTimer.Start(); };
-        presenter.UnprocessedInput.PointerPressed += (_, args) => _eraserPath = new List<Point> { ToSheet(args.CurrentPoint.Position) };
-        presenter.UnprocessedInput.PointerMoved += (_, args) => _eraserPath?.Add(ToSheet(args.CurrentPoint.Position));
-        presenter.UnprocessedInput.PointerReleased += (_, _) => Guard(EndEraserAsync);
-        presenter.UnprocessedInput.PointerLost += (_, _) => _eraserPath = null;
+        // Erasing goes through the page's own pointer events, whose positions are the sheet's whatever the Viewbox does (see Erasing).
+        Sheet.AddHandler(PointerPressedEvent, new PointerEventHandler(Sheet_PointerPressed), true);
+        Sheet.AddHandler(PointerMovedEvent, new PointerEventHandler(Sheet_PointerMoved), true);
+        Sheet.AddHandler(PointerReleasedEvent, new PointerEventHandler(Sheet_PointerReleased), true);
+        Sheet.AddHandler(PointerCanceledEvent, new PointerEventHandler(Sheet_PointerEnded), true);
+        Sheet.AddHandler(PointerCaptureLostEvent, new PointerEventHandler(Sheet_PointerEnded), true);
+        Sheet.AddHandler(PointerExitedEvent, new PointerEventHandler(Sheet_PointerExited), true);
         _readTimer.Tick += (_, _) => Guard(ReadAsync);
         _toastTimer.Tick += (_, _) => { _toastTimer.Stop(); ToastBox.Visibility = Visibility.Collapsed; };
 
@@ -170,9 +184,6 @@ public sealed partial class ScorePage : Page
         await FileIO.WriteTextAsync(file, _sheet.ToJson());
     }
 
-    /// <summary>A point the window reports, on the page (which the Viewbox scales).</summary>
-    Point ToSheet(Point windowPoint) => Sheet.TransformToVisual(Window.Current.Content).Inverse.TransformPoint(windowPoint);
-
     // ---------- reading the ink ----------
 
     /// <summary>Reads all the ink on the page; what became notation comes off it.</summary>
@@ -198,41 +209,123 @@ public sealed partial class ScorePage : Page
     }
 
     // ---------- erasing ----------
+    //
+    // The eraser rubs out ink and engraved notation alike, as it goes. It is handled with the page's own pointer events, whose
+    // positions are the sheet's (GetCurrentPoint(Sheet) undoes the Viewbox's scaling and centring), rather than with Windows Ink's
+    // unprocessed input: for that to happen, Windows Ink is given no device while the eraser button is on, and no pen while the pen
+    // is turned round to its eraser end (seen as it comes near the page, before it touches). Windows Ink then leaves the input to
+    // the page.
 
-    void Eraser_Click(object sender, RoutedEventArgs e)
+    CoreInputDeviceTypes InkDevices => EraserButton.IsChecked == true ? CoreInputDeviceTypes.None
+        : _penIsEraser ? CoreInputDeviceTypes.Mouse : CoreInputDeviceTypes.Pen | CoreInputDeviceTypes.Mouse;
+
+    void UpdateInkDevices()
     {
-        // With the eraser on, the pen's input comes to the page unprocessed, as a path that rubs out ink and notation alike.
-        Ink.InkPresenter.InputProcessingConfiguration.Mode = EraserButton.IsChecked == true ? InkInputProcessingMode.None : InkInputProcessingMode.Inking;
+        var wanted = InkDevices;
+        if (Ink.InkPresenter.InputDeviceTypes != wanted) Ink.InkPresenter.InputDeviceTypes = wanted;
     }
 
-    async Task EndEraserAsync()
+    void Eraser_Click(object sender, RoutedEventArgs e) => UpdateInkDevices();
+
+    /// <summary>A pen near the page: turned round to its eraser end or not.</summary>
+    void NoticePen(PointerPoint point)
     {
-        var path = _eraserPath;
-        _eraserPath = null;
-        if (path is { Count: > 0 }) await EraseAlongAsync(path, eraseInk: true);
+        if (point.PointerDevice.PointerDeviceType != Windows.Devices.Input.PointerDeviceType.Pen) return;
+        bool eraser = point.Properties.IsEraser || point.Properties.IsInverted;
+        if (eraser == _penIsEraser || _rub is not null) return;
+        _penIsEraser = eraser;
+        UpdateInkDevices();
     }
 
-    async Task EraseAlongAsync(List<Point> path, bool eraseInk)
+    bool Erases(PointerPoint point) =>
+        point.PointerDevice.PointerDeviceType != Windows.Devices.Input.PointerDeviceType.Touch
+        && (EraserButton.IsChecked == true || point.Properties.IsEraser || point.Properties.IsInverted);
+
+    void Sheet_PointerPressed(object sender, PointerRoutedEventArgs e) => Guard(async () =>
     {
-        if (eraseInk)
+        var point = e.GetCurrentPoint(Sheet);
+        NoticePen(point);
+        if (_rub is not null || !Erases(point)) return;
+        Sheet.CapturePointer(e.Pointer);
+        e.Handled = true;
+        _rub = new Rub { Pointer = e.Pointer.PointerId, Last = point.Position };
+        await RubAsync(new List<Point> { point.Position });
+    });
+
+    void Sheet_PointerMoved(object sender, PointerRoutedEventArgs e) => Guard(async () =>
+    {
+        var point = e.GetCurrentPoint(Sheet);
+        if (!point.IsInContact) NoticePen(point);
+        if (_rub is not { } rub || rub.Pointer != e.Pointer.PointerId) return;
+        e.Handled = true;
+        var path = e.GetIntermediatePoints(Sheet).Reverse().Select(p => p.Position).Prepend(rub.Last).ToList();
+        rub.Last = point.Position;
+        await RubAsync(path);
+    });
+
+    void Sheet_PointerReleased(object sender, PointerRoutedEventArgs e) => Guard(async () =>
+    {
+        if (_rub is not { } rub || rub.Pointer != e.Pointer.PointerId) return;
+        e.Handled = true;
+        Sheet.ReleasePointerCapture(e.Pointer);
+        await EndRubAsync();
+        NoticePen(e.GetCurrentPoint(Sheet));
+    });
+
+    void Sheet_PointerEnded(object sender, PointerRoutedEventArgs e) => Guard(async () =>
+    {
+        if (_rub is { } rub && rub.Pointer == e.Pointer.PointerId) await EndRubAsync();
+    });
+
+    /// <summary>The pen gone away from the page: it writes again when it comes back, unless it comes back as an eraser.</summary>
+    void Sheet_PointerExited(object sender, PointerRoutedEventArgs e)
+    {
+        if (_rub is not null || e.Pointer.PointerDeviceType != Windows.Devices.Input.PointerDeviceType.Pen || !_penIsEraser) return;
+        _penIsEraser = false;
+        UpdateInkDevices();
+    }
+
+    /// <summary>Rubs out what is along this part of the eraser's path: ink not read yet, and notation (one undo for the whole stroke).</summary>
+    async Task RubAsync(List<Point> path)
+    {
+        bool inkGone = EraseInk(path);
+        bool first = _rub is { Changed: false };
+        if (_sheet.EraseAlong(path.Select(p => (p.X, p.Y)).ToList(), EraseReach, remember: first))
         {
-            bool any = false;
-            foreach (var stroke in Strokes.GetStrokes())
-            {
-                stroke.Selected = stroke.GetInkPoints().Any(p => path.Any(q => Math.Abs(p.Position.X - q.X) <= EraseReach && Math.Abs(p.Position.Y - q.Y) <= EraseReach));
-                any |= stroke.Selected;
-            }
-            if (any) Strokes.DeleteSelected();
-        }
-        if (_sheet.EraseAlong(path.Select(p => (p.X, p.Y)).ToList(), EraseReach))
-        {
+            if (_rub is { } rub) rub.Changed = true;
             Render();
-            await SaveAsync();
         }
+        else if (inkGone)
+        {
+            UndoButton.IsEnabled = _sheet.CanUndo || Strokes.GetStrokes().Count > 0;
+        }
+        await Task.CompletedTask;
+    }
+
+    async Task EndRubAsync()
+    {
+        bool changed = _rub?.Changed == true;
+        _rub = null;
+        if (changed) await SaveAsync();
+    }
+
+    /// <summary>Takes off the ink not read yet that the path goes over. True when some went.</summary>
+    bool EraseInk(List<Point> path)
+    {
+        bool any = false;
+        foreach (var stroke in Strokes.GetStrokes())
+        {
+            stroke.Selected = stroke.GetInkPoints().Any(p => path.Any(q => Math.Abs(p.Position.X - q.X) <= EraseReach && Math.Abs(p.Position.Y - q.Y) <= EraseReach));
+            any |= stroke.Selected;
+        }
+        if (any) Strokes.DeleteSelected();
+        return any;
     }
 
     /// <summary>
-    /// The pen's eraser end: Windows rubs out the ink itself, and its path, reported on the ink thread, rubs out the notation too.
+    /// The pen's eraser end, as Windows Ink sees it: when the pen is turned round on its way to the page, Windows Ink notices before
+    /// the page does, so it is told to let the pen go; and if an eraser stroke reaches it all the same (Windows Ink then rubs out the
+    /// ink itself), its path, in the ink canvas's coordinates, which are the sheet's, rubs out the notation once it ends.
     /// </summary>
     void WatchPenEraser()
     {
@@ -245,8 +338,17 @@ public sealed partial class ScorePage : Page
             CrashLog.Write(ex, "watching the pen's eraser end", fatal: false);
             return;
         }
+        void Noticed(PointerEventArgs args)
+        {
+            var props = args.CurrentPoint.Properties;
+            if (props.IsEraser || props.IsInverted)
+                _ = Dispatcher.RunAsync(CoreDispatcherPriority.High, () => { if (_rub is null && !_penIsEraser) { _penIsEraser = true; UpdateInkDevices(); } });
+        }
+        _independent.PointerEntering += (_, args) => Noticed(args);
+        _independent.PointerHovering += (_, args) => Noticed(args);
         _independent.PointerPressing += (_, args) =>
         {
+            Noticed(args);
             if (!args.CurrentPoint.Properties.IsEraser) return;
             lock (_penEraserLock) _penEraserPath = new List<Point> { args.CurrentPoint.Position };
         };
@@ -259,7 +361,14 @@ public sealed partial class ScorePage : Page
             List<Point>? path;
             lock (_penEraserLock) { path = _penEraserPath; _penEraserPath = null; }
             if (path is { Count: > 0 })
-                _ = Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () => Guard(() => EraseAlongAsync(path.Select(ToSheet).ToList(), eraseInk: false)));
+                _ = Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () => Guard(async () =>
+                {
+                    if (_sheet.EraseAlong(path.Select(p => (p.X, p.Y)).ToList(), EraseReach))
+                    {
+                        Render();
+                        await SaveAsync();
+                    }
+                }));
         };
     }
 
