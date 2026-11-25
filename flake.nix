@@ -28,7 +28,7 @@
 
           shellHook = ''
             echo "Longhand dev shell. Try:"
-            echo "  dotnet run --project Longhand.Web            # the web version, on http://127.0.0.1:5080"
+            echo "  dotnet run --project Longhand.Web            # the web version, on http://127.0.0.1:5080 (/calendar, /score)"
             echo "  nix run .#dev                                # the same, restarting and reloading the browser as you edit"
             echo "  dotnet run --project tools/CoreCheck         # shared logic checks"
             echo "  dotnet build tools/XamlCheck                 # the Windows app's code, type-checked here"

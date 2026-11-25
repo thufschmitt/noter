@@ -29,7 +29,8 @@ sealed partial class App : Application
             frame = new Frame();
             Window.Current.Content = frame;
         }
-        if (frame.Content is null) frame.Navigate(typeof(MainPage), arguments);
+        // Longhand Score has a page of its own; the notebook and the calendar share MainPage.
+        if (frame.Content is null) frame.Navigate(AppKind.IsScore ? typeof(ScorePage) : typeof(MainPage), arguments);
         Window.Current.Activate();
     }
 }

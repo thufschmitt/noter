@@ -81,6 +81,7 @@ public static class WebApp
 
         MapSettings(app, store);
         apps.Map(app);
+        new WebScore(store).Map(app);
         MapPage(app, options.WwwRoot);
         return app;
     }
@@ -100,8 +101,8 @@ public static class WebApp
         var assembly = Assembly.GetExecutingAssembly();
         app.MapGet("/{**path}", async (HttpContext ctx, string? path) =>
         {
-            // The calendar app is the same page, which sees from its address that it is the calendar.
-            var name = string.IsNullOrEmpty(path) || path is "calendar" or "calendar/" ? "index.html" : path;
+            // The calendar app is the same page, which sees from its address that it is the calendar. The score app is a page of its own.
+            var name = string.IsNullOrEmpty(path) || path is "calendar" or "calendar/" ? "index.html" : path is "score" or "score/" ? "score.html" : path;
             Stream? opened = null;
             if (!name.Contains(".."))
             {

@@ -70,6 +70,31 @@ try
     catch (WebSocketException) { refused = true; }
     Check("a page from another site can't open the notebook", refused);
 
+    // ----- Longhand Score: its page, reading ink into notation, undo, playing -----
+    var scorePage = await http.GetAsync("/score");
+    Check("the score app's page is served at /score", scorePage.StatusCode == HttpStatusCode.OK && (await scorePage.Content.ReadAsStringAsync()).Contains("score.js"));
+    var emptyScore = JsonDocument.Parse(await http.GetStringAsync("/api/score")).RootElement;
+    Check("a new score is empty staves", emptyScore.GetProperty("svg").GetString()!.StartsWith("<svg") && !emptyScore.GetProperty("canUndo").GetBoolean() && emptyScore.GetProperty("width").GetDouble() == ScoreSheet.PageWidth);
+    double gLine = new ScoreSheet().StepY(0, 6), sp = ScoreSheet.Space;
+    var head = Enumerable.Range(0, 121).Select(i => (a: 3.2 * 2 * Math.PI * i / 120, k: 1 - 0.75 * i / 120.0)).Select(t => new[] { 300 + 0.6 * sp * t.k * Math.Cos(t.a), gLine + 0.42 * sp * t.k * Math.Sin(t.a) }).ToArray();
+    var stem = Enumerable.Range(0, 21).Select(i => new[] { 300 + 0.6 * sp, gLine - 3.4 * sp * i / 20 }).ToArray();
+    var squiggle = new[] { new[] { 600.0, gLine + 40 }, new[] { 640.0, gLine + 30 } };
+    var readBody = new { strokes = new object[] { new { id = 1, points = head }, new { id = 2, points = stem }, new { id = 3, points = squiggle } } };
+    var noHeaderRead = await http.PostAsync("/api/score/read", new StringContent(JsonSerializer.Serialize(readBody), Encoding.UTF8, "application/json"));
+    Check("reading ink without the page's header is refused", noHeaderRead.StatusCode == HttpStatusCode.Forbidden);
+    var readScore = await Json(await http.SendAsync(ApiReq(HttpMethod.Post, "/api/score/read", readBody)));
+    var usedIds = readScore.GetProperty("extra").GetProperty("used").EnumerateArray().Select(e => e.GetInt32()).OrderBy(i => i).ToArray();
+    Check("a head and its stem become a quarter note; the squiggle stays ink", readScore.GetProperty("changed").GetBoolean() && usedIds.SequenceEqual(new[] { 1, 2 })
+        && readScore.GetProperty("extra").GetProperty("summary").GetString() == "1 note");
+    Check("the score is saved in the data folder", File.Exists(Path.Combine(data, "score.json")) && ScoreSheet.FromJson(File.ReadAllText(Path.Combine(data, "score.json"))).Items.Count == 1);
+    var wavResponse = await http.GetAsync("/api/score/play.wav");
+    var wavBytes = await wavResponse.Content.ReadAsByteArrayAsync();
+    Check("it plays as a WAV", wavResponse.Content.Headers.ContentType!.MediaType == "audio/wav" && wavBytes.Length > 44 && Encoding.ASCII.GetString(wavBytes, 8, 4) == "WAVE");
+    var erased = await Json(await http.SendAsync(ApiReq(HttpMethod.Post, "/api/score/erase", new { path = new[] { new[] { 300.0, gLine - 20 }, new[] { 300.0, gLine + 20 } } })));
+    Check("the eraser rubs the note out", erased.GetProperty("changed").GetBoolean() && ScoreSheet.FromJson(File.ReadAllText(Path.Combine(data, "score.json"))).Items.Count == 0);
+    var undone = await Json(await http.SendAsync(ApiReq(HttpMethod.Post, "/api/score/undo")));
+    Check("and undo brings it back", undone.GetProperty("changed").GetBoolean() && ScoreSheet.FromJson(File.ReadAllText(Path.Combine(data, "score.json"))).Items.Count == 1);
+
     // ----- opening the notebook -----
     string conversation;
     await using (var b = await FakeBrowser.ConnectAsync(url))

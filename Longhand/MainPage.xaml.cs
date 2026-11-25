@@ -151,7 +151,7 @@ public sealed partial class MainPage : Page, IPageView
         CrashLog.MarkRead();
         var dialog = new ContentDialog
         {
-            Title = (AppKind.IsCalendar ? "Longhand Calendar" : "Longhand") + " closed unexpectedly last time",
+            Title = AppKind.Name + " closed unexpectedly last time",
             Content = new TextBlock
             {
                 Text = "What went wrong was written down. Copy it to paste it wherever you report the problem (it holds the error and where in the code it happened; nothing from your pages or calendar, but read it before sharing it). You can copy it later too, from the gear button.",

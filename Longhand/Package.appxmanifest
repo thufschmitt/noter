@@ -53,6 +53,19 @@
         <uap:SplashScreen Image="Assets\CalendarSplashScreen.png" BackgroundColor="#FBFCFD" />
       </uap:VisualElements>
     </Application>
+    <!-- Longhand Score: the same program, opened on staves to write music on (AppKind.IsScore, ScorePage). Its tiles are plum with a
+         staff and two beamed notes, drawn by tools/make-score-icons.py. -->
+    <Application Id="Score" Executable="$targetnametoken$.exe" EntryPoint="Longhand.App">
+      <uap:VisualElements
+        DisplayName="Longhand Score"
+        Description="Staves to write music on with the pen: what you write is cleaned up into engraved notation as you go."
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Score150x150Logo.png"
+        Square44x44Logo="Assets\Score44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\ScoreWide310x150Logo.png" />
+        <uap:SplashScreen Image="Assets\ScoreSplashScreen.png" BackgroundColor="#FBFCFD" />
+      </uap:VisualElements>
+    </Application>
   </Applications>
 
   <Capabilities>

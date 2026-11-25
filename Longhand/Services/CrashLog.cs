@@ -92,7 +92,7 @@ public static class CrashLog
             var sb = new StringBuilder();
             var now = DateTimeOffset.Now;
             sb.Append(Separator).Append(now.ToString("yyyy-MM-dd HH:mm:ss zzz")).Append(fatal ? " — the app closed" : mayClose ? " — reached the last-chance handler (the app may have closed)" : " — caught, the app carried on").Append('\n');
-            sb.Append("App: ").Append(AppKind.IsCalendar ? "Longhand Calendar" : "Longhand").Append(' ').Append(Version()).Append('\n');
+            sb.Append("App: ").Append(AppKind.Name).Append(' ').Append(Version()).Append('\n');
             sb.Append("Windows: ").Append(WindowsVersion()).Append(", ").Append(RuntimeInformation.ProcessArchitecture).Append(", .NET ").Append(Environment.Version).Append('\n');
             sb.Append("Where: ").Append(where).Append('\n');
             if (!string.IsNullOrWhiteSpace(message) && message != error?.ToString()) sb.Append("Message: ").Append(message.Trim()).Append('\n');

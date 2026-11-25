@@ -281,6 +281,22 @@ await sleep(300);
 await shot('7-settings');
 await evaluate(`(() => { document.getElementById('modelSelect').value = 'gpt-6.1-terra'; document.getElementById('settingsSave').click(); })()`);
 check('choosing a model there changes this conversation\'s', await until(`!document.getElementById('settings').open && conversationState.model === 'gpt-6.1-terra'`));
+
+// ----- Longhand Score: a head and its stem written on the staff become a quarter note, the ink comes off, undo takes it back -----
+await call('Page.navigate', { url: pageUrl.replace(/\/?$/, '/') + 'score' });
+check('the score app opens on empty staves', await until(`document.querySelector('#engraving svg') !== null && typeof pending !== 'undefined'`));
+const notesDrawn = `document.querySelectorAll('#engraving svg path').length`;
+const before = await evaluate(notesDrawn);
+const page = JSON.parse(await evaluate(`(() => { const r = document.getElementById('scoreInk').getBoundingClientRect(); return JSON.stringify({ x: r.left, y: r.top, k: r.width / 1000 }); })()`));
+const at = (x, y) => [page.x + x * page.k, page.y + y * page.k];
+const g = 96 + 3 * 24; // the treble staff's G line
+await stroke(Array.from({ length: 121 }, (_, i) => { const a = 3.2 * 2 * Math.PI * i / 120, f = 1 - 0.75 * i / 120; return at(300 + 14.4 * f * Math.cos(a), g + 10 * f * Math.sin(a)); }));
+await stroke(Array.from({ length: 21 }, (_, i) => at(314.4, g - 82 * i / 20)));
+check('the pen\'s ink shows while it is written', await evaluate(`pending.length === 2`));
+check('when the pen rests it is read: engraved, and the ink taken off', await until(`pending.length === 0 && ${notesDrawn} > ${before}`, 5000));
+await shot('8-score');
+await evaluate(`document.getElementById('undo').click()`);
+check('undo takes the note back', await until(`${notesDrawn} === ${before}`, 5000));
 console.log('console:', JSON.stringify(logs.slice(0, 10)));
 check('no script errors', !logs.some(l => l.startsWith('EXCEPTION')));
 ws.close();
